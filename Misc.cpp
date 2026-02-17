@@ -159,6 +159,16 @@ void GetResource_Detour(void *a1, void *a2, __int64 a3)
     GetResource(a1, a2, a3);
 }
 
+void ReadFrameData_Detour(void* a1, char a2, int a3, float *a4, int a5, float *a6)
+{
+    printf("\nReadFrameData called\n");
+    //printf("Loaded: %s\n", lookup(a3).c_str());
+    //printf("CPathID: %d\n", a2);
+    //printf("SingleAnimParam *param: %llu\n", a3);
+    //printf("SingleAnimParam a3->m_animID: %llu\n", *a3);
+    GetResource(a1, a2, a3);
+}
+
 int TakedownResult_Detour(__int64 a1)
 {
     int result = TakedownResult(a1);
@@ -335,7 +345,8 @@ void Misc::Initialize()
 
     HookOffset3(0x6DAF890 + 0xA00, &SetLethal_Detour, reinterpret_cast<LPVOID*>(&SetLethal));
 
-    HookOffset3(0x357D0 + 0xA00, &GetResource_Detour, reinterpret_cast<LPVOID*>(&GetResource));
+    // The new one
+    //HookOffset3(0x357D0 + 0xA00, &GetResource_Detour, reinterpret_cast<LPVOID*>(&GetResource));
 
     //HookOffset3(0xE7580 + 0xA00, &GetResource_Detour, reinterpret_cast<LPVOID*>(&GetResource));
 
