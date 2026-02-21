@@ -8,6 +8,11 @@
 #include <unordered_map>
 using namespace std;
 
+static Misc::ReadFrameData_t ReadFrameData;
+static Misc::ExtractAnyFramePair_t ExtractAnyFramePair;
+static Misc::ReadFrameData_t ReadFrameData3;
+static Misc::GetJointRotations_t GetJointRotations;
+
 static Misc::FileOpen_t FileOpen;
 static Misc::FormatPath_t FormatPath;
 static Misc::CreateResource_t GetResource;
@@ -18,6 +23,8 @@ static Misc::TakedownResult_t TakedownResult;
 static Misc::TakedownResult_t VictimResult;
 static int count2;
 static uintptr_t Imagebase;
+
+RENDERDOC_API_1_1_2* rdoc_api;
 
 char* Get4MemAt(uint64_t offset, uint64_t j)
 {
@@ -159,14 +166,40 @@ void GetResource_Detour(void *a1, void *a2, __int64 a3)
     GetResource(a1, a2, a3);
 }
 
-void ReadFrameData_Detour(void* a1, char a2, int a3, float *a4, int a5, float *a6)
+uintptr_t ReadFrameData_Detour(void* a1, char a2, int a3, float *a4, int a5, float *a6)
 {
     printf("\nReadFrameData called\n");
     //printf("Loaded: %s\n", lookup(a3).c_str());
-    //printf("CPathID: %d\n", a2);
+    printf("flags (a2): %d\n", a2);
+    printf("TBD (a3): %d\n", a3);
+    printf("TBD (a5): %d\n", a5);
     //printf("SingleAnimParam *param: %llu\n", a3);
     //printf("SingleAnimParam a3->m_animID: %llu\n", *a3);
-    GetResource(a1, a2, a3);
+    return ReadFrameData(a1, a2, a3, a4, a5, a6);
+}
+
+uintptr_t ExtractAnyFramePair_Detour(void* a1, int a3, float* a4, int a5, float* a6)
+{
+    printf("\nExtractAnyFramePair called\n");
+    //printf("Loaded: %s\n", lookup(a3).c_str());
+    //printf("flags (a2): %d\n", a2);
+    printf("TBD (a3): %d\n", a3);
+    printf("TBD (a5): %d\n", a5);
+    //printf("SingleAnimParam *param: %llu\n", a3);
+    //printf("SingleAnimParam a3->m_animID: %llu\n", *a3);
+    return ExtractAnyFramePair(a1, a3, a4, a5, a6);
+}
+
+uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a4, __int64 a5, int a6, __int64 a7, int a8, __int64 a9, bool a10)
+{
+    printf("\nGetJointRotations called\n");
+    //printf("Loaded: %s\n", lookup(a3).c_str());
+    printf("TBD (a6): %d\n", a6);
+    printf("TBD (a8): %d\n", a8);
+    printf("TBD (a10): %d\n", a10);
+    //printf("SingleAnimParam *param: %llu\n", a3);
+    //printf("SingleAnimParam a3->m_animID: %llu\n", *a3);
+    return GetJointRotations(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 }
 
 int TakedownResult_Detour(__int64 a1)
@@ -335,6 +368,8 @@ void Misc::Initialize()
     MH_Initialize();
     printf("MH initialized!\n");
 
+    //rdoc_api->TriggerCapture();
+
     HookOffset3(0x11E40B0 + 0xA00, &TakedownResult_Detour, reinterpret_cast<LPVOID*>(&TakedownResult)); // CHumanTakedownState::GetTakedownResult (player)
 
     HookOffset3(0x11E47A0 + 0xA00, &VictimResult_Detour, reinterpret_cast<LPVOID*>(&VictimResult)); // CHumanTakedownVictimState::TakedownResult (AI)
@@ -343,7 +378,13 @@ void Misc::Initialize()
     // 11E4680: IsStunnedTakedown
     //HookOffset3(0x11E4580 + 0xA00, &NewTakedown_Detour, reinterpret_cast<LPVOID*>(&NewTakedown)); // IsNewTakedown
 
-    HookOffset3(0x6DAF890 + 0xA00, &SetLethal_Detour, reinterpret_cast<LPVOID*>(&SetLethal));
+    //HookOffset3(0x6DAF890 + 0xA00, &SetLethal_Detour, reinterpret_cast<LPVOID*>(&SetLethal));
+
+    HookOffset3(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+
+    //HookOffset3(0x185420 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
+
+    //HookOffset3(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
 
     // The new one
     //HookOffset3(0x357D0 + 0xA00, &GetResource_Detour, reinterpret_cast<LPVOID*>(&GetResource));
