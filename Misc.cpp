@@ -199,7 +199,7 @@ glm::vec3 PrintQuat(float* quat)
 int counter = 0;
 int counter2 = 0;
 
-void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int a3, float *a4, int a5, float *a6)
+void ReadFrameData_Detour(Misc::ChunkStream *a1, char flags, int a3, float *a4, int a5, float *a6)
 {
     if (counter2 < 100)
     {
@@ -207,27 +207,43 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int a3, float
         printf("flags (a2): %d\n", flags);
         printf("frameInsideChunk0: %d\n", a3);
         printf("frameInsideChunk1: %d\n", a5);
-    }
-    {
+
         if ((flags & 1) != 0)
         {
             // v7 = 0: result is 0.000015
             // v7 = 31: -0.000015
             // v7 = 2: 0.707118
+
+            // v7 must be 32767 or 32768
+            // 0x171700A0 >> 6 = 0x005C5C02
+            // 0x36A080 >> 6 = 0xDA82
+
+            // 0x0003FFFC >> 3 = 32767
+            // 0xFFFC0007 >> 3 = 
+
+            // bit position: 22
+            // A0 00 gives 2 yet
+            // 55938 or DA82
+            // 1101 1010 1000 0010
             printf("First branch\n");
-            auto bitPos = a1->bitstream.bitPosition;
+            auto bitPos = a1->bitPosition;
             printf("Bit position: %d\n", bitPos);
 
-            auto v7 = *&a1->bitstream.base[bitPos >> 3] >> (bitPos & 7);
+            printf("base of bitPos >> 3: %02X\n", a1->base[bitPos >> 3]);
+            printf("base of bitPos >> 3 + 1: %02X\n", a1->base[(bitPos >> 3) + 1]);
+            printf("base of bitPos >> 3 + 2: %02X\n", a1->base[(bitPos >> 3) + 2]);
+            printf("base of bitPos >> 3 + 3: %02X\n", a1->base[(bitPos >> 3) + 3]);
+
+            auto v7 = *&a1->base[bitPos >> 3] >> (bitPos & 7);
+            bitPos += 8;
+            auto v77 = *&a1->base[bitPos >> 3] >> (bitPos & 7);
             printf("v7: %d\n", v7);
+            printf("v77: %d\n", v77);
             float v8 = v7 * 0.000030518044 - 1.0;
             printf("v8: %f\n", v8);
-            *a4 = v8;
-            *a6 = v8;
-            return;
         }
-        //else
-            //printf("Second branch\n");
+        else
+            printf("Second branch\n");
         counter2++;
     }
     ReadFrameData(a1, flags, a3, a4, a5, a6);
