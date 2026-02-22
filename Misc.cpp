@@ -6,10 +6,13 @@
 #include <string>
 #include <list>
 #include <unordered_map>
+
+
 using namespace std;
 
 static Misc::ReadFrameData_t ReadFrameData;
 static Misc::ExtractAnyFramePair_t ExtractAnyFramePair;
+static Misc::ReadTwoValues_t ReadTwoValues;
 static Misc::ReadFrameData_t ReadFrameData3;
 static Misc::GetJointRotations_t GetJointRotations;
 
@@ -23,8 +26,6 @@ static Misc::TakedownResult_t TakedownResult;
 static Misc::TakedownResult_t VictimResult;
 static int count2;
 static uintptr_t Imagebase;
-
-RENDERDOC_API_1_1_2* rdoc_api;
 
 char* Get4MemAt(uint64_t offset, uint64_t j)
 {
@@ -68,7 +69,7 @@ void Print32PtrAt(uint64_t offset)
 {
     printf("At offset: %x\n", offset);
     std::string result = "Memory contents: ";
-    for (uint64_t i = 0; i < 32; i++)
+    for (uint64_t i = 0; i < 8; i++)
     {
         char* s = Get4MemPtrAt(offset, 4 * i);
         result += s;
@@ -188,19 +189,56 @@ void GetResource_Detour(void *a1, void *a2, __int64 a3)
     GetResource(a1, a2, a3);
 }
 
-uintptr_t ReadFrameData_Detour(void* a1, char a2, int a3, float *a4, int a5, float *a6)
+glm::vec3 PrintQuat(float* quat)
 {
-    printf("\nReadFrameData called\n");
-    //printf("Loaded: %s\n", lookup(a3).c_str());
-    printf("flags (a2): %d\n", a2);
-    printf("TBD (a3): %d\n", a3);
-    printf("TBD (a5): %d\n", a5);
-    //printf("SingleAnimParam *param: %llu\n", a3);
-    //printf("SingleAnimParam a3->m_animID: %llu\n", *a3);
-    return ReadFrameData(a1, a2, a3, a4, a5, a6);
+    glm::quat rotQuat(quat[3], quat[0], quat[1], quat[2]);
+    glm::vec3 rotEuler = glm::eulerAngles(rotQuat);
+    return glm::degrees(rotEuler);
 }
 
-uintptr_t ExtractAnyFramePair_Detour(void* a1, int a3, float* a4, int a5, float* a6)
+int counter = 0;
+int counter2 = 0;
+
+void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int a3, float *a4, int a5, float *a6)
+{
+    if (counter2 < 100)
+    {
+        printf("\nReadFrameData called\n");
+        printf("flags (a2): %d\n", flags);
+        printf("frameInsideChunk0: %d\n", a3);
+        printf("frameInsideChunk1: %d\n", a5);
+    }
+    {
+        if ((flags & 1) != 0)
+        {
+            // v7 = 0: result is 0.000015
+            // v7 = 31: -0.000015
+            // v7 = 2: 0.707118
+            printf("First branch\n");
+            auto bitPos = a1->bitstream.bitPosition;
+            printf("Bit position: %d\n", bitPos);
+
+            auto v7 = *&a1->bitstream.base[bitPos >> 3] >> (bitPos & 7);
+            printf("v7: %d\n", v7);
+            float v8 = v7 * 0.000030518044 - 1.0;
+            printf("v8: %f\n", v8);
+            *a4 = v8;
+            *a6 = v8;
+            return;
+        }
+        //else
+            //printf("Second branch\n");
+        counter2++;
+    }
+    ReadFrameData(a1, flags, a3, a4, a5, a6);
+    if (counter2 < 100)
+    {
+        printf("ReadFrameData value0: %f\n", *a4);
+        printf("ReadFrameData value1: %f\n", *a6);
+    }
+}
+
+void ExtractAnyFramePair_Detour(void* a1, int a3, float* a4, int a5, float* a6)
 {
     printf("\nExtractAnyFramePair called\n");
     //printf("Loaded: %s\n", lookup(a3).c_str());
@@ -209,7 +247,40 @@ uintptr_t ExtractAnyFramePair_Detour(void* a1, int a3, float* a4, int a5, float*
     printf("TBD (a5): %d\n", a5);
     //printf("SingleAnimParam *param: %llu\n", a3);
     //printf("SingleAnimParam a3->m_animID: %llu\n", *a3);
-    return ExtractAnyFramePair(a1, a3, a4, a5, a6);
+    ExtractAnyFramePair(a1, a3, a4, a5, a6);
+}
+
+void ReadTwoValues_Detour(__int64 a1, float *quat1, float *quat2, int a4)
+{
+    //printf("\nExtractAnyFramePair called\n");
+    //printf("Loaded: %s\n", lookup(a3).c_str());
+    //printf("flags (a2): %d\n", a2);
+    //printf("TBD (a3): %d\n", a3);
+    //printf("TBD (a4): %d\n", a4);
+    ReadTwoValues(a1, quat1, quat2, a4);
+
+    if (counter < 30)
+    {
+        /*
+        std::string result = "Chunk reader stream: ";
+        for (int i = 0; i < 32; i++)
+        {
+            char buffer[100];
+            sprintf_s(buffer, "%02x ", a1[i] & 0xFF);
+            char* s = buffer;
+            result += s;
+        }
+        result += "\n\nEnd\n";
+        std::cout << result;*/
+
+        //Print32PtrAt(a1);
+
+        glm::vec3 q1 = PrintQuat(quat1);
+        glm::vec3 q2 = PrintQuat(quat2);
+        printf("First quat: %f %f %f\n", q1[0], q1[1], q1[2]);
+        printf("Second quat: %f %f %f\n", q2[0], q2[1], q2[2]);
+        counter++;
+    }
 }
 
 uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a4, __int64 a5, int a6, __int64 a7, int a8, __int64 a9, bool a10)
@@ -400,15 +471,14 @@ void Misc::Initialize()
 
     //HookOffset3(0x6DAF890 + 0xA00, &SetLethal_Detour, reinterpret_cast<LPVOID*>(&SetLethal));
 
-    //HookOffset3(0x186710 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+    HookOffset3(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
     //HookOffset3(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
 
-    HookOffset3(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
+    //HookOffset3(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
-    //HookOffset3(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
-
-    //HookOffset3(0x20C6A0 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
+    // alt: 0x20C6A0
+    HookOffset3(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
 
     // The new one
     //HookOffset3(0x357D0 + 0xA00, &GetResource_Detour, reinterpret_cast<LPVOID*>(&GetResource));

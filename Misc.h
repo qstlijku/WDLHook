@@ -2,18 +2,30 @@
 #include "Windows.h"
 #include "ext/minhook/minhook.h"
 #include "glm/glm.hpp"
-#include "renderdoc_app.h"
+#include <glm/gtc/quaternion.hpp>
 
 class Misc
 {
 public:
+	struct ChunkStream
+	{
+		const unsigned __int8* base;
+		unsigned int bitPosition;
+	};
+
+	struct ChunkStreamReader
+	{
+		ChunkStream bitstream;
+	};
+
 	typedef unsigned long EntityId;
 	typedef uintptr_t(*FileOpen_t)(void*, const char*, uintptr_t);
 	typedef uintptr_t(*Takedown_t)(void*);
 	typedef int(*TakedownResult_t)(__int64);
 
-	typedef uintptr_t(*ReadFrameData_t)(void *, char, int, float *, int, float *);
-	typedef uintptr_t(*ExtractAnyFramePair_t)(void*, int, float*, int, float*);
+	typedef void(*ReadFrameData_t)(ChunkStreamReader *, char, int, float *, int, float *);
+	typedef void(*ExtractAnyFramePair_t)(void*, int, float*, int, float*);
+	typedef void(*ReadTwoValues_t)(__int64, float*, float*, int);
 	typedef uintptr_t(*GetJointRotations_t)(__int64, __int64, __int64, __int64, __int64, int, __int64, int, __int64, bool);
 
 	typedef void(*CreateResource_t)(void *, void *, __int64);
@@ -23,5 +35,3 @@ public:
 
 	static void Initialize();
 };
-
-extern RENDERDOC_API_1_1_2* rdoc_api;
