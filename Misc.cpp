@@ -55,6 +55,28 @@ void Print32MemoryAt(uint64_t offset)
     std::cout << result;
 }
 
+char* Get4MemPtrAt(uint64_t offset, uint64_t j)
+{
+    uintptr_t addr = (uintptr_t)(offset + j);
+    uint64_t i = *(uint64_t*)addr;
+    char buffer[100];
+    sprintf_s(buffer, "%02x %02x %02x %02x ", i & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF);
+    return buffer;
+}
+
+void Print32PtrAt(uint64_t offset)
+{
+    printf("At offset: %x\n", offset);
+    std::string result = "Memory contents: ";
+    for (uint64_t i = 0; i < 32; i++)
+    {
+        char* s = Get4MemPtrAt(offset, 4 * i);
+        result += s;
+    }
+    result += "\n\nEnd\n";
+    std::cout << result;
+}
+
 void detour()
 {
     if (count2 < 10)
@@ -192,13 +214,11 @@ uintptr_t ExtractAnyFramePair_Detour(void* a1, int a3, float* a4, int a5, float*
 
 uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a4, __int64 a5, int a6, __int64 a7, int a8, __int64 a9, bool a10)
 {
-    printf("\nGetJointRotations called\n");
     //printf("Loaded: %s\n", lookup(a3).c_str());
-    printf("TBD (a6): %d\n", a6);
-    printf("TBD (a8): %d\n", a8);
-    printf("TBD (a10): %d\n", a10);
-    //printf("SingleAnimParam *param: %llu\n", a3);
-    //printf("SingleAnimParam a3->m_animID: %llu\n", *a3);
+    printf("nbBonesInInfoTable: %d\n", a6);
+    printf("currentLODDistance: %d\n", a8);
+    printf("useNearestFrame: %d\n", a10);
+    Print32PtrAt(a9);
     return GetJointRotations(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 }
 
@@ -380,11 +400,15 @@ void Misc::Initialize()
 
     //HookOffset3(0x6DAF890 + 0xA00, &SetLethal_Detour, reinterpret_cast<LPVOID*>(&SetLethal));
 
-    HookOffset3(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+    //HookOffset3(0x186710 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
 
-    //HookOffset3(0x185420 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
+    //HookOffset3(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+
+    HookOffset3(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
     //HookOffset3(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
+
+    //HookOffset3(0x20C6A0 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
 
     // The new one
     //HookOffset3(0x357D0 + 0xA00, &GetResource_Detour, reinterpret_cast<LPVOID*>(&GetResource));
