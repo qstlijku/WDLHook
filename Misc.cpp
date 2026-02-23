@@ -201,13 +201,15 @@ int counter2 = 0;
 
 void ReadFrameData_Detour(Misc::ChunkStream *a1, char flags, int a3, float *a4, int a5, float *a6)
 {
-    if (counter2 < 100)
+    //if (counter2 < 100)
     {
-        printf("\nReadFrameData called\n");
-        printf("flags (a2): %d\n", flags);
-        printf("frameInsideChunk0: %d\n", a3);
-        printf("frameInsideChunk1: %d\n", a5);
-
+        if (counter2 < 100)
+        {
+            printf("\nReadFrameData called\n");
+            printf("flags (a2): %d\n", flags);
+            printf("frameInsideChunk0: %d\n", a3);
+            printf("frameInsideChunk1: %d\n", a5);
+        }
         if ((flags & 1) != 0)
         {
             // v7 = 0: result is 0.000015
@@ -225,26 +227,50 @@ void ReadFrameData_Detour(Misc::ChunkStream *a1, char flags, int a3, float *a4, 
             // A0 00 gives 2 yet
             // 55938 or DA82
             // 1101 1010 1000 0010
-            printf("First branch\n");
             auto bitPos = a1->bitPosition;
-            printf("Bit position: %d\n", bitPos);
+            if (counter2 < 100)
+            {
+                printf("First branch\n");
+                printf("Bit position: %d\n", bitPos);
+            }
 
-            printf("base of bitPos >> 3: %02X\n", a1->base[bitPos >> 3]);
-            printf("base of bitPos >> 3 + 1: %02X\n", a1->base[(bitPos >> 3) + 1]);
-            printf("base of bitPos >> 3 + 2: %02X\n", a1->base[(bitPos >> 3) + 2]);
-            printf("base of bitPos >> 3 + 3: %02X\n", a1->base[(bitPos >> 3) + 3]);
+            auto b0 = a1->base[bitPos >> 3];
+            auto b1 = a1->base[(bitPos >> 3) + 1];
+            auto b2 = a1->base[(bitPos >> 3) + 2];
+            auto b3 = a1->base[(bitPos >> 3) + 3];
+            uint32_t num = b0 + 256 * b1 + 65536 * b2;
 
-            auto v7 = *&a1->base[bitPos >> 3] >> (bitPos & 7);
-            bitPos += 8;
-            auto v77 = *&a1->base[bitPos >> 3] >> (bitPos & 7);
-            printf("v7: %d\n", v7);
-            printf("v77: %d\n", v77);
+            auto first = b0 >> (bitPos & 7);
+            auto v6 = num >> (bitPos & 7);
+            auto v7 = v6 & 0xFFFF;
+            if (first == 0)
+            {
+                //v7 = 32768; // not sure why
+            }
+            //a1->bitPosition += 16;
             float v8 = v7 * 0.000030518044 - 1.0;
-            printf("v8: %f\n", v8);
+
+            *a4 = v8;
+            *a6 = v8;
+
+            if (counter2 < 100)
+            {
+                printf("base of bitPos >> 3: %02X\n", b0);
+                printf("base of bitPos >> 3 + 1: %02X\n", b1);
+                printf("base of bitPos >> 3 + 2: %02X\n", b2);
+                printf("base of bitPos >> 3 + 3: %02X\n", b3);
+
+                printf("num: %08X\n", num);
+
+                printf("v6: %d\n", v6);
+                printf("v7: %d\n", v7);
+                printf("v8: %f\n", v8);
+            }
+            //return;
         }
         else
-            printf("Second branch\n");
-        counter2++;
+            //printf("Second branch\n");
+            counter2++;
     }
     ReadFrameData(a1, flags, a3, a4, a5, a6);
     if (counter2 < 100)
