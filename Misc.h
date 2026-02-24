@@ -16,6 +16,13 @@ public:
 	struct ChunkStreamReader
 	{
 		ChunkStream bitstream;
+		unsigned int currentDynamicDatum;
+		unsigned int numDynamicData;
+		unsigned int numFramesInThisChunk;
+		unsigned int currentBitPosition;
+		unsigned int startOfNextDatum;
+		unsigned int currentNumInterpolantBits;
+		unsigned int constFlags;
 	};
 
 	typedef unsigned long EntityId;
@@ -23,7 +30,7 @@ public:
 	typedef uintptr_t(*Takedown_t)(void*);
 	typedef int(*TakedownResult_t)(__int64);
 
-	typedef void(*ReadFrameData_t)(ChunkStream *, char, int, float *, int, float *);
+	typedef void(*ReadFrameData_t)(ChunkStreamReader *, char, int, float *, int, float *);
 	typedef void(*ExtractAnyFramePair_t)(void*, int, float*, int, float*);
 	typedef void(*ReadTwoValues_t)(__int64, float*, float*, int);
 	typedef uintptr_t(*GetJointRotations_t)(__int64, __int64, __int64, __int64, __int64, int, __int64, int, __int64, bool);
