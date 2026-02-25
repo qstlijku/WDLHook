@@ -302,11 +302,33 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             auto c1 = a1->bitstream.base[(v15 >> 3) + 1];
             auto c2 = a1->bitstream.base[(v15 >> 3) + 2];
             auto c3 = a1->bitstream.base[(v15 >> 3) + 3];
-            uint32_t num2 = c0 + 256 * c1 + 65536 * c2;
+            uint32_t num2 = c0 + 256 * c1;
             auto temp = num2 >> (v15 & 7);
+            uint32_t num3 = c0 + 256 * c1 + 65536 * c2;
+            auto temp2 = num3 >> (v15 & 7);
+            auto v161 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1));
+            auto v162 = temp & ((1 << numInterpolantBits) - 1);
+            auto v163 = temp2 & ((1 << numInterpolantBits) - 1);
+            printf("v161: %d\n", v161);
+            printf("v162: %d\n", v162);
+            printf("v163: %d\n", v163);
+            printf("multiply all dat shit by v14: %f\n", v14);
 
             float testValue0 = test * 0.0078740157 - 1.0;
             float testValue1 = temp * 0.0078740157 - 1.0;
+
+            printf("base of v15 >> 3: %02X\n", c0);
+            printf("base of v15 >> 3 + 1: %02X\n", c1);
+            printf("base of v15 >> 3 + 2: %02X\n", c2);
+            printf("base of v15 >> 3 + 3: %02X\n", c3);
+
+            printf("v16: %f\n", v16);
+            printf("value0 (mine): %f\n\n", v16 + v13);
+
+            printf("v15: %d\n", v15);
+            printf("num2: %08X\n", num2);
+            printf("temp: %d\n", temp);
+            printf("testValue1: %f\n\n", testValue1);
 
             printf("v6: %d\n", v6);
             printf("v11: %d\n", v11);
@@ -314,20 +336,6 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             printf("v13: %f\n", v13);
             printf("test: %d\n", test);
             printf("testValue0: %f\n\n", testValue0);
-
-            printf("base of v15 >> 3: %02X\n", c0);
-            printf("base of v15 >> 3 + 1: %02X\n", c1);
-            printf("base of v15 >> 3 + 2: %02X\n", c2);
-            printf("base of v15 >> 3 + 3: %02X\n", c3);
-
-            printf("v15: %d\n", v15);
-            printf("num2: %08X\n", num2);
-
-            printf("temp: %d\n", temp);
-            printf("testValue1: %f\n", testValue1);
-
-            printf("v16: %f\n", v16);
-            printf("value0 (mine): %f\n\n", v16 + v13);
 
             auto v18 = 2.0f;
 
@@ -339,8 +347,6 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             printf("base of bitPos >> 3 + 3: %02X\n", b3);
 
             printf("num: %08X\n", num);
-
-            printf("v14: %f\n", v14);
             printf("v17: %d\n", v17);
 
             counter2++;
