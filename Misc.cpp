@@ -208,9 +208,9 @@ const float ms_interpolantScaleFactors[17] = { 0, 0, 0.33333334, 0.14285715, 0.0
 
 void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsideChunk0, float *value0, int frameInsideChunk1, float *value1)
 {
-    if (counter2 < 5)
+    if (counter2 < 20)
     {
-        if (counter2 < 5)
+        if (counter2 < 20)
         {
             printf("\nReadFrameData called\n");
             printf("flags (a2): %d\n", flags);
@@ -293,12 +293,13 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
 
             auto v6 = num >> (bitPos & 7);
             auto test = b0 >> (bitPos & 7);
-            int v12 = 115.0f;
-            //auto v12 = v6 & 0xFFFF;
+            auto v12 = v6 & 0xFFFF;
             auto v11 = bitPos + 16;
-            float v13 = v12 * 0.0078740157 - 1.0;
+            float v13 = (v12 % 256) * 0.0078740157 - 1.0;
 
-            v12 = 371;
+            printf("v6: %d\n", v6);
+            printf("v12 % 256: %d\n", v12);
+
             float v14 = (v12 >> 8) * 0.0078431377 * ms_interpolantScaleFactors[numInterpolantBits];
             auto v15 = v11 + frameInsideChunk0 * numInterpolantBits;
             //a1->bitstream.bitPosition = v15;
@@ -320,6 +321,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             auto v161 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1));
             auto v163 = temp2 & ((1 << numInterpolantBits) - 1);
             auto v164 = temp3 & ((1 << numInterpolantBits) - 1);
+            /*
             printf("v161: %d\n", v161);
 
             printf("num3: %08X\n", num3);
@@ -329,7 +331,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             printf("temp3: %d\n", temp3);
 
             printf("v163: %d\n", v163);
-            printf("v164: %d\n", v164);
+            printf("v164: %d\n", v164);*/
             printf("v14: %f\n", v14);
             printf("now v13: %f\n", v13);
 
@@ -343,6 +345,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             // v12 = 115 so num must be 1CC0
             // GOOD: 0.005485 is correct (v163 * v14)
             // value is now -0.094488
+            // TODO: try casts like (uint8) or % 256
 
             float testValue0 = test * 0.0078740157 - 1.0;
 
@@ -379,7 +382,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
         }
     }
     ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
-    if (counter2 < 5)
+    if (counter2 < 20)
     {
         printf("ReadFrameData value0: %f\n", *value0);
         printf("ReadFrameData value1: %f\n", *value1);
