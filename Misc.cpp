@@ -10,6 +10,8 @@
 
 using namespace std;
 
+static Misc::HandleInput_t GameUIHandleInput; // TODO change to singleton constructor
+
 static Misc::ReadFrameData_t ReadFrameData;
 static Misc::ExtractAnyFramePair_t ExtractAnyFramePair;
 static Misc::ReadTwoValues_t ReadTwoValues;
@@ -199,6 +201,11 @@ glm::vec3 PrintQuat(float* quat)
 int counter = 0;
 int counter2 = 0;
 
+const float ms_interpolantScaleFactors[17] = { 0, 0, 0.33333334, 0.14285715, 0.06666667, 0.032258064,
+0.015873017, 0.0078740157, 0.0039215689, 0.0019569471,
+0.00097751711, 0.00048851978, 0.00024420026, 0.00012208521,
+0.000061038882, 0.000030518509, 0.000015259022 };
+
 void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsideChunk0, float *value0, int frameInsideChunk1, float *value1)
 {
     if (counter2 < 50)
@@ -290,7 +297,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             auto v11 = bitPos + 16;
             float v13 = v12 * 0.0078740157 - 1.0;
 
-            float v14 = (v12 >> 8) * 0.0078431377; // also multiply by interpolantScaleFactor of numInterpolantBits
+            float v14 = (v12 >> 8) * 0.0078431377 * ms_interpolantScaleFactors[numInterpolantBits];
             auto v15 = v11 + frameInsideChunk0 * numInterpolantBits;
             //a1->bitstream.bitPosition = v15;
             auto v16 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1)) * v14;
@@ -312,7 +319,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             printf("v161: %d\n", v161);
             printf("v162: %d\n", v162);
             printf("v163: %d\n", v163);
-            printf("multiply all dat shit by v14: %f\n", v14);
+            printf("v14: %f\n", v14);
 
             float testValue0 = test * 0.0078740157 - 1.0;
             float testValue1 = temp * 0.0078740157 - 1.0;
@@ -413,6 +420,12 @@ uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a
     printf("useNearestFrame: %d\n", a10);
     Print32PtrAt(a9);
     return GetJointRotations(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+}
+
+uintptr_t GameUIHandleInput_Detour(void *a1, __int64 actionValue)
+{
+    printf("GameUIHandleInput called\n");
+    return GameUIHandleInput(a1, actionValue);
 }
 
 int TakedownResult_Detour(__int64 a1)
@@ -583,9 +596,11 @@ void Misc::Initialize()
 
     //rdoc_api->TriggerCapture();
 
-    HookOffset3(0x11E40B0 + 0xA00, &TakedownResult_Detour, reinterpret_cast<LPVOID*>(&TakedownResult)); // CHumanTakedownState::GetTakedownResult (player)
+    HookOffset3(0x5C14B20 + 0xA00, &GameUIHandleInput_Detour, reinterpret_cast<LPVOID*>(&GameUIHandleInput));
 
-    HookOffset3(0x11E47A0 + 0xA00, &VictimResult_Detour, reinterpret_cast<LPVOID*>(&VictimResult)); // CHumanTakedownVictimState::TakedownResult (AI)
+    //HookOffset3(0x11E40B0 + 0xA00, &TakedownResult_Detour, reinterpret_cast<LPVOID*>(&TakedownResult)); // CHumanTakedownState::GetTakedownResult (player)
+
+    //HookOffset3(0x11E47A0 + 0xA00, &VictimResult_Detour, reinterpret_cast<LPVOID*>(&VictimResult)); // CHumanTakedownVictimState::TakedownResult (AI)
     
     // 11E4580: IsNewTakedown
     // 11E4680: IsStunnedTakedown

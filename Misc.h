@@ -27,6 +27,7 @@ public:
 
 	typedef unsigned long EntityId;
 	typedef uintptr_t(*FileOpen_t)(void*, const char*, uintptr_t);
+	typedef uintptr_t(*HandleInput_t)(void*, __int64);
 	typedef uintptr_t(*Takedown_t)(void*);
 	typedef int(*TakedownResult_t)(__int64);
 
