@@ -208,9 +208,9 @@ const float ms_interpolantScaleFactors[17] = { 0, 0, 0.33333334, 0.14285715, 0.0
 
 void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsideChunk0, float *value0, int frameInsideChunk1, float *value1)
 {
-    if (counter2 < 20)
+    if (counter2 < 50)
     {
-        if (counter2 < 20)
+        if (counter2 < 50)
         {
             printf("\nReadFrameData called\n");
             printf("flags (a2): %d\n", flags);
@@ -292,7 +292,6 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             uint32_t num = b0 + 256 * b1 + 65536 * b2;
 
             auto v6 = num >> (bitPos & 7);
-            auto test = b0 >> (bitPos & 7);
             auto v12 = v6 & 0xFFFF;
             auto v11 = bitPos + 16;
             float v13 = (v12 % 256) * 0.0078740157 - 1.0;
@@ -303,7 +302,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             float v14 = (v12 >> 8) * 0.0078431377 * ms_interpolantScaleFactors[numInterpolantBits];
             auto v15 = v11 + frameInsideChunk0 * numInterpolantBits;
             //a1->bitstream.bitPosition = v15;
-            auto v16 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1)) * v14;
+            //auto v16 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1)) * v14;
             auto v17 = v11 + frameInsideChunk1 * numInterpolantBits;
             //a1->bitstream.bitPosition = v17;
             //*value0 = v16 + v13;
@@ -354,9 +353,6 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             printf("base of v15 >> 3 + 2: %02X\n", c2);
             printf("base of v15 >> 3 + 3: %02X\n", c3);
 
-            printf("v16: %f\n", v16);
-            printf("value0 (mine): %f\n\n", v16 + v13);
-
             printf("v15: %d\n", v15);
 
             printf("v6: %d\n", v6);
@@ -382,7 +378,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
         }
     }
     ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
-    if (counter2 < 20)
+    if (counter2 < 50)
     {
         printf("ReadFrameData value0: %f\n", *value0);
         printf("ReadFrameData value1: %f\n", *value1);
