@@ -25,6 +25,14 @@ public:
 		unsigned int constFlags;
 	};
 
+	struct CompressedStreamReader
+	{
+		ChunkStreamReader firstChunkReader;
+		ChunkStreamReader secondChunkReader;
+		unsigned int firstFrameToRead;
+		unsigned int secondFrameToRead;
+	};
+
 	typedef unsigned long EntityId;
 	typedef uintptr_t(*FileOpen_t)(void*, const char*, uintptr_t);
 	typedef uintptr_t(*HandleInput_t)(void*, __int64);
@@ -32,8 +40,8 @@ public:
 	typedef int(*TakedownResult_t)(__int64);
 
 	typedef void(*ReadFrameData_t)(ChunkStreamReader *, char, int, float *, int, float *);
-	typedef void(*ExtractAnyFramePair_t)(void*, int, float*, int, float*);
-	typedef void(*ReadTwoValues_t)(__int64, float*, float*, int);
+	typedef void(*ExtractAnyFramePair_t)(ChunkStreamReader*, int, float*, int, float*);
+	typedef void(*ReadTwoValues_t)(CompressedStreamReader*, float*, float*, int);
 	typedef uintptr_t(*GetJointRotations_t)(__int64, __int64, __int64, __int64, __int64, int, __int64, int, __int64, bool);
 
 	typedef void(*CreateResource_t)(void *, void *, __int64);
