@@ -210,9 +210,9 @@ const float ms_interpolantScaleFactors[17] = { 0, 0, 0.33333334, 0.14285715, 0.0
 void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsideChunk0, float *value0, int frameInsideChunk1, float *value1)
 {
     float secondValue0 = -1.0f;
-    //if (counter2 < 50)
+    if (counter2 < 10)
     {
-        if (counter2 < 50)
+        if (counter2 < 10)
         {
             printf("\nReadFrameData called\n");
             printf("flags (a2): %d\n", flags);
@@ -272,21 +272,20 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
         }
         else
         {
-            //printf("Second branch\n");
+            printf("Second branch\n");
 
             auto numInterpolantBits = a1->currentNumInterpolantBits;
 
-            /*
             printf("currentDynamicDatum: %d\n", a1->currentDynamicDatum);
             printf("numDynamicData: %d\n", a1->numDynamicData);
             printf("numFramesInThisChunk: %d\n", a1->numFramesInThisChunk);
             printf("currentBitPosition: %d\n", a1->currentBitPosition);
             printf("startOfNextDatum: %d\n", a1->startOfNextDatum);
             printf("currentNumInterpolantBits: %d\n", numInterpolantBits);
-            printf("constFlags: %d\n", a1->constFlags);*/
+            printf("constFlags: %d\n", a1->constFlags);
 
             auto bitPos = a1->bitstream.bitPosition;
-            //printf("Bit position: %d\n", bitPos);
+            printf("Bit position: %d\n", bitPos);
 
             auto b0 = a1->bitstream.base[bitPos >> 3];
             auto b1 = a1->bitstream.base[(bitPos >> 3) + 1];
@@ -303,9 +302,14 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             auto v15 = v11 + frameInsideChunk0 * numInterpolantBits;
             //a1->bitstream.bitPosition = v15;
             //auto v16 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1)) * v14;
-            auto v17 = v11 + frameInsideChunk1 * numInterpolantBits;
             //a1->bitstream.bitPosition = v17;
+            //auto v161 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1));
             //*value0 = v16 + v13;
+
+            printf("base of bitPos >> 3: %02X\n", b0);
+            printf("base of bitPos >> 3 + 1: %02X\n", b1);
+            printf("base of bitPos >> 3 + 2: %02X\n", b2);
+            printf("base of bitPos >> 3 + 3: %02X\n", b3);
 
             auto c0 = a1->bitstream.base[v15 >> 3];
             auto c1 = a1->bitstream.base[(v15 >> 3) + 1];
@@ -314,35 +318,23 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
 
             uint32_t num3 = c0 + 256 * c1 + 65536 * c2;
             auto temp2 = num3 >> (v15 & 7);
-            uint32_t num4 = c0 + 256 * c1 + 65536 * c2 + 16777216 * c3;
-            auto temp3 = num4 >> (v15 & 7);
-
-            auto v161 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1));
             auto v163 = temp2 & ((1 << numInterpolantBits) - 1);
-            auto v164 = temp3 & ((1 << numInterpolantBits) - 1);
 
             secondValue0 = v163 * v14 + v13;
-            /*
+            
+            printf("num: %08X\n", num);
             printf("v6: %d\n", v6);
-            printf("v12 % 256: %d\n", v12);
-            printf("v161: %d\n", v161);
+            printf("v12 mod 256: %d\n", v12);
 
             printf("num3: %08X\n", num3);
-            printf("num4: %08X\n", num4);
-
             printf("temp2: %d\n", temp2);
-            printf("temp3: %d\n", temp3);
 
             printf("v163: %d\n", v163);
-            printf("v164: %d\n", v164);
             printf("v14: %f\n", v14);
+
             printf("now v13: %f\n", v13);
-
             printf("value to add to v13: %f\n", v163 * v14);
-            printf("value to add to v13: %f\n", v164 * v14);
-
             printf("added to v13: %f\n", v163 * v14 + v13);
-            printf("added to v13: %f\n", v164 * v14 + v13);
             printf("----------------------------------------\n");
 
             // v12 = 115 so num must be 1CC0
@@ -362,23 +354,61 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
             printf("v12: %d\n", v12);
             printf("v13: %f\n", v13);
 
-            auto v18 = 2.0f;
+            auto v17 = v11 + frameInsideChunk1 * numInterpolantBits;
 
+            auto d0 = a1->bitstream.base[v17 >> 3];
+            auto d1 = a1->bitstream.base[(v17 >> 3) + 1];
+            auto d2 = a1->bitstream.base[(v17 >> 3) + 2];
+            auto d3 = a1->bitstream.base[(v17 >> 3) + 3];
+
+            uint32_t num4 = d0 + 256 * d1 + 65536 * d2;
+            auto temp3 = num4 >> (v17 & 7);
+            auto v18 = temp3 & ((1 << numInterpolantBits) - 1);
+
+            printf("v17: %d\n", v17);
+
+            printf("base of v17 >> 3: %02X\n", d0);
+            printf("base of v17 >> 3 + 1: %02X\n", d1);
+            printf("base of v17 >> 3 + 2: %02X\n", d2);
+            printf("base of v17 >> 3 + 3: %02X\n", d3);
+
+            printf("num4: %08X\n", num4);
+            printf("temp3: %d\n", temp3);
+            printf("v18: %d\n", v18);
+
+            printf("now v13: %f\n", v13);
+            printf("value to add to v13: %f\n", v18 * v14);
+            printf("added to v13: %f\n", v18 * v14 + v13);
+            printf("----------------------------------------\n");
+
+            // v14 about 1.915e-6
+            // or doubled, 3.8306e-6
+
+            //float v8 = v18 * v14 + v13;
+            //printf("my final value1 (v8): %f\n", v8);
             //*value1 = v8;
 
-            printf("base of bitPos >> 3: %02X\n", b0);
-            printf("base of bitPos >> 3 + 1: %02X\n", b1);
-            printf("base of bitPos >> 3 + 2: %02X\n", b2);
-            printf("base of bitPos >> 3 + 3: %02X\n", b3);
+            // actual value1: -0.690483
+            // v13: -0.692913
+            // 0.00243 diff SB, IS 0.007016
+            // they got 1269 for v18 instead of 3663
+            // instead of 1439, theirs was 2554
 
-            printf("num: %08X\n", num);
-            printf("v17: %d\n", v17);*/
+            // very first time, bitPosition is 0x22 = 34
+            // rdx: now 0x783 = 1923
+
+            // TODO: Debug rax, try skipping 2787E5 and 2787E9
+            // just ending with 2787E0 and returning its value
+
+            // first one: should be 0.009783
+
+            // TODO set bit position
 
             counter2++;
         }
     }
     ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
-    if (counter2 < 50)
+    if (counter2 < 10)
     {
         printf("ReadFrameData value0: %f\n", *value0);
         printf("ReadFrameData value1: %f\n", *value1);
