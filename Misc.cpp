@@ -279,13 +279,7 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
 
             if (counter2 < 5)
             {
-                printf("currentDynamicDatum: %d\n", a1->currentDynamicDatum);
-                printf("numDynamicData: %d\n", a1->numDynamicData);
-                printf("numFramesInThisChunk: %d\n", a1->numFramesInThisChunk);
-                printf("currentBitPosition: %d\n", a1->currentBitPosition);
-                printf("startOfNextDatum: %d\n", a1->startOfNextDatum);
-                printf("currentNumInterpolantBits: %d\n", numInterpolantBits);
-                printf("constFlags: %d\n", a1->constFlags);
+                printChunkReaderState(a1);
             }
 
             auto bitPos = a1->bitstream.bitPosition;
@@ -563,12 +557,8 @@ void ExtractAnyFrameValue(Misc::ChunkStreamReader* a1, int frameInsideChunk, flo
     // TBD: sign bits stuff whatever this is
 }
 
-void ExtractAnyFramePair(Misc::ChunkStreamReader* a1, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
+void printChunkReaderState(Misc::ChunkStreamReader* a1)
 {
-    printf("\nExtractAnyFramePair called\n");
-    printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
-    printf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
-
     printf("currentDynamicDatum: %d\n", a1->currentDynamicDatum);
     printf("numDynamicData: %d\n", a1->numDynamicData);
     printf("numFramesInThisChunk: %d\n", a1->numFramesInThisChunk);
@@ -578,7 +568,21 @@ void ExtractAnyFramePair(Misc::ChunkStreamReader* a1, int frameInsideChunk0, flo
     printf("constFlags: %d\n", a1->constFlags);
 }
 
-void ReadTwoValues_Detour(Misc::CompressedStreamReader* a1, float *quat1, float *quat2, int a4)
+void ExtractAnyFramePair(Misc::ChunkStreamReader* a1, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
+{
+    printf("\nExtractAnyFramePair called\n");
+    printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
+    printf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
+
+    printChunkReaderState(a1);
+}
+
+void StartData(Misc::ChunkStreamReader* a1, int interpolantBits)
+{
+
+}
+
+void ReadTwoValues_Detour(Misc::CompressedStreamReader* a1, float *quat1, float *quat2, int interpolantBits)
 {
     if (counter < 30)
     {
@@ -586,12 +590,12 @@ void ReadTwoValues_Detour(Misc::CompressedStreamReader* a1, float *quat1, float 
         //printf("TBD (a3): %d\n", a3);
         //printf("TBD (a4): %d\n", a4);
 
-        // StartData
+        StartData(&a1->firstChunkReader, interpolantBits);
         if (a1->secondChunkReader.bitstream.base)
         {
-            ExtractAnyFrameValue(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
+            //ExtractAnyFrameValue(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
             // StartData here
-            ExtractAnyFrameValue(&a1->secondChunkReader, a1->secondFrameToRead, quat2);
+            //ExtractAnyFrameValue(&a1->secondChunkReader, a1->secondFrameToRead, quat2);
         }
         else
         {
@@ -599,7 +603,7 @@ void ReadTwoValues_Detour(Misc::CompressedStreamReader* a1, float *quat1, float 
         }
     }
 
-    ReadTwoValues(a1, quat1, quat2, a4);
+    ReadTwoValues(a1, quat1, quat2, interpolantBits);
 
     if (counter < 30)
     {

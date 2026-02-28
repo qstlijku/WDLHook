@@ -13,7 +13,7 @@ public:
 		unsigned int bitPosition;
 	};
 
-	struct ChunkStreamReader
+	struct ChunkStreamReaderBase
 	{
 		ChunkStream bitstream;
 		unsigned int currentDynamicDatum;
@@ -23,6 +23,11 @@ public:
 		unsigned int startOfNextDatum;
 		unsigned int currentNumInterpolantBits;
 		unsigned int constFlags;
+	};
+
+	__declspec(align(16)) struct ChunkStreamReader : ChunkStreamReaderBase // quat
+	{
+		unsigned int signBits;
 	};
 
 	struct CompressedStreamReader
@@ -50,4 +55,7 @@ public:
 	typedef uintptr_t(*PlayAnim_t)(EntityId, EntityId, EntityId, EntityId, unsigned int, const char*, const char*, const char*, const char*, const char*, const char*);
 
 	static void Initialize();
+
 };
+
+void printChunkReaderState(Misc::ChunkStreamReader* a1);
