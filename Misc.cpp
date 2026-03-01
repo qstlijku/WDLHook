@@ -406,7 +406,6 @@ void ReadFrameData_Detour(Misc::ChunkStreamReader *a1, char flags, int frameInsi
 
             // first one: should be 0.009783
 
-            // TODO set bit position
             a1->bitstream.bitPosition = v11 + numInterpolantBits * a1->numFramesInThisChunk;
             counter2++;
             return;
@@ -599,6 +598,7 @@ void StartData(Misc::ChunkStreamReader* a1, int interpolantBits)
     if ((v10 & 8) != 0)
     {
         int numFrames = a1->numFramesInThisChunk;
+        printf("numFrames: %d\n", numFrames);
         do
         {
             int v14 = 24;
@@ -651,19 +651,21 @@ void ReadTwoValues_Detour(Misc::CompressedStreamReader* a1, float *quat1, float 
             printChunkReaderState(&a1->secondChunkReader);
             ExtractAnyFrameValue(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
 
-            printf("First quat (mine): %f %f %f %f\n", quat1[0], quat1[1], quat1[2], quat1[3]);
             //StartData(&a1->secondChunkReader, interpolantBits);
             //ExtractAnyFrameValue(&a1->secondChunkReader, a1->secondFrameToRead, quat2);
         }
         else
         {
             printf("ReadTwoValues_Detour: Skipping ExtractAnyFramePair for now\n");
-            //printf("First chunk reader state: \n");
-            //printChunkReaderState(&a1->firstChunkReader);
+            printf("First chunk reader state: \n");
+            printChunkReaderState(&a1->firstChunkReader);
+            ExtractAnyFrameValue(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
+            ExtractAnyFrameValue(&a1->firstChunkReader, a1->secondFrameToRead, quat2);
+            printf("First quat (mine): %f %f %f %f\n", quat1[0], quat1[1], quat1[2], quat1[3]);
+            printf("Second quat (mine): %f %f %f %f\n", quat2[0], quat2[1], quat2[2], quat2[3]);
             //ExtractAnyFramePair(&a1->firstChunkReader, a1->firstFrameToRead, quat1, a1->secondFrameToRead, quat2);
         }
     }
-    
 
     ReadTwoValues(a1, quat1, quat2, interpolantBits);
 
