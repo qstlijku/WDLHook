@@ -4,7 +4,8 @@
 using namespace std;
 
 static ChunkReader::ReadFrameData_t ReadFrameData;
-//static ChunkReader::ExtractAnyFramePair_t ExtractAnyFramePair;
+static ChunkReader::ExtractAnyFramePair_t ExtractAnyFramePair;
+static ChunkReader::ExtractAnyFrameValue_t ExtractAnyFrameValue;
 static ChunkReader::ReadTwoValues_t ReadTwoValues;
 static ChunkReader::ReadFrameData_t ReadFrameData3;
 static ChunkReader::GetJointRotations_t GetJointRotations;
@@ -40,6 +41,7 @@ glm::vec3 PrintQuat(float* quat)
 
 int counter = 0;
 int counter2 = 0;
+int counter3 = 0;
 int errCnt = 0;
 
 uintptr_t Imagebase;
@@ -61,8 +63,16 @@ void printChunkReaderState(ChunkReader::ChunkStreamReader* a1)
     printf("signBits: %d\n", a1->signBits);
 }
 
+bool inExtractVal = false;
+
 void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
+    if (!inExtractVal)
+    {
+        ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
+        return;
+    }
+
     if (counter2 < 100)
     {
         printf("\nReadFrameData detour called\n");
@@ -92,7 +102,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             // 55938 or DA82
             // 1101 1010 1000 0010
             auto bitPos = a1->bitstream.bitPosition;
-            if (counter2 < 5)
+            if (counter2 < 50)
             {
                 printf("First branch\n");
                 printf("Bit position: %d\n", bitPos);
@@ -112,7 +122,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             *value0 = v8;
             *value1 = v8;
 
-            if (counter2 < 5)
+            if (counter2 < 50)
             {
                 printf("base of bitPos >> 3: %02X\n", b0);
                 printf("base of bitPos >> 3 + 1: %02X\n", b1);
@@ -295,12 +305,21 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
 // Safe e.g. does not modify any variables
 void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
+    if (counter2 < 50)
+    {
+        printf("\nReadFrameDataSafe called\n");
+        printf("flags (a2): %d\n", flags);
+        printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
+        printf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
+
+        printChunkReaderState(a1);
+    }
     float secondValue0 = -1.0f;
     float secondValue1 = -1.0f;
 
     if ((flags & 1) != 0)
     {
-        printf("ReadFrameDataSafe: first branch\n");
+        //printf("ReadFrameDataSafe: first branch\n");
         auto bitPos = a1->bitstream.bitPosition;
 
         auto b0 = a1->bitstream.base[bitPos >> 3];
@@ -320,7 +339,7 @@ void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frame
     }
     else
     {
-        printf("ReadFrameDataSafe: second branch\n");
+        //printf("ReadFrameDataSafe: second branch\n");
         auto numInterpolantBits = a1->currentNumInterpolantBits;
         auto bitPos = a1->bitstream.bitPosition;
 
@@ -370,10 +389,16 @@ void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frame
     }
 }
 
-void ExtractAnyFrameValue(ChunkReader::ChunkStreamReader* a1, int frameInsideChunk, float* q)
+void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameInsideChunk, float* q)
 {
-    printf("\nExtractAnyFrameValue called\n");
-    printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk);
+    if (counter3 < 10)
+    {
+        printf("\nExtractAnyFrameValue detour called\n");
+        printf("frameInsideChunk: %d\n", frameInsideChunk);
+
+        printChunkReaderState(a1);
+        counter3++;
+    }
 
     float value = 0;
     float dummy = 0;
@@ -381,15 +406,19 @@ void ExtractAnyFrameValue(ChunkReader::ChunkStreamReader* a1, int frameInsideChu
     auto constFlags = a1->constFlags;
     auto wInd = (constFlags >> 4) & 3;
     auto bitPos = a1->currentBitPosition;
-    a1->bitstream.bitPosition = bitPos;
+    //a1->bitstream.bitPosition = bitPos;
     float sum = 0;
-    printf("ExtractAnyFrameValue: constFlags = %d\n", constFlags);
-    printf("ExtractAnyFrameValue: bitPos = %d\n", bitPos);
-    printf("ExtractAnyFrameValue: my wInd (0 to 3) = %d\n", wInd);
+
+    if (counter3 < 10)
+    {
+        printf("ExtractAnyFrameValue: constFlags = %d\n", constFlags);
+        printf("ExtractAnyFrameValue: bitPos = %d\n", bitPos);
+        printf("ExtractAnyFrameValue: my wInd (0 to 3) = %d\n", wInd);
+    }
     // Read each of the 4 values of the quat
     for (int i = 0; i < 4; i++)
     {
-        ReadFrameData_Detour(a1, constFlags, frameInsideChunk, &value, 0, &dummy);
+        ReadFrameDataSafe(a1, constFlags, frameInsideChunk, &value, 0, &dummy);
         q[i] = value;
         constFlags >>= 1;
         sum += value * value;
@@ -410,16 +439,36 @@ void ExtractAnyFrameValue(ChunkReader::ChunkStreamReader* a1, int frameInsideChu
         }
         q[wInd] = 0.0;
     }
+
+    if (counter3 < 10)
+        printf("Value quat (mine): %f %f %f %f\n", q[0], q[1], q[2], q[3]);
+    inExtractVal = true;
     // TBD: sign bits stuff whatever this is
+    ExtractAnyFrameValue(a1, frameInsideChunk, q);
+    inExtractVal = false;
+    if (counter3 < 10)
+        printf("Value quat (raw): %f %f %f %f\n", q[0], q[1], q[2], q[3]);
 }
 
-void ExtractAnyFramePair(ChunkReader::ChunkStreamReader* a1, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
+void ExtractAnyFramePair_Detour(ChunkReader::ChunkStreamReader* a1, int frameInsideChunk0, float* q0, int frameInsideChunk1, float* q1)
 {
-    printf("\nExtractAnyFramePair detour called\n");
-    printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
-    printf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
+    if (counter3 < 100)
+    {
+        printf("\nExtractAnyFramePair detour called\n");
+        printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
+        printf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
 
-    printChunkReaderState(a1);
+        printChunkReaderState(a1);
+        counter3++;
+    }
+
+    ExtractAnyFramePair(a1, frameInsideChunk0, q0, frameInsideChunk1, q1);
+
+    if (counter3 < 100)
+    {
+        printf("Pair quat (raw): %f %f %f %f\n", q0[0], q0[1], q0[2], q0[3]);
+        printf("Pair quat (raw): %f %f %f %f\n", q1[0], q1[1], q1[2], q1[3]);
+    }
 }
 
 void StartData(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
@@ -598,6 +647,7 @@ void ChunkReader::Initialize()
     //HookOffset4(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
     //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+    HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
 
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
