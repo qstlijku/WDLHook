@@ -13,7 +13,7 @@ public:
 		unsigned int bitPosition;
 	};
 
-	struct ChunkStreamReader
+	struct ChunkStreamReaderBase
 	{
 		ChunkStream bitstream;
 		unsigned int currentDynamicDatum;
@@ -23,7 +23,11 @@ public:
 		unsigned int startOfNextDatum;
 		unsigned int currentNumInterpolantBits;
 		unsigned int constFlags;
-		unsigned int signBits; // quat specific
+	};
+
+	__declspec(align(16)) struct ChunkStreamReader : ChunkStreamReaderBase // quat
+	{
+		unsigned int signBits;
 	};
 
 	struct CompressedStreamReader
