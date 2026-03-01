@@ -1,4 +1,5 @@
 #include "Misc.h"
+#include "ChunkReader.h"
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -49,14 +50,6 @@ void Print32MemoryAt(uint64_t offset)
     }
     result += "\n\nEnd\n";
     std::cout << result;
-}
-
-void detour()
-{
-    if (count2 < 10)
-        printf("Detour hook executed!\n");
-    count2++;
-    //return 0;
 }
 
 uintptr_t FormatPath_Detour(const char* fileName, char* outName, unsigned int maxPath)
@@ -328,13 +321,12 @@ void HookOffset(int offset)
 
 void Misc::Initialize()
 {
-    readLines();
-    // 7FF72890BBA0
-    //Print32MemoryAt(0x7FF638E2BBA0);
+    // Not using this for now
+    //readLines();
     MH_Initialize();
     printf("MH initialized!\n");
 
-    //rdoc_api->TriggerCapture();
+    ChunkReader::Initialize();
 
     //HookOffset3(0x5C14B20 + 0xA00, &GameUIHandleInput_Detour, reinterpret_cast<LPVOID*>(&GameUIHandleInput));
 
@@ -347,15 +339,6 @@ void Misc::Initialize()
     //HookOffset3(0x11E4580 + 0xA00, &NewTakedown_Detour, reinterpret_cast<LPVOID*>(&NewTakedown)); // IsNewTakedown
 
     //HookOffset3(0x6DAF890 + 0xA00, &SetLethal_Detour, reinterpret_cast<LPVOID*>(&SetLethal));
-
-    HookOffset3(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
-
-    //HookOffset3(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
-
-    //HookOffset3(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
-
-    // alt: 0x20C6A0
-    //HookOffset3(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
 
     // The new one
     //HookOffset3(0x357D0 + 0xA00, &GetResource_Detour, reinterpret_cast<LPVOID*>(&GetResource));
@@ -404,13 +387,4 @@ void Misc::Initialize()
     // Possibly:
     // 44 88 4C 24 20 48 89 54 24 10 53 56 57 41 55
     // offset: 8C0C860
-    //HookOffsetWithParam(0x769520 + 0xC00); // xbgFile::draw
-    //HookOffsetWithParam(0x769520 + 0xC00); // xbgFile::draw
-    //HookOffset(0x76A090); // drawWorldUnknown
-    //HookOffset(0x76C820); // SplineLoftHiRes::draw
-    //HookOffset(0x766B50); // drawWLU
-    //HookOffset(0x769490 + 0xC00); // drawBucket
-    //HookOffset(0x7692F0 + 0xC00); // drawCluster
-	//HookOffsetWithParam(0x7683C0 + 0xC00); // GetTranslateAndRotateMatrix with context param
-
 }

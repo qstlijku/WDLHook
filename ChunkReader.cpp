@@ -42,10 +42,24 @@ int counter = 0;
 int counter2 = 0;
 int errCnt = 0;
 
+uintptr_t Imagebase;
+
 const float ms_interpolantScaleFactors[17] = { 0, 0, 0.33333334, 0.14285715, 0.06666667, 0.032258064,
 0.015873017, 0.0078740157, 0.0039215689, 0.0019569471,
 0.00097751711, 0.00048851978, 0.00024420026, 0.00012208521,
 0.000061038882, 0.000030518509, 0.000015259022 };
+
+void printChunkReaderState(ChunkReader::ChunkStreamReader* a1)
+{
+    printf("currentDynamicDatum: %d\n", a1->currentDynamicDatum);
+    printf("numDynamicData: %d\n", a1->numDynamicData);
+    printf("numFramesInThisChunk: %d\n", a1->numFramesInThisChunk);
+    printf("currentBitPosition: %d\n", a1->currentBitPosition);
+    printf("startOfNextDatum: %d\n", a1->startOfNextDatum);
+    printf("currentNumInterpolantBits: %d\n", a1->currentNumInterpolantBits);
+    printf("constFlags: %d\n", a1->constFlags);
+    printf("signBits: %d\n", a1->signBits);
+}
 
 void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
@@ -399,18 +413,6 @@ void ExtractAnyFrameValue(ChunkReader::ChunkStreamReader* a1, int frameInsideChu
     // TBD: sign bits stuff whatever this is
 }
 
-void printChunkReaderState(ChunkReader::ChunkStreamReader* a1)
-{
-    printf("currentDynamicDatum: %d\n", a1->currentDynamicDatum);
-    printf("numDynamicData: %d\n", a1->numDynamicData);
-    printf("numFramesInThisChunk: %d\n", a1->numFramesInThisChunk);
-    printf("currentBitPosition: %d\n", a1->currentBitPosition);
-    printf("startOfNextDatum: %d\n", a1->startOfNextDatum);
-    printf("currentNumInterpolantBits: %d\n", a1->currentNumInterpolantBits);
-    printf("constFlags: %d\n", a1->constFlags);
-    printf("signBits: %d\n", a1->signBits);
-}
-
 void ExtractAnyFramePair(ChunkReader::ChunkStreamReader* a1, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
     printf("\nExtractAnyFramePair detour called\n");
@@ -545,4 +547,59 @@ uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a
     printf("useNearestFrame: %d\n", a10);
     Print32PtrAt(a9);
     return GetJointRotations(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+}
+
+char* Get4MemAtCR(uint64_t offset, uint64_t j)
+{
+    uintptr_t addr = (uintptr_t)(Imagebase + offset + j);
+    uint64_t i = *(uint64_t*)addr;
+    char buffer[100];
+    sprintf_s(buffer, "%02x %02x %02x %02x ", i & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF);
+    return buffer;
+}
+
+void Print32MemoryAtCR(uint64_t offset)
+{
+    printf("At offset: %x\n", offset);
+    std::string result = "Memory contents: ";
+    for (uint64_t i = 0; i < 8; i++)
+    {
+        char* s = Get4MemAtCR(offset, 4 * i);
+        result += s;
+    }
+    result += "\n\nEnd\n";
+    std::cout << result;
+}
+
+void HookOffset4(int offset, LPVOID detour, LPVOID* orig)
+{
+    auto myDLL = LoadLibrary(L"DuniaDemo_clang_64_dx11.dll");
+    if (!myDLL) return;
+    Imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+    printf("Imagebase: %llx\n", Imagebase);
+
+    Print32MemoryAtCR(offset);
+
+    auto status = MH_CreateHook((LPVOID)(Imagebase + offset), detour, orig);
+    if (status != MH_OK)
+    {
+        printf("Error creating hook!\n"); return;
+    }
+    status = MH_EnableHook((LPVOID)(Imagebase + offset));
+    if (status != MH_OK)
+    {
+        printf("Error enabling hook!\n"); return;
+    }
+    printf("Hook at offset %llx enabled...\n", offset);
+}
+
+void ChunkReader::Initialize()
+{
+    //HookOffset4(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
+
+    //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+
+    //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
+
+    HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
 }

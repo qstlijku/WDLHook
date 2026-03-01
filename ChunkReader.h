@@ -43,5 +43,5 @@ public:
 	typedef void(*ReadTwoValues_t)(CompressedStreamReader*, float*, float*, int);
 	typedef uintptr_t(*GetJointRotations_t)(__int64, __int64, __int64, __int64, __int64, int, __int64, int, __int64, bool);
 
-	void printChunkReaderState(ChunkStreamReader* a1);
+	static void Initialize();
 };
