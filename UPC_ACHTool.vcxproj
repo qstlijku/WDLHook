@@ -132,6 +132,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="ChunkReader.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="ext\imgui\imgui.cpp" />
     <ClCompile Include="ext\imgui\imgui_draw.cpp" />
@@ -148,6 +149,7 @@
     <ClCompile Include="Misc.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ChunkReader.h" />
     <ClInclude Include="dllmain.h" />
     <ClInclude Include="ext\imgui\imconfig.h" />
     <ClInclude Include="ext\imgui\imgui.h" />
