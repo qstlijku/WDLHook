@@ -631,24 +631,24 @@ void ReadTwoValues_Detour(Misc::CompressedStreamReader* a1, float *quat1, float 
     {
         printf("\nExtractAnyFramePair called\n");
         printf("------------------------------------------------------\n");
-        printChunkReaderState(&a1->firstChunkReader);
 
         StartData(&a1->firstChunkReader, interpolantBits);
 
-        printChunkReaderState(&a1->firstChunkReader);
         if (a1->secondChunkReader.bitstream.base)
         {
             printf("First chunk reader state: \n");
             printChunkReaderState(&a1->firstChunkReader);
             printf("Second chunk reader state: \n");
-            printChunkReaderState(&a1->secondChunkReader);
+            //printChunkReaderState(&a1->secondChunkReader);
             //ExtractAnyFrameValue(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
-            // StartData here
+            //StartData(&a1->secondChunkReader, interpolantBits);
             //ExtractAnyFrameValue(&a1->secondChunkReader, a1->secondFrameToRead, quat2);
         }
         else
         {
-            ExtractAnyFramePair(&a1->firstChunkReader, a1->firstFrameToRead, quat1, a1->secondFrameToRead, quat2);
+            printf("First chunk reader state: \n");
+            printChunkReaderState(&a1->firstChunkReader);
+            //ExtractAnyFramePair(&a1->firstChunkReader, a1->firstFrameToRead, quat1, a1->secondFrameToRead, quat2);
         }
     }
 
