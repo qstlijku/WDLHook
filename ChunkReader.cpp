@@ -24,6 +24,11 @@ char* Get4MemPtrAt(uint64_t offset, uint64_t j)
 void Print32PtrAt(uint64_t offset)
 {
     printf("At offset: %x\n", offset);
+    if (offset == 0)
+    {
+        printf("Print32PtrAt: Offset was 0! Returning...\n");
+        return;
+    }
     std::string result = "Memory contents: ";
     for (uint64_t i = 0; i < 8; i++)
     {
@@ -613,20 +618,33 @@ void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1,
     }
 }
 
+int jointRot = 0;
 uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a4, __int64 a5, int a6, __int64 a7, int a8, __int64 a9, bool a10)
 {
-    printf("nbBonesInInfoTable: %d\n", a6);
-    printf("currentLODDistance: %d\n", a8);
-    printf("useNearestFrame: %d\n", a10);
-    Print32PtrAt(a9);
+    if (jointRot < 100)
+    {
+        printf("nbBonesInInfoTable: %d\n", a6);
+        printf("currentLODDistance: %d\n", a8);
+        printf("useNearestFrame: %d\n", a10);
+        Print32PtrAt(a9);
+    }
+    jointRot++;
     return GetJointRotations(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 }
 
-uintptr_t EvalOpe_Detour(__int64 a1, __int64 a2, __int64 a3, void *a4, bool a5, void *a6, bool a7)
+int evalCount = 0;
+
+uintptr_t EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, __int64 a2, __int64 a3, void *a4, bool a5, void *a6, bool a7)
 {
     //printf("Loaded: %s\n", lookup(a3).c_str());
     //printf("nbBonesInInfoTable: %d\n", a6);
-    Print32PtrAt(a1);
+    if (evalCount < 10)
+    {
+        printf("EvalOpe_Detour called\n");
+        Print32PtrAt(a1->animData);
+        Print32PtrAt(a1->animStreamer + 8);
+    }
+    evalCount++;
     return EvalOpe(a1, a2, a3, a4, a5, a6, a7);
 }
 
@@ -678,7 +696,7 @@ void ChunkReader::Initialize()
 {
     //HookOffset4(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
-    HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
+    //HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
     //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
     //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
     //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
