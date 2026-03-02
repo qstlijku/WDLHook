@@ -4,6 +4,7 @@
 using namespace std;
 
 static ChunkReader::ReadFrameData_t ReadFrameData;
+static ChunkReader::StartData_t StartData;
 static ChunkReader::ExtractAnyFramePair_t ExtractAnyFramePair;
 static ChunkReader::ExtractAnyFrameValue_t ExtractAnyFrameValue;
 static ChunkReader::ReadTwoValues_t ReadTwoValues;
@@ -428,7 +429,6 @@ void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameIn
         q[i] = value;
         constFlags >>= 1;
         sum += value * value;
-        // assign sign bit here
     }
 
     if (sum <= 1.0)
@@ -481,8 +481,15 @@ void ExtractAnyFramePair_Detour(ChunkReader::ChunkStreamReader* a1, int frameIns
     }
 }
 
-void StartData(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
+int startCnt = 0;
+
+void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
 {
+    if (startCnt > 10)
+    {
+        StartData(a1, interpolantBits);
+        return;
+    }
     printf("StartData called\n");
     auto bitPos = a1->bitstream.bitPosition;
     auto v5 = bitPos >> 3;
@@ -507,6 +514,7 @@ void StartData(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
                 v14 = numFrames;
             auto num3 = *(uint32_t*)&a1->bitstream.base[v8 >> 3] >> (v8 & 7);
             v8 += v14;
+            // assign sign bit here
             a1->bitstream.bitPosition = v8;
             numFrames -= v14;
         } while (numFrames);
@@ -530,6 +538,14 @@ void StartData(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
     }
     printf("v22 (startOfNextDatum): %d\n", v22);
     a1->startOfNextDatum = v22;
+
+    printf("StartData: state after detour\n");
+    printChunkReaderState(a1);
+    printf("--------------------------\n");
+    StartData(a1, interpolantBits);
+    printf("After calling StartData\n");
+    printChunkReaderState(a1);
+    startCnt++;
 }
 
 void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1, float* quat2, int interpolantBits)
@@ -656,9 +672,9 @@ void ChunkReader::Initialize()
 {
     //HookOffset4(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
-    HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
-    HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
-
+    HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
+    //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+    //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
     //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));

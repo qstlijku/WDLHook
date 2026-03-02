@@ -39,6 +39,7 @@ public:
 	};
 
 	typedef void(*ReadFrameData_t)(ChunkStreamReader*, char, int, float*, int, float*);
+	typedef void(*StartData_t)(ChunkStreamReader*, int);
 	typedef void(*ExtractAnyFramePair_t)(ChunkStreamReader*, int, float*, int, float*);
 	typedef void(*ExtractAnyFrameValue_t)(ChunkStreamReader*, int, float*);
 	typedef void(*ReadTwoValues_t)(CompressedStreamReader*, float*, float*, int);
