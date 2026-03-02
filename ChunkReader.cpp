@@ -10,6 +10,7 @@ static ChunkReader::ExtractAnyFrameValue_t ExtractAnyFrameValue;
 static ChunkReader::ReadTwoValues_t ReadTwoValues;
 static ChunkReader::ReadFrameData_t ReadFrameData3;
 static ChunkReader::GetJointRotations_t GetJointRotations;
+static ChunkReader::EvalOpe_t EvalOpe;
 
 char* Get4MemPtrAt(uint64_t offset, uint64_t j)
 {
@@ -416,7 +417,6 @@ void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameIn
         printf("ExtractAnyFrameValue: bitPos = %d\n", bitPos);
         printf("ExtractAnyFrameValue: my wInd (0 to 3) = %d\n", wInd);
     }
-    //auto currPos = a1->bitstream.bitPosition;
     // Read each of the 4 values of the quat
     for (int i = 0; i < 4; i++)
     {
@@ -451,7 +451,6 @@ void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameIn
     if (_bittest((long *) &a1->signBits, frameInsideChunk))
         q[wInd] = -q[wInd];
     return;
-    // TBD: sign bits stuff whatever this is
     ExtractAnyFrameValue(a1, frameInsideChunk, q);
     if (counter3 < 10)
         printf("Value quat (raw): %f %f %f %f\n", q[0], q[1], q[2], q[3]);
@@ -485,12 +484,12 @@ int startCnt = 0;
 
 void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
 {
-    if (startCnt > 10)
+    if (startCnt < 10)
     {
-        StartData(a1, interpolantBits);
-        return;
+        printf("StartData called\n");
+        //StartData(a1, interpolantBits);
+        //return;
     }
-    printf("StartData called\n");
     auto bitPos = a1->bitstream.bitPosition;
     auto v5 = bitPos >> 3;
     auto v6 = bitPos & 7;
@@ -501,12 +500,12 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
     uint32_t num = b0 + 256 * b1 + 65536 * b2;
     a1->signBits = 0;
     auto v10 = (num >> v6) & 0x3F;
-    printf("v10 (constFlags): %d\n", v10);
+    //printf("v10 (constFlags): %d\n", v10);
     a1->constFlags = v10;
     if ((v10 & 8) != 0)
     {
         int numFrames = a1->numFramesInThisChunk;
-        printf("numFrames: %d\n", numFrames);
+        //printf("numFrames: %d\n", numFrames);
         do
         {
             int v14 = 24;
@@ -523,7 +522,7 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
     auto v20 = interpolantBits * a1->numFramesInThisChunk;
     a1->currentNumInterpolantBits = interpolantBits;
     a1->currentBitPosition = v8;
-    printf("v8 (bitPos): %d\n", v8);
+    //printf("v8 (bitPos): %d\n", v8);
     auto v21 = v20 + 16;
     unsigned int v22 = -1;
     switch (v19)
@@ -536,9 +535,9 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
     // default covers 1, 2, 4
     default: v22 = v8 + 2 * (v21 + 8); break;
     }
-    printf("v22 (startOfNextDatum): %d\n", v22);
+    //printf("v22 (startOfNextDatum): %d\n", v22);
     a1->startOfNextDatum = v22;
-
+    return;
     printf("StartData: state after detour\n");
     printChunkReaderState(a1);
     printf("--------------------------\n");
@@ -616,12 +615,19 @@ void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1,
 
 uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a4, __int64 a5, int a6, __int64 a7, int a8, __int64 a9, bool a10)
 {
-    //printf("Loaded: %s\n", lookup(a3).c_str());
     printf("nbBonesInInfoTable: %d\n", a6);
     printf("currentLODDistance: %d\n", a8);
     printf("useNearestFrame: %d\n", a10);
     Print32PtrAt(a9);
     return GetJointRotations(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+}
+
+uintptr_t EvalOpe_Detour(__int64 a1, __int64 a2, __int64 a3, void *a4, bool a5, void *a6, bool a7)
+{
+    //printf("Loaded: %s\n", lookup(a3).c_str());
+    //printf("nbBonesInInfoTable: %d\n", a6);
+    Print32PtrAt(a1);
+    return EvalOpe(a1, a2, a3, a4, a5, a6, a7);
 }
 
 char* Get4MemAtCR(uint64_t offset, uint64_t j)
@@ -675,7 +681,8 @@ void ChunkReader::Initialize()
     HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
     //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
     //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
+    //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
-    //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
+    HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
 }

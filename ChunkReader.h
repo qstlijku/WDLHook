@@ -44,6 +44,7 @@ public:
 	typedef void(*ExtractAnyFrameValue_t)(ChunkStreamReader*, int, float*);
 	typedef void(*ReadTwoValues_t)(CompressedStreamReader*, float*, float*, int);
 	typedef uintptr_t(*GetJointRotations_t)(__int64, __int64, __int64, __int64, __int64, int, __int64, int, __int64, bool);
+	typedef uintptr_t(*EvalOpe_t)(__int64, __int64, __int64, void*, bool, void *, bool);
 
 	static void Initialize();
 };
