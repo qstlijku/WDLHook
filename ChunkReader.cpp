@@ -63,16 +63,20 @@ void printChunkReaderState(ChunkReader::ChunkStreamReader* a1)
     printf("signBits: %d\n", a1->signBits);
 }
 
-bool inExtractVal = false;
+void checkAccuracy(float x, float y)
+{
+    if (std::abs(y - x) > 0.000001f && errCnt < 50)
+    {
+        printf("CRITICAL ERROR!!!!!\n");
+        printf("ReadFrameData value0: %f\n", x);
+        printf("My computed second value was: %f\n", y);
+        printf("counter2: %d\n", counter2);
+        errCnt++;
+    }
+}
 
 void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
-    if (!inExtractVal)
-    {
-        ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
-        return;
-    }
-
     if (counter2 < 100)
     {
         printf("\nReadFrameData detour called\n");
@@ -283,22 +287,8 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
     }
     if ((flags & 1) == 0)
     {
-        if (std::abs(secondValue0 - *value0) > 0.000001f && errCnt < 50)
-        {
-            printf("CRITICAL ERROR!!!!!\n");
-            printf("ReadFrameData value0: %f\n", *value0);
-            printf("My computed second value was: %f\n", secondValue0);
-            printf("counter2: %d\n", counter2);
-            errCnt++;
-        }
-        if (std::abs(secondValue1 - *value1) > 0.000001f && errCnt < 50)
-        {
-            printf("CRITICAL ERROR!!!!!\n");
-            printf("ReadFrameData value1: %f\n", *value1);
-            printf("My computed second value was: %f\n", secondValue1);
-            printf("counter2: %d\n", counter2);
-            errCnt++;
-        }
+        checkAccuracy(secondValue0, *value0);
+        checkAccuracy(secondValue1, *value1);
     }
 }
 
@@ -441,8 +431,6 @@ void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameIn
         // assign sign bit here
     }
 
-    //a1->bitstream.bitPosition = currPos;
-
     if (sum <= 1.0)
     {
         q[wInd] = sqrtf(1.0 - sum);
@@ -460,16 +448,20 @@ void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameIn
 
     if (counter3 < 10)
         printf("Value quat (mine): %f %f %f %f\n", q[0], q[1], q[2], q[3]);
-    inExtractVal = true;
+    if (_bittest((long *) &a1->signBits, frameInsideChunk))
+        q[wInd] = -q[wInd];
+    return;
     // TBD: sign bits stuff whatever this is
     ExtractAnyFrameValue(a1, frameInsideChunk, q);
-    inExtractVal = false;
     if (counter3 < 10)
         printf("Value quat (raw): %f %f %f %f\n", q[0], q[1], q[2], q[3]);
 }
 
 void ExtractAnyFramePair_Detour(ChunkReader::ChunkStreamReader* a1, int frameInsideChunk0, float* q0, int frameInsideChunk1, float* q1)
 {
+    ExtractAnyFrameValue_Detour(a1, frameInsideChunk0, q0);
+    ExtractAnyFrameValue_Detour(a1, frameInsideChunk1, q1);
+    return;
     if (counter3 < 100)
     {
         printf("\nExtractAnyFramePair detour called\n");
@@ -664,7 +656,7 @@ void ChunkReader::Initialize()
 {
     //HookOffset4(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
-    //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+    HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
     HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
 
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
