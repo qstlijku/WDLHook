@@ -276,7 +276,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
         }
     }
     ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
-    if (counter2 < 5)
+    if (counter2 < 50)
     {
         printf("ReadFrameData value0: %f\n", *value0);
         printf("ReadFrameData value1: %f\n", *value1);
@@ -302,24 +302,27 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
     }
 }
 
+int counter4 = 0;
+
 // Safe e.g. does not modify any variables
 void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
-    if (counter2 < 50)
+    if (counter4 < 50)
     {
         printf("\nReadFrameDataSafe called\n");
         printf("flags (a2): %d\n", flags);
         printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
         printf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
 
-        printChunkReaderState(a1);
+        //printChunkReaderState(a1);
     }
     float secondValue0 = -1.0f;
     float secondValue1 = -1.0f;
 
     if ((flags & 1) != 0)
     {
-        //printf("ReadFrameDataSafe: first branch\n");
+        if (counter4 < 50)
+            printf("ReadFrameDataSafe: first branch\n");
         auto bitPos = a1->bitstream.bitPosition;
 
         auto b0 = a1->bitstream.base[bitPos >> 3];
@@ -330,7 +333,11 @@ void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frame
 
         auto v6 = num >> (bitPos & 7);
         auto v7 = v6 & 0xFFFF;
-        //a1->bitstream.bitPosition += 16;
+        if (counter4 < 50)
+            printf("current bit position: %d\n", a1->bitstream.bitPosition);
+        a1->bitstream.bitPosition += 16;
+        if (counter4 < 50)
+            printf("new bit position: %d\n", a1->bitstream.bitPosition);
         float v8 = v7 * 0.000030518044 - 1.0;
 
         *value0 = v8;
@@ -339,7 +346,8 @@ void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frame
     }
     else
     {
-        //printf("ReadFrameDataSafe: second branch\n");
+        if (counter4 < 50)
+            printf("ReadFrameDataSafe: second branch\n");
         auto numInterpolantBits = a1->currentNumInterpolantBits;
         auto bitPos = a1->bitstream.bitPosition;
 
@@ -383,8 +391,8 @@ void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frame
         secondValue1 = v18 * v14 + v13;
         *value1 = secondValue1;
 
-        //a1->bitstream.bitPosition = v11 + numInterpolantBits * a1->numFramesInThisChunk;
-        counter2++;
+        a1->bitstream.bitPosition = v11 + numInterpolantBits * a1->numFramesInThisChunk;
+        counter4++;
         return;
     }
 }
@@ -404,9 +412,11 @@ void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameIn
     float dummy = 0;
 
     auto constFlags = a1->constFlags;
+    // constFlags = 16: wInd = 1
+    // constFlags = 48: wInd = 3
     auto wInd = (constFlags >> 4) & 3;
     auto bitPos = a1->currentBitPosition;
-    //a1->bitstream.bitPosition = bitPos;
+    a1->bitstream.bitPosition = bitPos;
     float sum = 0;
 
     if (counter3 < 10)
@@ -415,15 +425,23 @@ void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameIn
         printf("ExtractAnyFrameValue: bitPos = %d\n", bitPos);
         printf("ExtractAnyFrameValue: my wInd (0 to 3) = %d\n", wInd);
     }
+    //auto currPos = a1->bitstream.bitPosition;
     // Read each of the 4 values of the quat
     for (int i = 0; i < 4; i++)
     {
+        if (i == wInd) continue;
+        if (counter3 < 10)
+        {
+            printf("ExtractAnyFrameValue: calling ReadFrameDataSafe: i = %d\n", i);
+        }
         ReadFrameDataSafe(a1, constFlags, frameInsideChunk, &value, 0, &dummy);
         q[i] = value;
         constFlags >>= 1;
         sum += value * value;
         // assign sign bit here
     }
+
+    //a1->bitstream.bitPosition = currPos;
 
     if (sum <= 1.0)
     {
@@ -651,5 +669,5 @@ void ChunkReader::Initialize()
 
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
-    HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
+    //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
 }
