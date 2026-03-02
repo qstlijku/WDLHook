@@ -486,7 +486,7 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
 {
     if (startCnt < 10)
     {
-        printf("StartData called\n");
+        //printf("StartData called\n");
         //StartData(a1, interpolantBits);
         //return;
     }
@@ -537,6 +537,7 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
     }
     //printf("v22 (startOfNextDatum): %d\n", v22);
     a1->startOfNextDatum = v22;
+    startCnt++;
     return;
     printf("StartData: state after detour\n");
     printChunkReaderState(a1);
@@ -544,7 +545,6 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
     StartData(a1, interpolantBits);
     printf("After calling StartData\n");
     printChunkReaderState(a1);
-    startCnt++;
 }
 
 void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1, float* quat2, int interpolantBits)
