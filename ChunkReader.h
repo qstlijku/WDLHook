@@ -38,11 +38,44 @@ public:
 		unsigned int secondFrameToRead;
 	};
 
+	struct CAnimData
+	{
+		unsigned __int64 skeletonBoneCRC;
+		unsigned __int64 skeletonPathId;
+		char signature[3];
+		unsigned __int8 flags;
+		unsigned int animationDataSize;
+		float duration;
+		float animFrameRate;
+		unsigned __int16 nbBonesInAnim;
+	};
+
+	struct CMarkupData
+	{
+		__int64 combinedEventsCache1;
+		__int64 combinedEventsCache2;
+		unsigned __int16 basicEventCount;
+		unsigned __int16 durationEventCount;
+		unsigned __int16 poseEventCount;
+	};
+
+	struct CAnimStreamer
+	{
+		void* __vftable;
+		CAnimData* animData;
+		__int64 currentPart;
+		__int64 pad1;
+		__int64 pad2;
+		__int64 pad3;
+		__int64 pad4;
+		unsigned __int64 streamFileID;
+	};
+
 	struct SingleAnimEvalOpe
 	{
-		__int64 animData;
-		__int64 markupData;
-		__int64 animStreamer; // ScopedPtr<CAnimStreamer>
+		CAnimData *animData;
+		CMarkupData *markupData;
+		CAnimStreamer **animStreamer; // ScopedPtr<CAnimStreamer>
 	};
 
 	typedef void(*ReadFrameData_t)(ChunkStreamReader*, char, int, float*, int, float*);
@@ -51,7 +84,7 @@ public:
 	typedef void(*ExtractAnyFrameValue_t)(ChunkStreamReader*, int, float*);
 	typedef void(*ReadTwoValues_t)(CompressedStreamReader*, float*, float*, int);
 	typedef uintptr_t(*GetJointRotations_t)(__int64, __int64, __int64, __int64, __int64, int, __int64, int, __int64, bool);
-	typedef uintptr_t(*EvalOpe_t)(SingleAnimEvalOpe*, __int64, __int64, void*, bool, void *, bool);
+	typedef void(*EvalOpe_t)(SingleAnimEvalOpe*, __int64, __int64, void*, bool, void *, bool);
 
 	static void Initialize();
 };

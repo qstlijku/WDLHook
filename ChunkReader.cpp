@@ -634,18 +634,32 @@ uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a
 
 int evalCount = 0;
 
-uintptr_t EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, __int64 a2, __int64 a3, void *a4, bool a5, void *a6, bool a7)
+void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, __int64 a2, __int64 a3, void *a4, bool a5, void *a6, bool a7)
 {
     //printf("Loaded: %s\n", lookup(a3).c_str());
     //printf("nbBonesInInfoTable: %d\n", a6);
     if (evalCount < 10)
     {
         printf("EvalOpe_Detour called\n");
-        Print32PtrAt(a1->animData);
-        Print32PtrAt(a1->animStreamer + 8);
+        printf("skeletonBoneCRC: %llx\n", a1->animData->skeletonBoneCRC);
+        printf("skeletonPathId: %llx\n", a1->animData->skeletonPathId);
+        auto signature = a1->animData->signature;
+        printf("signature: %02X %02X %02X\n", signature[0], signature[1], signature[2]);
+        printf("flags: %02X\n", a1->animData->flags);
+        printf("animationDataSize: %04X\n", a1->animData->animationDataSize, a1->animData->duration, a1->animData->animFrameRate);
+        printf("duration, frameRate: %f %f\n", a1->animData->duration, a1->animData->animFrameRate);
+        auto scopedPtr = a1->animStreamer;
+        printf("path ID: %04X\n", scopedPtr);
+        printf("path ID deref: %04X\n", *scopedPtr);
+        //printf("path ID: %04X\n", a1->animStreamer->streamFileID);
+        //Print32PtrAt(reinterpret_cast<uint64_t>(&a1));
+        //Print32PtrAt(a1->animData);
+        //uintptr_t a11 = (__int64)a1;
+        //Print32PtrAt(a11);
+        //Print32PtrAt(a11 + 16);
     }
     evalCount++;
-    return EvalOpe(a1, a2, a3, a4, a5, a6, a7);
+    EvalOpe(a1, a2, a3, a4, a5, a6, a7);
 }
 
 char* Get4MemAtCR(uint64_t offset, uint64_t j)
