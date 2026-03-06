@@ -634,11 +634,11 @@ uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a
 
 int evalCount = 0;
 
-void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, __int64 a2, __int64 a3, void *a4, bool a5, void *a6, bool a7)
+void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, ChunkReader::CAnimationMediator *a2, __int64 a3, void *a4, bool a5, void *a6, bool a7)
 {
     //printf("Loaded: %s\n", lookup(a3).c_str());
     //printf("nbBonesInInfoTable: %d\n", a6);
-    if (evalCount < 10)
+    if (evalCount < 100)
     {
         printf("EvalOpe_Detour called\n");
         printf("skeletonBoneCRC: %llx\n", a1->animData->skeletonBoneCRC);
@@ -646,11 +646,16 @@ void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, __int64 a2, __int64 a3, 
         auto signature = a1->animData->signature;
         printf("signature: %02X %02X %02X\n", signature[0], signature[1], signature[2]);
         printf("flags: %02X\n", a1->animData->flags);
-        printf("animationDataSize: %04X\n", a1->animData->animationDataSize, a1->animData->duration, a1->animData->animFrameRate);
+        printf("animationDataSize: %04X\n", a1->animData->animationDataSize);
+        printf("duration, frameRate: %04X %04X\n", a1->animData->duration, a1->animData->animFrameRate);
         printf("duration, frameRate: %f %f\n", a1->animData->duration, a1->animData->animFrameRate);
-        auto scopedPtr = a1->animStreamer;
-        printf("path ID: %04X\n", scopedPtr);
-        printf("path ID deref: %04X\n", *scopedPtr);
+        // TODO: for evalCount between 1 and 2, print all ReadFrameData
+        //auto moveDataPtr = a2->moveData;
+        //printf("move data ptr: %llX\n", moveDataPtr);
+        //auto tmp = moveDataPtr->pmsValueDescContainer;
+        //printf("prop: %08X\n", tmp->vectorProp);
+        //printf("PMS data: %08X\n", tmp->data);
+        //Print32PtrAt(tmp->data);
         //printf("path ID: %04X\n", a1->animStreamer->streamFileID);
         //Print32PtrAt(reinterpret_cast<uint64_t>(&a1));
         //Print32PtrAt(a1->animData);
@@ -713,7 +718,7 @@ void ChunkReader::Initialize()
     //HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
     //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
     //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
-    //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
+    HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
     HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
