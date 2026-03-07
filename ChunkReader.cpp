@@ -1,4 +1,5 @@
 #include "ChunkReader.h"
+#include "Main.h"
 #include <iostream>
 
 using namespace std;
@@ -195,12 +196,12 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             }
 
             
-            if (counter2 < 50)
+            if (counter2 < 100)
             {
-                printf("base of bitPos >> 3: %02X\n", b0);
-                printf("base of bitPos >> 3 + 1: %02X\n", b1);
-                printf("base of bitPos >> 3 + 2: %02X\n", b2);
-                printf("base of bitPos >> 3 + 3: %02X\n", b3);
+                tprintf("base of bitPos >> 3: %02X\n", b0);
+                tprintf("base of bitPos >> 3 + 1: %02X\n", b1);
+                tprintf("base of bitPos >> 3 + 2: %02X\n", b2);
+                tprintf("base of bitPos >> 3 + 3: %02X\n", b3);
             }
 
             auto c0 = a1->bitstream.base[v15 >> 3];

@@ -1,0 +1,460 @@
+base of bitPos >> 3: F0
+base of bitPos >> 3 + 1: 5C
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: CC
+base of bitPos >> 3: CB
+base of bitPos >> 3 + 1: 49
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: 33
+base of bitPos >> 3: 54
+base of bitPos >> 3 + 1: 9A
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: 0D
+base of bitPos >> 3: D4
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: 20
+base of bitPos >> 3 + 3: 3B
+base of bitPos >> 3: C7
+base of bitPos >> 3 + 1: 18
+base of bitPos >> 3 + 2: 20
+base of bitPos >> 3 + 3: B8
+base of bitPos >> 3: 7A
+base of bitPos >> 3 + 1: 27
+base of bitPos >> 3 + 2: 20
+base of bitPos >> 3 + 3: A8
+base of bitPos >> 3: FF
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: D0
+base of bitPos >> 3 + 3: D0
+base of bitPos >> 3: 00
+base of bitPos >> 3 + 1: 06
+base of bitPos >> 3 + 2: D0
+base of bitPos >> 3 + 3: D0
+base of bitPos >> 3: B4
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 44
+base of bitPos >> 3 + 3: 46
+base of bitPos >> 3: 79
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 8F
+base of bitPos >> 3 + 3: 71
+base of bitPos >> 3: 77
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 2B
+base of bitPos >> 3 + 3: 41
+base of bitPos >> 3: C7
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 16
+base of bitPos >> 3 + 3: 2A
+base of bitPos >> 3: F0
+base of bitPos >> 3 + 1: 5F
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: BA
+base of bitPos >> 3: B4
+base of bitPos >> 3 + 1: 5F
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: 42
+base of bitPos >> 3: 08
+base of bitPos >> 3 + 1: A8
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: 1F
+base of bitPos >> 3: 44
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: 10
+base of bitPos >> 3 + 3: 70
+base of bitPos >> 3: 17
+base of bitPos >> 3 + 1: 27
+base of bitPos >> 3 + 2: B0
+base of bitPos >> 3 + 3: C4
+base of bitPos >> 3: 99
+base of bitPos >> 3 + 1: 18
+base of bitPos >> 3 + 2: F0
+base of bitPos >> 3 + 3: 78
+base of bitPos >> 3: FF
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 50
+base of bitPos >> 3 + 3: 81
+base of bitPos >> 3: FC
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 8C
+base of bitPos >> 3 + 3: 17
+base of bitPos >> 3: BF
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 74
+base of bitPos >> 3 + 3: 0F
+base of bitPos >> 3: 84
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 33
+base of bitPos >> 3 + 3: 37
+base of bitPos >> 3: 83
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 6A
+base of bitPos >> 3 + 3: 57
+base of bitPos >> 3: CA
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: D8
+base of bitPos >> 3 + 3: DD
+base of bitPos >> 3: F0
+base of bitPos >> 3 + 1: 5F
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: 09
+base of bitPos >> 3: 8F
+base of bitPos >> 3 + 1: 5F
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: 23
+base of bitPos >> 3: 19
+base of bitPos >> 3 + 1: 68
+base of bitPos >> 3 + 2: 80
+base of bitPos >> 3 + 3: 7A
+base of bitPos >> 3: FC
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: 90
+base of bitPos >> 3 + 3: 98
+base of bitPos >> 3: E9
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: 70
+base of bitPos >> 3 + 3: D9
+base of bitPos >> 3: 4C
+base of bitPos >> 3 + 1: 18
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: DE
+base of bitPos >> 3: 03
+base of bitPos >> 3 + 1: 06
+base of bitPos >> 3 + 2: F8
+base of bitPos >> 3 + 3: 5A
+base of bitPos >> 3: F9
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 30
+base of bitPos >> 3 + 3: 5F
+base of bitPos >> 3: FD
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: F0
+base of bitPos >> 3 + 3: B0
+base of bitPos >> 3: 80
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: BE
+base of bitPos >> 3 + 3: 36
+base of bitPos >> 3: 7E
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: C1
+base of bitPos >> 3 + 3: 37
+base of bitPos >> 3: 7F
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 34
+base of bitPos >> 3 + 3: FC
+base of bitPos >> 3: 80
+base of bitPos >> 3 + 1: 9D
+base of bitPos >> 3 + 2: 80
+base of bitPos >> 3 + 3: 20
+base of bitPos >> 3: DC
+base of bitPos >> 3 + 1: 75
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: 08
+base of bitPos >> 3: 56
+base of bitPos >> 3 + 1: 5F
+base of bitPos >> 3 + 2: 80
+base of bitPos >> 3 + 3: 32
+base of bitPos >> 3: 4C
+base of bitPos >> 3 + 1: 29
+base of bitPos >> 3 + 2: 80
+base of bitPos >> 3 + 3: A4
+base of bitPos >> 3: F7
+base of bitPos >> 3 + 1: 1C
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: 48
+base of bitPos >> 3: 64
+base of bitPos >> 3 + 1: 37
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: 49
+base of bitPos >> 3: F3
+base of bitPos >> 3 + 1: 0D
+base of bitPos >> 3 + 2: 10
+base of bitPos >> 3 + 3: 2A
+base of bitPos >> 3: F9
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 28
+base of bitPos >> 3 + 3: F4
+base of bitPos >> 3: A2
+base of bitPos >> 3 + 1: 09
+base of bitPos >> 3 + 2: 74
+base of bitPos >> 3 + 3: 09
+base of bitPos >> 3: 84
+base of bitPos >> 3 + 1: 03
+base of bitPos >> 3 + 2: FD
+base of bitPos >> 3 + 3: A9
+base of bitPos >> 3: 7A
+base of bitPos >> 3 + 1: 03
+base of bitPos >> 3 + 2: CE
+base of bitPos >> 3 + 3: BA
+base of bitPos >> 3: 7A
+base of bitPos >> 3 + 1: 03
+base of bitPos >> 3 + 2: DD
+base of bitPos >> 3 + 3: 3D
+base of bitPos >> 3: 30
+base of bitPos >> 3 + 1: 63
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: 28
+base of bitPos >> 3: 90
+base of bitPos >> 3 + 1: 6D
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: B2
+base of bitPos >> 3: 9E
+base of bitPos >> 3 + 1: 60
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: 50
+base of bitPos >> 3: DC
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: 50
+base of bitPos >> 3 + 3: 2A
+base of bitPos >> 3: 34
+base of bitPos >> 3 + 1: 2B
+base of bitPos >> 3 + 2: 10
+base of bitPos >> 3 + 3: 24
+base of bitPos >> 3: 77
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: 70
+base of bitPos >> 3 + 3: 36
+base of bitPos >> 3: B0
+base of bitPos >> 3 + 1: 5F
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: 77
+base of bitPos >> 3: 47
+base of bitPos >> 3 + 1: B1
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: 69
+base of bitPos >> 3: 14
+base of bitPos >> 3 + 1: 62
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: 37
+base of bitPos >> 3: B0
+base of bitPos >> 3 + 1: 5F
+base of bitPos >> 3 + 2: 80
+base of bitPos >> 3 + 3: AF
+base of bitPos >> 3: 9E
+base of bitPos >> 3 + 1: 71
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: AC
+base of bitPos >> 3: 58
+base of bitPos >> 3 + 1: 64
+base of bitPos >> 3 + 2: 80
+base of bitPos >> 3 + 3: 46
+base of bitPos >> 3: B0
+base of bitPos >> 3 + 1: 5E
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: EB
+base of bitPos >> 3: D7
+base of bitPos >> 3 + 1: 71
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: 98
+base of bitPos >> 3: F1
+base of bitPos >> 3 + 1: 63
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: 72
+base of bitPos >> 3: 72
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 45
+base of bitPos >> 3 + 3: 61
+base of bitPos >> 3: 48
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: C7
+base of bitPos >> 3 + 3: 71
+base of bitPos >> 3: C4
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 4E
+base of bitPos >> 3 + 3: B3
+base of bitPos >> 3: A0
+base of bitPos >> 3 + 1: 6B
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: 07
+base of bitPos >> 3: 13
+base of bitPos >> 3 + 1: 0A
+base of bitPos >> 3 + 2: 84
+base of bitPos >> 3 + 3: 21
+base of bitPos >> 3: 51
+base of bitPos >> 3 + 1: 06
+base of bitPos >> 3 + 2: C8
+base of bitPos >> 3 + 3: 31
+base of bitPos >> 3: F3
+base of bitPos >> 3 + 1: 09
+base of bitPos >> 3 + 2: 64
+base of bitPos >> 3 + 3: E0
+base of bitPos >> 3: 7B
+base of bitPos >> 3 + 1: 02
+base of bitPos >> 3 + 2: 35
+base of bitPos >> 3 + 3: 2A
+base of bitPos >> 3: 25
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 99
+base of bitPos >> 3 + 3: EE
+base of bitPos >> 3: 7A
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: D4
+base of bitPos >> 3 + 3: 76
+base of bitPos >> 3: F0
+base of bitPos >> 3 + 1: 57
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: FF
+base of bitPos >> 3: A0
+base of bitPos >> 3 + 1: 4C
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: 6C
+base of bitPos >> 3: D5
+base of bitPos >> 3 + 1: 9A
+base of bitPos >> 3 + 2: C0
+base of bitPos >> 3 + 3: CD
+base of bitPos >> 3: 1C
+base of bitPos >> 3 + 1: 18
+base of bitPos >> 3 + 2: 50
+base of bitPos >> 3 + 3: 1A
+base of bitPos >> 3: FA
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: 40
+base of bitPos >> 3 + 3: 7A
+base of bitPos >> 3: 29
+base of bitPos >> 3 + 1: 26
+base of bitPos >> 3 + 2: 50
+base of bitPos >> 3 + 3: 70
+base of bitPos >> 3: BB
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 5C
+base of bitPos >> 3 + 3: E0
+base of bitPos >> 3: 06
+base of bitPos >> 3 + 1: 06
+base of bitPos >> 3 + 2: 38
+base of bitPos >> 3 + 3: 5C
+base of bitPos >> 3: F9
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 38
+base of bitPos >> 3 + 3: 1B
+base of bitPos >> 3: 71
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 5E
+base of bitPos >> 3 + 3: A5
+base of bitPos >> 3: 46
+base of bitPos >> 3 + 1: 02
+base of bitPos >> 3 + 2: DB
+base of bitPos >> 3 + 3: 99
+base of bitPos >> 3: 82
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 42
+base of bitPos >> 3 + 3: 4D
+base of bitPos >> 3: 30
+base of bitPos >> 3 + 1: 60
+base of bitPos >> 3 + 2: 80
+base of bitPos >> 3 + 3: 56
+base of bitPos >> 3: 2D
+base of bitPos >> 3 + 1: 92
+base of bitPos >> 3 + 2: 80
+base of bitPos >> 3 + 3: DF
+base of bitPos >> 3: E0
+base of bitPos >> 3 + 1: 5D
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: FA
+base of bitPos >> 3: 7F
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 2D
+base of bitPos >> 3 + 3: 1E
+base of bitPos >> 3: 37
+base of bitPos >> 3 + 1: 02
+base of bitPos >> 3 + 2: 66
+base of bitPos >> 3 + 3: 9A
+base of bitPos >> 3: 87
+base of bitPos >> 3 + 1: 02
+base of bitPos >> 3 + 2: 53
+base of bitPos >> 3 + 3: 58
+base of bitPos >> 3: 7F
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 53
+base of bitPos >> 3 + 3: 08
+base of bitPos >> 3: 36
+base of bitPos >> 3 + 1: 02
+base of bitPos >> 3 + 2: F6
+base of bitPos >> 3 + 3: EC
+base of bitPos >> 3: 91
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 2C
+base of bitPos >> 3 + 3: D3
+base of bitPos >> 3: 83
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: D1
+base of bitPos >> 3 + 3: 2A
+base of bitPos >> 3: 35
+base of bitPos >> 3 + 1: 02
+base of bitPos >> 3 + 2: 50
+base of bitPos >> 3 + 3: 5B
+base of bitPos >> 3: 8F
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 4B
+base of bitPos >> 3 + 3: A3
+base of bitPos >> 3: 2F
+base of bitPos >> 3 + 1: 06
+base of bitPos >> 3 + 2: E8
+base of bitPos >> 3 + 3: F3
+base of bitPos >> 3: 1F
+base of bitPos >> 3 + 1: 09
+base of bitPos >> 3 + 2: 8C
+base of bitPos >> 3 + 3: 9E
+base of bitPos >> 3: 11
+base of bitPos >> 3 + 1: 07
+base of bitPos >> 3 + 2: 38
+base of bitPos >> 3 + 3: 46
+base of bitPos >> 3: 7C
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: EA
+base of bitPos >> 3 + 3: BA
+base of bitPos >> 3: 4F
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 20
+base of bitPos >> 3 + 3: 0C
+base of bitPos >> 3: 83
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: 43
+base of bitPos >> 3 + 3: 92
+base of bitPos >> 3: 6C
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: F0
+base of bitPos >> 3 + 3: 6D
+base of bitPos >> 3: A6
+base of bitPos >> 3 + 1: 16
+base of bitPos >> 3 + 2: D0
+base of bitPos >> 3 + 3: 34
+base of bitPos >> 3: 92
+base of bitPos >> 3 + 1: 17
+base of bitPos >> 3 + 2: 30
+base of bitPos >> 3 + 3: CF
+base of bitPos >> 3: 17
+base of bitPos >> 3 + 1: 0A
+base of bitPos >> 3 + 2: 18
+base of bitPos >> 3 + 3: B6
+base of bitPos >> 3: ED
+base of bitPos >> 3 + 1: 05
+base of bitPos >> 3 + 2: 14
+base of bitPos >> 3 + 3: D1
+base of bitPos >> 3: 53
+base of bitPos >> 3 + 1: 0A
+base of bitPos >> 3 + 2: BC
+base of bitPos >> 3 + 3: A2
+base of bitPos >> 3: 89
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: E3
+base of bitPos >> 3 + 3: B8
+base of bitPos >> 3: 7C
+base of bitPos >> 3 + 1: 01
+base of bitPos >> 3 + 2: E8
+base of bitPos >> 3 + 3: E5
+base of bitPos >> 3: 78
+base of bitPos >> 3 + 1: 02
+base of bitPos >> 3 + 2: 93
+base of bitPos >> 3 + 3: 6E
+base of bitPos >> 3: F8
+base of bitPos >> 3 + 1: 0B
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: C0
+base of bitPos >> 3: F8
+base of bitPos >> 3 + 1: 0B
+base of bitPos >> 3 + 2: 00
+base of bitPos >> 3 + 3: 20
+base of bitPos >> 3: C2
+base of bitPos >> 3 + 1: 0F
+base of bitPos >> 3 + 2: 30
+base of bitPos >> 3 + 3: 13

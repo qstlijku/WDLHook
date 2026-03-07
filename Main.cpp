@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <iostream>
 
+FILE* g_logFile = nullptr;
+
 void Main::Initialize() {
 	HMODULE hModule = GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
 	DWORD WINAPI InstMainThread(LPVOID lpParam);
@@ -24,6 +26,7 @@ void Main::ShowConsole() {
 	HANDLE ConsoleHandle = GetStdHandle(STD_OUTPUT_HANDLE);
 	HWND WindowHandle = ::GetConsoleWindow();
 
+	fopen_s(&g_logFile, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\wdlhook_log.txt", "w");
 	printf("DE_Hook initialized...\n");
 
 	/*if (WindowHandle != NULL)
