@@ -82,9 +82,19 @@ void checkAccuracy(float x, float y)
     }
 }
 
+int lastSize = -1;
+int lastCounter2 = -1;
+
 void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
-    if (counter2 < 100)
+    if ((lastSize == 0x179A8 || lastSize == 0x2524) && counter2 < 50)
+    {
+        counter2 = 10;
+        lastCounter2++;
+    }
+    else if (lastCounter2 > 100)
+        counter2 = 1000;
+    if (counter2 < 50)
     {
         printf("\nReadFrameData detour called\n");
         printf("flags (a2): %d\n", flags);
@@ -174,6 +184,12 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             //a1->bitstream.bitPosition = v17;
             //auto v161 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1));
             //*value0 = v16 + v13;
+
+            for (int i = 0; i < 1550; i++)
+            {
+                if (counter2 > 1) break;
+                printf("base of bitPos >> 3 + %d: %02X\n", i, a1->bitstream.base[(bitPos >> 3) + i]);
+            }
 
             /*
             if (counter2 < 5)
@@ -638,7 +654,7 @@ void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, ChunkReader::CAnimationM
 {
     //printf("Loaded: %s\n", lookup(a3).c_str());
     //printf("nbBonesInInfoTable: %d\n", a6);
-    if (evalCount < 100)
+    if (evalCount < 10)
     {
         printf("EvalOpe_Detour called\n");
         printf("skeletonBoneCRC: %llx\n", a1->animData->skeletonBoneCRC);
@@ -664,6 +680,7 @@ void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, ChunkReader::CAnimationM
         //Print32PtrAt(a11 + 16);
     }
     evalCount++;
+    lastSize = a1->animData->animationDataSize;
     EvalOpe(a1, a2, a3, a4, a5, a6, a7);
 }
 
