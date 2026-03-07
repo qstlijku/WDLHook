@@ -87,7 +87,7 @@ int lastCounter2 = -1;
 
 void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
-    if ((lastSize == 0x179A8 || lastSize == 0x2524) && counter2 < 50)
+    if (lastSize == 0x179A8)
     {
         counter2 = 10;
         lastCounter2++;
@@ -123,12 +123,13 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             // 55938 or DA82
             // 1101 1010 1000 0010
             auto bitPos = a1->bitstream.bitPosition;
+            /*
             if (counter2 < 50)
             {
                 printf("First branch\n");
                 printf("Bit position: %d\n", bitPos);
             }
-
+            */
             auto b0 = a1->bitstream.base[bitPos >> 3];
             auto b1 = a1->bitstream.base[(bitPos >> 3) + 1];
             auto b2 = a1->bitstream.base[(bitPos >> 3) + 2];
@@ -143,6 +144,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             *value0 = v8;
             *value1 = v8;
 
+            /*
             if (counter2 < 50)
             {
                 printf("base of bitPos >> 3: %02X\n", b0);
@@ -156,6 +158,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
                 printf("v7: %d\n", v7);
                 printf("v8: %f\n", v8);
             }
+            */
             return;
         }
         else
@@ -191,14 +194,14 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
                 printf("base of bitPos >> 3 + %d: %02X\n", i, a1->bitstream.base[(bitPos >> 3) + i]);
             }
 
-            /*
-            if (counter2 < 5)
+            
+            if (counter2 < 50)
             {
                 printf("base of bitPos >> 3: %02X\n", b0);
                 printf("base of bitPos >> 3 + 1: %02X\n", b1);
                 printf("base of bitPos >> 3 + 2: %02X\n", b2);
                 printf("base of bitPos >> 3 + 3: %02X\n", b3);
-            }*/
+            }
 
             auto c0 = a1->bitstream.base[v15 >> 3];
             auto c1 = a1->bitstream.base[(v15 >> 3) + 1];
@@ -681,6 +684,7 @@ void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, ChunkReader::CAnimationM
     }
     evalCount++;
     lastSize = a1->animData->animationDataSize;
+    //lastCounter2 = -1;
     EvalOpe(a1, a2, a3, a4, a5, a6, a7);
 }
 
