@@ -101,7 +101,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
         tprintf("flags (a2): %d\n", flags);
         tprintf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
         tprintf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
-
+        tprintf("lastCounter2: %d\n", lastCounter2);
         printChunkReaderState(a1);
     }
     float secondValue0 = -1.0f;
@@ -125,7 +125,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             // 1101 1010 1000 0010
             auto bitPos = a1->bitstream.bitPosition;
             
-            if (counter2 < 100)
+            if (counter2 < 1000)
             {
                 tprintf("First branch\n");
                 tprintf("Bit position: %d\n", bitPos);
@@ -145,7 +145,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             *value0 = v8;
             *value1 = v8;
             
-            if (counter2 < 100)
+            if (counter2 < 1000)
             {
                 tprintf("base of bitPos >> 3: %02X\n", b0);
                 tprintf("base of bitPos >> 3 + 1: %02X\n", b1);
@@ -166,7 +166,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             auto numInterpolantBits = a1->currentNumInterpolantBits;
             auto bitPos = a1->bitstream.bitPosition;
 
-            if (counter2 < 100)
+            if (counter2 < 1000)
             {
                 tprintf("Second branch\n");
                 tprintf("Bit position: %d\n", bitPos);
@@ -193,7 +193,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
                 printf("base of bitPos >> 3 + %d: %02X\n", i, a1->bitstream.base[(bitPos >> 3) + i]);
             }*/
             
-            if (counter2 < 100)
+            if (counter2 < 1000)
             {
                 tprintf("base of bitPos >> 3: %02X\n", b0);
                 tprintf("base of bitPos >> 3 + 1: %02X\n", b1);
@@ -236,7 +236,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
                 tprintf("----------------------------------------\n");
             }
 
-            if (counter2 < 100)
+            if (counter2 < 1000)
             {
                 tprintf("v15: %d\n", v15);
 
@@ -260,16 +260,18 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             secondValue1 = v18 * v14 + v13;
             *value1 = secondValue1;
 
-            if (counter2 < 100)
+            if (counter2 < 1000)
             {
-
                 tprintf("v17: %d\n", v17);
 
                 tprintf("base of v17 >> 3: %02X\n", d0);
                 tprintf("base of v17 >> 3 + 1: %02X\n", d1);
                 tprintf("base of v17 >> 3 + 2: %02X\n", d2);
                 tprintf("base of v17 >> 3 + 3: %02X\n", d3);
+            }
 
+            if (counter2 < 100)
+            {
                 tprintf("num4: %08X\n", num4);
                 tprintf("temp3: %d\n", temp3);
                 tprintf("v18: %d\n", v18);
@@ -570,7 +572,7 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
 
 void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1, float* quat2, int interpolantBits)
 {
-    if (counter < 10)
+    if (counter < 0)
     {
         printf("\nReadTwoValues detour called\n");
         printf("firstFrameToRead: %d\n", a1->firstFrameToRead);
@@ -656,15 +658,15 @@ void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, ChunkReader::CAnimationM
     //printf("nbBonesInInfoTable: %d\n", a6);
     if (evalCount < 10)
     {
-        printf("EvalOpe_Detour called\n");
-        printf("skeletonBoneCRC: %llx\n", a1->animData->skeletonBoneCRC);
-        printf("skeletonPathId: %llx\n", a1->animData->skeletonPathId);
+        tprintf("EvalOpe_Detour called\n");
+        tprintf("skeletonBoneCRC: %llx\n", a1->animData->skeletonBoneCRC);
+        tprintf("skeletonPathId: %llx\n", a1->animData->skeletonPathId);
         auto signature = a1->animData->signature;
-        printf("signature: %02X %02X %02X\n", signature[0], signature[1], signature[2]);
-        printf("flags: %02X\n", a1->animData->flags);
-        printf("animationDataSize: %04X\n", a1->animData->animationDataSize);
-        printf("duration, frameRate: %04X %04X\n", a1->animData->duration, a1->animData->animFrameRate);
-        printf("duration, frameRate: %f %f\n", a1->animData->duration, a1->animData->animFrameRate);
+        tprintf("signature: %02X %02X %02X\n", signature[0], signature[1], signature[2]);
+        tprintf("flags: %02X\n", a1->animData->flags);
+        tprintf("animationDataSize: %04X\n", a1->animData->animationDataSize);
+        tprintf("duration, frameRate: %04X %04X\n", a1->animData->duration, a1->animData->animFrameRate);
+        tprintf("duration, frameRate: %f %f\n", a1->animData->duration, a1->animData->animFrameRate);
         // TODO: for evalCount between 1 and 2, print all ReadFrameData
         //auto moveDataPtr = a2->moveData;
         //printf("move data ptr: %llX\n", moveDataPtr);
@@ -731,13 +733,13 @@ void HookOffset4(int offset, LPVOID detour, LPVOID* orig)
 
 void ChunkReader::Initialize()
 {
-    //HookOffset4(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
+    HookOffset4(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
     //HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
     //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
     //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
-    HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
+    //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
-    HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
+    //HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
 }
