@@ -61,14 +61,14 @@ const float ms_interpolantScaleFactors[17] = { 0, 0, 0.33333334, 0.14285715, 0.0
 
 void printChunkReaderState(ChunkReader::ChunkStreamReader* a1)
 {
-    printf("currentDynamicDatum: %d\n", a1->currentDynamicDatum);
-    printf("numDynamicData: %d\n", a1->numDynamicData);
-    printf("numFramesInThisChunk: %d\n", a1->numFramesInThisChunk);
-    printf("currentBitPosition: %d\n", a1->currentBitPosition);
-    printf("startOfNextDatum: %d\n", a1->startOfNextDatum);
-    printf("currentNumInterpolantBits: %d\n", a1->currentNumInterpolantBits);
-    printf("constFlags: %d\n", a1->constFlags);
-    printf("signBits: %d\n", a1->signBits);
+    tprintf("currentDynamicDatum: %d\n", a1->currentDynamicDatum);
+    tprintf("numDynamicData: %d\n", a1->numDynamicData);
+    tprintf("numFramesInThisChunk: %d\n", a1->numFramesInThisChunk);
+    tprintf("currentBitPosition: %d\n", a1->currentBitPosition);
+    tprintf("startOfNextDatum: %d\n", a1->startOfNextDatum);
+    tprintf("currentNumInterpolantBits: %d\n", a1->currentNumInterpolantBits);
+    tprintf("constFlags: %d\n", a1->constFlags);
+    tprintf("signBits: %d\n", a1->signBits);
 }
 
 void checkAccuracy(float x, float y)
@@ -97,10 +97,10 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
         counter2 = 1000;
     if (counter2 < 50)
     {
-        printf("\nReadFrameData detour called\n");
-        printf("flags (a2): %d\n", flags);
-        printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
-        printf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
+        tprintf("\nReadFrameData detour called\n");
+        tprintf("flags (a2): %d\n", flags);
+        tprintf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
+        tprintf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
 
         printChunkReaderState(a1);
     }
