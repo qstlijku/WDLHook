@@ -95,7 +95,7 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
     }
     else if (lastCounter2 > 100)
         counter2 = 1000;
-    if (counter2 < 50)
+    if (counter2 < 100)
     {
         tprintf("\nReadFrameData detour called\n");
         tprintf("flags (a2): %d\n", flags);
@@ -124,13 +124,13 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             // 55938 or DA82
             // 1101 1010 1000 0010
             auto bitPos = a1->bitstream.bitPosition;
-            /*
-            if (counter2 < 50)
+            
+            if (counter2 < 100)
             {
-                printf("First branch\n");
-                printf("Bit position: %d\n", bitPos);
+                tprintf("First branch\n");
+                tprintf("Bit position: %d\n", bitPos);
             }
-            */
+            
             auto b0 = a1->bitstream.base[bitPos >> 3];
             auto b1 = a1->bitstream.base[(bitPos >> 3) + 1];
             auto b2 = a1->bitstream.base[(bitPos >> 3) + 2];
@@ -144,31 +144,33 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
 
             *value0 = v8;
             *value1 = v8;
-
-            /*
-            if (counter2 < 50)
+            
+            if (counter2 < 100)
             {
-                printf("base of bitPos >> 3: %02X\n", b0);
-                printf("base of bitPos >> 3 + 1: %02X\n", b1);
-                printf("base of bitPos >> 3 + 2: %02X\n", b2);
-                printf("base of bitPos >> 3 + 3: %02X\n", b3);
+                tprintf("base of bitPos >> 3: %02X\n", b0);
+                tprintf("base of bitPos >> 3 + 1: %02X\n", b1);
+                tprintf("base of bitPos >> 3 + 2: %02X\n", b2);
+                tprintf("base of bitPos >> 3 + 3: %02X\n", b3);
 
-                printf("num: %08X\n", num);
+                tprintf("num: %08X\n", num);
 
-                printf("v6: %d\n", v6);
-                printf("v7: %d\n", v7);
-                printf("v8: %f\n", v8);
+                tprintf("v6: %d\n", v6);
+                tprintf("v7: %d\n", v7);
+                tprintf("v8: %f\n", v8);
             }
-            */
+            
             return;
         }
         else
         {
-            //printf("Second branch\n");
-
             auto numInterpolantBits = a1->currentNumInterpolantBits;
             auto bitPos = a1->bitstream.bitPosition;
-            //printf("Bit position: %d\n", bitPos);
+
+            if (counter2 < 100)
+            {
+                tprintf("Second branch\n");
+                tprintf("Bit position: %d\n", bitPos);
+            }
 
             auto b0 = a1->bitstream.base[bitPos >> 3];
             auto b1 = a1->bitstream.base[(bitPos >> 3) + 1];
@@ -183,18 +185,13 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
 
             float v14 = (v12 >> 8) * 0.0078431377 * ms_interpolantScaleFactors[numInterpolantBits];
             auto v15 = v11 + frameInsideChunk0 * numInterpolantBits;
-            //a1->bitstream.bitPosition = v15;
-            //auto v16 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1)) * v14;
-            //a1->bitstream.bitPosition = v17;
-            //auto v161 = ((a1->bitstream.base[v15 >> 3] >> (v15 & 7)) & ((1 << numInterpolantBits) - 1));
-            //*value0 = v16 + v13;
 
+            /*
             for (int i = 0; i < 1550; i++)
             {
                 if (counter2 > 1) break;
                 printf("base of bitPos >> 3 + %d: %02X\n", i, a1->bitstream.base[(bitPos >> 3) + i]);
-            }
-
+            }*/
             
             if (counter2 < 100)
             {
@@ -216,38 +213,38 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             secondValue0 = v163 * v14 + v13;
             *value0 = secondValue0;
 
-            /*
-            printf("num: %08X\n", num);
-            printf("v6: %d\n", v6);
-            printf("v12 mod 256: %d\n", v12);
-
-            printf("num3: %08X\n", num3);
-            printf("temp2: %d\n", temp2);
-
-            printf("v163: %d\n", v163);
-            printf("v14: %f\n", v14);
-
-            printf("now v13: %f\n", v13);
-            printf("value to add to v13: %f\n", v163 * v14);
-            printf("added to v13: %f\n", v163 * v14 + v13);
-            printf("----------------------------------------\n");
-
             // v12 = 115 so num must be 1CC0
             // GOOD: 0.005485 is correct (v163 * v14)
             // value is now -0.094488
             // TODO: try casts like (uint8) or % 256
+            
+            if (counter2 < 10)
+            {
+                tprintf("num: %08X\n", num);
+                tprintf("v6: %d\n", v6);
+                tprintf("v12 mod 256: %d\n", v12);
 
-            printf("base of v15 >> 3: %02X\n", c0);
-            printf("base of v15 >> 3 + 1: %02X\n", c1);
-            printf("base of v15 >> 3 + 2: %02X\n", c2);
-            printf("base of v15 >> 3 + 3: %02X\n", c3);
+                tprintf("num3: %08X\n", num3);
+                tprintf("temp2: %d\n", temp2);
 
-            printf("v15: %d\n", v15);
+                tprintf("v163: %d\n", v163);
+                tprintf("v14: %f\n", v14);
 
-            printf("v6: %d\n", v6);
-            printf("v11: %d\n", v11);
-            printf("v12: %d\n", v12);
-            printf("v13: %f\n", v13);*/
+                tprintf("now v13: %f\n", v13);
+                tprintf("value to add to v13: %f\n", v163 * v14);
+                tprintf("added to v13: %f\n", v163 * v14 + v13);
+                tprintf("----------------------------------------\n");
+            }
+
+            if (counter2 < 100)
+            {
+                tprintf("v15: %d\n", v15);
+
+                tprintf("base of v15 >> 3: %02X\n", c0);
+                tprintf("base of v15 >> 3 + 1: %02X\n", c1);
+                tprintf("base of v15 >> 3 + 2: %02X\n", c2);
+                tprintf("base of v15 >> 3 + 3: %02X\n", c3);
+            }
 
             auto v17 = v11 + frameInsideChunk1 * numInterpolantBits;
 
@@ -263,29 +260,28 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
             secondValue1 = v18 * v14 + v13;
             *value1 = secondValue1;
 
-            /*
-            printf("v17: %d\n", v17);
+            if (counter2 < 100)
+            {
 
-            printf("base of v17 >> 3: %02X\n", d0);
-            printf("base of v17 >> 3 + 1: %02X\n", d1);
-            printf("base of v17 >> 3 + 2: %02X\n", d2);
-            printf("base of v17 >> 3 + 3: %02X\n", d3);
+                tprintf("v17: %d\n", v17);
 
-            printf("num4: %08X\n", num4);
-            printf("temp3: %d\n", temp3);
-            printf("v18: %d\n", v18);
+                tprintf("base of v17 >> 3: %02X\n", d0);
+                tprintf("base of v17 >> 3 + 1: %02X\n", d1);
+                tprintf("base of v17 >> 3 + 2: %02X\n", d2);
+                tprintf("base of v17 >> 3 + 3: %02X\n", d3);
 
-            printf("now v13: %f\n", v13);
-            printf("value to add to v13: %f\n", v18 * v14);
-            printf("added to v13: %f\n", v18 * v14 + v13);
-            printf("----------------------------------------\n");*/
+                tprintf("num4: %08X\n", num4);
+                tprintf("temp3: %d\n", temp3);
+                tprintf("v18: %d\n", v18);
+
+                tprintf("now v13: %f\n", v13);
+                tprintf("value to add to v13: %f\n", v18 * v14);
+                tprintf("added to v13: %f\n", v18 * v14 + v13);
+                tprintf("----------------------------------------\n");
+            }
 
             // v14 about 1.915e-6
             // or doubled, 3.8306e-6
-
-            //float v8 = v18 * v14 + v13;
-            //printf("my final value1 (v8): %f\n", v8);
-            //*value1 = v8;
 
             // actual value1: -0.690483
             // v13: -0.692913
@@ -307,10 +303,10 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
         }
     }
     ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
-    if (counter2 < 50)
+    if (counter2 < 100)
     {
-        printf("ReadFrameData value0: %f\n", *value0);
-        printf("ReadFrameData value1: %f\n", *value1);
+        tprintf("ReadFrameData value0: %f\n", *value0);
+        tprintf("ReadFrameData value1: %f\n", *value1);
     }
     if ((flags & 1) == 0)
     {

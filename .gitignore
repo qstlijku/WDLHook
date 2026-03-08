@@ -1,3 +1,4 @@
 /.vs
 /DE_Hook/x64/Debug
 /dinput8/x64/Debug
+.claude/settings.local.json
