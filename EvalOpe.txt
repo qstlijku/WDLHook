@@ -1,0 +1,592 @@
+void __fastcall CSingleAnimEvalOpe::EvalOpe(
+        CSingleAnimEvalOpe *this,
+        const CAnimationMediator *animationMediator,
+        const CEvalAnimParam *param,
+        CEvalAnimResult *result,
+        const bool evalWithExternal,
+        GenericHandle<CRetargetingParameter,NomadHandleTrait> retargetingParams,
+        bool isAdditive)
+{
+  char *m_proxyAndType; // rdi
+  float CurrBoundedTime; // xmm0_4
+  CAnimStreamer *Myval2; // rcx
+  CAnimData *resolvedAnimData; // rsi
+  float v15; // xmm8_4
+  char v16; // dl
+  CAnimStreamer **p_animStreamer; // rax
+  CAnimStreamer *v18; // rcx
+  CStreamedAnimPart *m_currentPart; // rcx
+  float *v20; // rcx
+  __int64 v21; // rdx
+  unsigned __int64 v22; // rax
+  __int64 v23; // r8
+  __int64 v24; // rax
+  unsigned int displacementScalingFactor; // xmm7_4
+  ndPosQuatTransform *DisplacementDiffBoundTime; // rax
+  __m128 v; // xmm6
+  __m128 v28; // xmm9
+  __m128 v29; // xmm3
+  __m128 v30; // xmm2
+  __m128 v31; // xmm0
+  ndQuat v32; // xmm1
+  __m128 v33; // xmm2
+  __m128 v34; // xmm1
+  G4::VectorSIMD4f v35; // xmm0
+  bool v36; // al
+  ndPosQuatTransform *v37; // rax
+  __m128 v38; // xmm7
+  G4::VectorSIMD4f v39; // xmm0
+  __m128 v40; // xmm3
+  __m128 v41; // xmm1
+  __m128 v42; // xmm2
+  float v43; // xmm0_4
+  __m128 v44; // xmm7
+  __m128 v45; // xmm6
+  __m128 v46; // xmm5
+  __m128 v47; // xmm6
+  __m128 v48; // xmm4
+  __m128 v49; // xmm0
+  __m128 v50; // xmm4
+  __m128 v51; // xmm6
+  __m128 v52; // xmm5
+  __m128 v53; // xmm4
+  __m128 v54; // xmm5
+  __m128 v55; // xmm3
+  __m128 v56; // xmm0
+  __m128 v57; // xmm3
+  unsigned __int64 v58; // rax
+  const CSkeletonDescription *m_skeletonDescription; // rax
+  const ndVectorExternal<SSkeletonBoneInfo,NoLock,ndAlignedSizeVectorProperties<16,16> > *m_boneInfoTable; // rcx
+  unsigned __int64 m_fullValue; // rbx
+  __int64 v62; // rax
+  SSkeletonBoneInfo *p_m_data; // rcx
+  __int64 v64; // rbx
+  unsigned int v65; // edi
+  char v66; // al
+  unsigned int v67; // edx
+  unsigned int m_effectiveLODDistance; // r14d
+  int *v69; // rax
+  float *v70; // rsi
+  float m_sourceTime; // ebx
+  unsigned int m_value; // eax
+  char v73; // al
+  const CAnimationMediator *v74; // r14
+  __int64 v75; // rsi
+  int *v76; // rbx
+  char v77; // al
+  char v78; // cl
+  __int64 v79; // rdx
+  __int64 v80; // rax
+  SAnimEvalInfo *v81; // r14
+  CAnimatedJoint *p_m_animatedTranslation; // r9
+  CAnimatedJoint *p_m_animatedRotation; // r8
+  unsigned int v84; // esi
+  const CAnimationMediator *m_externalAnimationMediator; // rdx
+  const CSkeletonDescription *v86; // rax
+  __m128 m_scale_low; // xmm6
+  SSkeletonBoneInfo *v88; // rbx
+  bool v89; // di
+  __int64 v90; // rax
+  __int64 v91; // rax
+  ndPosQuatTransform **v92; // rcx
+  __m128 v93; // xmm3
+  __m128 v94; // xmm2
+  const CRetargetingParameter *v95; // r8
+  volatile signed __int32 *v96; // rbx
+  __int64 v97; // rcx
+  const CRetargetingParameter *v98; // r8
+  volatile signed __int32 *v99; // rbx
+  bool useNearestFrame; // [rsp+58h] [rbp-B0h]
+  float *v102; // [rsp+70h] [rbp-98h]
+  unsigned int externalRetargetingParam; // [rsp+78h] [rbp-90h]
+  int externalRetargetingParama; // [rsp+78h] [rbp-90h]
+  unsigned int externalRetargetingParamb; // [rsp+78h] [rbp-90h]
+  SSkeletonBoneInfo *skeletonBonesInfoTable; // [rsp+80h] [rbp-88h] BYREF
+  SAnimEvalInfo v107; // [rsp+88h] [rbp-80h] BYREF
+  SAnimEvalInfo evalInfo; // [rsp+98h] [rbp-70h] BYREF
+  __int64 retargetingPosition; // [rsp+B0h] [rbp-58h] BYREF
+  ndPosQuatTransform *pjr; // [rsp+B8h] [rbp-50h] BYREF
+  G4::Vector3f expMap; // [rsp+C8h] [rbp-40h] BYREF
+  G4::Vector3f vec; // [rsp+D8h] [rbp-30h] BYREF
+  G4::Vector3f v113; // [rsp+E8h] [rbp-20h] BYREF
+  ndQuat v114; // [rsp+F8h] [rbp-10h] BYREF
+  G4::VectorSIMD4f v115; // [rsp+108h] [rbp+0h] MAPDST
+  ndQuat tPrevToCur_8; // [rsp+128h] [rbp+20h] BYREF
+  __m128 v118; // [rsp+138h] [rbp+30h]
+  ndPosQuatTransform v119; // [rsp+148h] [rbp+40h] BYREF
+  __m128 v120; // [rsp+168h] [rbp+60h]
+  __m128 v121; // [rsp+178h] [rbp+70h]
+  __m128 v122; // [rsp+188h] [rbp+80h]
+  __m128 v123; // [rsp+198h] [rbp+90h]
+  __m128 v124; // [rsp+1A8h] [rbp+A0h]
+  __m128 v125; // [rsp+1B8h] [rbp+B0h]
+  __m128 v126; // [rsp+1C8h] [rbp+C0h]
+  __m128 v127; // [rsp+1D8h] [rbp+D0h]
+  __m128 v128; // [rsp+1E8h] [rbp+E0h]
+  __m128 v129; // [rsp+1F8h] [rbp+F0h]
+  __m128 v130; // [rsp+208h] [rbp+100h]
+  __m128 v131; // [rsp+218h] [rbp+110h]
+  __m128 v132; // [rsp+228h] [rbp+120h]
+  __m128 v133; // [rsp+238h] [rbp+130h]
+  __int128 v134; // [rsp+248h] [rbp+140h]
+  __int128 v135; // [rsp+258h] [rbp+150h]
+  __m128 v136; // [rsp+268h] [rbp+160h]
+  CFixedString<32> v137; // [rsp+278h] [rbp+170h] BYREF
+  ndPosQuatTransform v138; // [rsp+298h] [rbp+190h] BYREF
+  ndPosQuatTransform v139; // [rsp+2B8h] [rbp+1B0h] BYREF
+
+  m_proxyAndType = (char *)retargetingParams.m_proxy.m_proxyAndType;
+  CurrBoundedTime = CSingleAnimEvalOpe::GetCurrBoundedTime(this);
+  Myval2 = this->m_animationStreamer._Mypair._Myval2;
+  resolvedAnimData = this->m_animData;
+  v15 = CurrBoundedTime;
+  *(_QWORD *)&v107.m_sourceTime = this->m_animData;
+  if ( Myval2 )
+  {
+    v16 = 1;
+    if ( !evalWithExternal )
+      v16 = CAnimStreamer::Update(Myval2, CurrBoundedTime, animationMediator);
+    p_animStreamer = &this->m_animationStreamer._Mypair._Myval2;
+    if ( v16 )
+    {
+      m_currentPart = (*p_animStreamer)->m_currentPart;
+      if ( m_currentPart )
+        resolvedAnimData = CStreamedAnimPart::GetAnimData(m_currentPart);
+      else
+        resolvedAnimData = (*p_animStreamer)->m_animData;
+      *(_QWORD *)&v107.m_sourceTime = resolvedAnimData;
+    }
+    else if ( p_animStreamer != (CAnimStreamer **)&retargetingPosition )
+    {
+      v18 = *p_animStreamer;
+      *p_animStreamer = 0LL;
+      if ( v18 )
+        ((void (__fastcall *)(CAnimStreamer *, __int64))v18->~CAnimStreamer)(v18, 1LL);
+    }
+  }
+  if ( this->m_animData->m_offsets[8] )
+    v20 = (float *)((char *)this->m_animData + this->m_animData->m_offsets[8]);
+  else
+    v20 = 0LL;
+  v21 = *(_QWORD *)retargetingParams.m_proxy.m_proxyAndType;
+  v102 = v20;
+  v22 = *(_QWORD *)retargetingParams.m_proxy.m_proxyAndType & 0xFFFFFFFFFFFFFFFEuLL;
+  if ( (*(_BYTE *)retargetingParams.m_proxy.m_proxyAndType & 1) != 0 )
+    v23 = *(_QWORD *)(v22 + 24);
+  else
+    v23 = *(_QWORD *)(v21 + 16);
+  if ( v23 )
+  {
+    if ( (*(_BYTE *)retargetingParams.m_proxy.m_proxyAndType & 1) != 0 )
+      v24 = *(_QWORD *)(v22 + 24);
+    else
+      v24 = *(_QWORD *)(v21 + 16);
+    displacementScalingFactor = *(_DWORD *)(v24 + 64);
+  }
+  else
+  {
+    displacementScalingFactor = (unsigned int)FLOAT_1_0;
+  }
+  if ( (param->m_evalType.m_ChunkArray[0] & 2) != 0 )
+  {
+    DisplacementDiffBoundTime = GetDisplacementDiffBoundTime(
+                                  &v138,
+                                  this->m_animTechParam.m_prevTranslationTime,
+                                  this->m_animTechParam.m_currTranslationTime,
+                                  this->m_clipStartTime,
+                                  this->m_clipEndTime,
+                                  this->m_forceLoop,
+                                  resolvedAnimData,
+                                  displacementScalingFactor);
+    v = DisplacementDiffBoundTime->m_pos.v;
+    v28 = DisplacementDiffBoundTime->m_quat.q.v;
+    result->m_rawAnimationDiffTransform.m_pos.v = v;
+    v115.v = v28;
+    v115.v = v;
+    if ( this->m_animTechParam.m_useSyncPointTranslation )
+    {
+      LODWORD(vec.v.v[2]) = _mm_shuffle_ps(v, v, 170).m128_u32[0];
+      LODWORD(vec.v.v[0]) = v.m128_i32[0];
+      LODWORD(vec.v.v[1]) = _mm_shuffle_ps(v, v, 85).m128_u32[0];
+      ndPosQuatTransform::TransformVector(&result->m_displacementTransform, &v113, &vec);
+      v29 = (__m128)LODWORD(v113.v.v[0]);
+      v30 = (__m128)LODWORD(v113.v.v[1]);
+      v31 = (__m128)LODWORD(v113.v.v[2]);
+      v29.m128_f32[0] = (float)(v113.v.v[0] + this->m_animTechParam.m_syncPointTranslationInduction.v.v[0])
+                      + result->m_displacementTransform.m_pos.v.m128_f32[0];
+      v30.m128_f32[0] = (float)(v113.v.v[1] + this->m_animTechParam.m_syncPointTranslationInduction.v.v[1])
+                      + result->m_displacementTransform.m_pos.v.m128_f32[1];
+      v31.m128_f32[0] = (float)(v113.v.v[2] + this->m_animTechParam.m_syncPointTranslationInduction.v.v[2])
+                      + result->m_displacementTransform.m_pos.v.m128_f32[2];
+      result->m_displacementTransform.m_pos.v = _mm_unpacklo_ps(
+                                                  _mm_unpacklo_ps(v29, v31),
+                                                  _mm_unpacklo_ps(v30, (__m128)0LL));
+    }
+    else
+    {
+      v32.q.v = (__m128)this->m_animTechParam.m_translationBasis.m_quat;
+      v136 = _mm_shuffle_ps(v32.q.v, v32.q.v, 255);
+      v134 = _xmm;
+      v135 = _xmm;
+      v33 = _mm_sub_ps(
+              _mm_mul_ps(_mm_shuffle_ps(v32.q.v, v32.q.v, 210), v),
+              _mm_mul_ps(_mm_shuffle_ps(v, v, 210), v32.q.v));
+      v120 = _mm_sub_ps(_mm_mul_ps(v136, v136), (__m128)_xmm);
+      v34 = _mm_mul_ps(
+              _mm_add_ps(
+                _mm_mul_ps(v, v120),
+                _mm_add_ps(
+                  _mm_mul_ps(_mm_dp_ps(v, v32.q.v, 127), v32.q.v),
+                  _mm_mul_ps(_mm_shuffle_ps(v33, v33, 210), v136))),
+              (__m128)_xmm);
+      v35.v = _mm_add_ps(this->m_animTechParam.m_translationBasis.m_pos.v, v34);
+      v121 = v34;
+      result->m_displacementTransform.m_pos = (G4::VectorSIMD4f)v35.v;
+    }
+  }
+  else
+  {
+    v = v115.v;
+    v28 = v115.v;
+  }
+  if ( (param->m_evalType.m_ChunkArray[0] & 4) != 0 )
+  {
+    v36 = (param->m_evalType.m_ChunkArray[0] & 2) != 0;
+    if ( (param->m_evalType.m_ChunkArray[0] & 2) == 0 )
+      goto LABEL_36;
+    if ( COERCE_FLOAT(COERCE_UNSIGNED_INT(this->m_animTechParam.m_prevRotationTime - this->m_animTechParam.m_prevTranslationTime) & _xmm) > 0.000001
+      || COERCE_FLOAT(COERCE_UNSIGNED_INT(this->m_animTechParam.m_currRotationTime - this->m_animTechParam.m_currTranslationTime) & _xmm) > 0.000001 )
+    {
+      v36 = 0;
+    }
+    if ( v36 )
+    {
+      v119.m_quat.q.v = v28;
+      v37 = &v119;
+      v119.m_pos.v = v;
+    }
+    else
+    {
+LABEL_36:
+      v37 = GetDisplacementDiffBoundTime(
+              &v139,
+              this->m_animTechParam.m_prevRotationTime,
+              this->m_animTechParam.m_currRotationTime,
+              this->m_clipStartTime,
+              this->m_clipEndTime,
+              this->m_forceLoop,
+              resolvedAnimData,
+              displacementScalingFactor);
+    }
+    v38 = (__m128)_mm_loadu_si128((const __m128i *)v37);
+    v39.v = (__m128)v37->m_pos;
+    result->m_rawAnimationDiffTransform.m_quat.q.v = v38;
+    tPrevToCur_8.q.v = v38;
+    v118 = v39.v;
+    if ( this->m_animTechParam.m_useSyncPointRotation )
+    {
+      v40 = _mm_dp_ps(v38, v38, 255);
+      v41 = _mm_rsqrt_ps(v40);
+      v42 = _mm_mul_ps(_mm_sub_ps((__m128)_xmm, _mm_mul_ps(_mm_mul_ps(v41, v40), v41)), _mm_mul_ps(v41, (__m128)_xmm));
+      tPrevToCur_8.q.v = _mm_mul_ps(
+                           v38,
+                           _mm_mul_ps(
+                             _mm_sub_ps((__m128)_xmm, _mm_mul_ps(_mm_mul_ps(v42, v40), v42)),
+                             _mm_mul_ps(v42, (__m128)_xmm)));
+      ToExpMap(&expMap, &tPrevToCur_8);
+      v41.m128_f32[0] = expMap.v.v[1] + this->m_animTechParam.m_syncPointRotationInduction.v.v[1];
+      expMap.v.v[0] = expMap.v.v[0] + this->m_animTechParam.m_syncPointRotationInduction.v.v[0];
+      v43 = expMap.v.v[2] + this->m_animTechParam.m_syncPointRotationInduction.v.v[2];
+      LODWORD(expMap.v.v[1]) = v41.m128_i32[0];
+      expMap.v.v[2] = v43;
+      FromExpMap(&v114, &expMap);
+      v44 = (__m128)_mm_loadu_si128((const __m128i *)&result->m_displacementTransform);
+      v45 = _mm_shuffle_ps(v44, v44, 0);
+      v46 = _mm_shuffle_ps(v44, v44, 85);
+      v47 = _mm_movehl_ps(v45, _mm_xor_ps(v45, (__m128)`G4::Math::SSEIntrinsics::Negate'::`2'::_MASK));
+      v48 = _mm_shuffle_ps(v44, v44, 170);
+      v49 = _mm_xor_ps(v48, (__m128)`G4::Math::SSEIntrinsics::Negate'::`2'::_MASK);
+      v50 = _mm_movehl_ps(v48, v49);
+      v124 = v49;
+      v122 = _mm_shuffle_ps(v47, v47, 34);
+      v123 = _mm_movelh_ps(v46, _mm_xor_ps(v46, (__m128)`G4::Math::SSEIntrinsics::Negate'::`2'::_MASK));
+      v125 = _mm_shuffle_ps(v50, v50, 40);
+      v126 = _mm_shuffle_ps(v44, v44, 255);
+      v127 = _mm_add_ps(
+               _mm_add_ps(_mm_mul_ps(_mm_shuffle_ps(v114.q.v, v114.q.v, 27), v122), _mm_mul_ps(v114.q.v, v126)),
+               _mm_mul_ps(_mm_shuffle_ps(v114.q.v, v114.q.v, 78), v123));
+      result->m_displacementTransform.m_quat.q.v = _mm_add_ps(
+                                                     _mm_mul_ps(_mm_shuffle_ps(v114.q.v, v114.q.v, 177), v125),
+                                                     v127);
+    }
+    else
+    {
+      v51 = (__m128)_mm_loadu_si128((const __m128i *)&this->m_animTechParam.m_rotationBasis);
+      v52 = _mm_shuffle_ps(v51, v51, 0);
+      v53 = _mm_shuffle_ps(v51, v51, 85);
+      v54 = _mm_movehl_ps(v52, _mm_xor_ps(v52, (__m128)`G4::Math::SSEIntrinsics::Negate'::`2'::_MASK));
+      v55 = _mm_shuffle_ps(v51, v51, 170);
+      v56 = _mm_xor_ps(v55, (__m128)`G4::Math::SSEIntrinsics::Negate'::`2'::_MASK);
+      v57 = _mm_movehl_ps(v55, v56);
+      v130 = v56;
+      v128 = _mm_shuffle_ps(v54, v54, 34);
+      v129 = _mm_movelh_ps(v53, _mm_xor_ps(v53, (__m128)`G4::Math::SSEIntrinsics::Negate'::`2'::_MASK));
+      v131 = _mm_shuffle_ps(v57, v57, 40);
+      v132 = _mm_shuffle_ps(v51, v51, 255);
+      v133 = _mm_add_ps(
+               _mm_add_ps(_mm_mul_ps(_mm_shuffle_ps(v38, v38, 27), v128), _mm_mul_ps(v38, v132)),
+               _mm_mul_ps(_mm_shuffle_ps(v38, v38, 78), v129));
+      result->m_displacementTransform.m_quat.q.v = _mm_add_ps(_mm_mul_ps(_mm_shuffle_ps(v38, v38, 177), v131), v133);
+    }
+  }
+  if ( (param->m_evalType.m_ChunkArray[0] & 0x81) != 0 )
+  {
+    result->m_hasJointResults = 1;
+    v58 = result->m_jointTransformArray.m_properties.m_fullValue >> 63;
+    pjr = (ndPosQuatTransform *)&result->m_jointTransformArray.m_data;
+    if ( !(_BYTE)v58 )
+      pjr = result->m_jointTransformArray.m_data;
+    m_skeletonDescription = param->m_skeletonDescription;
+    m_boneInfoTable = m_skeletonDescription->m_boneInfoTable;
+    m_fullValue = m_skeletonDescription->m_graphicBones->m_properties.m_fullValue;
+    v62 = m_boneInfoTable->m_properties.m_fullValue;
+    p_m_data = (SSkeletonBoneInfo *)&m_boneInfoTable->m_data;
+    v64 = HIDWORD(m_fullValue) & 0x7FFFFFFF;
+    v65 = HIDWORD(v62) & 0x7FFFFFFF;
+    *(_QWORD *)&evalInfo.m_sourceTime = v64;
+    externalRetargetingParam = HIDWORD(v62) & 0x7FFFFFFF;
+    skeletonBonesInfoTable = p_m_data;
+    if ( v62 >= 0 )
+      skeletonBonesInfoTable = *(SSkeletonBoneInfo **)&p_m_data->m_boneID.m_value;
+    v66 = CSingleAnimEvalOpe::UseNearestFrameUpdate(this, v15);
+    LOBYTE(v67) = param->m_evalType.m_ChunkArray[0];
+    useNearestFrame = v66;
+    if ( (v67 & 1) != 0 && (_DWORD)v64 && v65 )
+    {
+      m_effectiveLODDistance = param->m_effectiveLODDistance;
+      GetEvalInfoAtTime((SAnimEvalInfo *)&evalInfo.m_frame, v15, (SAnimEvalInfo *)resolvedAnimData);
+      GetJointRotationsAtTime(
+        (const SAnimEvalInfo *)&evalInfo.m_frame,
+        pjr,
+        &result->m_animatedRotation,
+        &result->m_animatedTranslation,
+        &param->m_jointBitMask,
+        externalRetargetingParam,
+        skeletonBonesInfoTable,
+        m_effectiveLODDistance,
+        *(const CAnimData **)&v107.m_sourceTime,
+        useNearestFrame);
+      GetJointTranslationsAtTime(
+        (const SAnimEvalInfo *)&evalInfo.m_frame,
+        pjr,
+        &result->m_animatedRotation,
+        &result->m_animatedTranslation,
+        &param->m_jointBitMask,
+        externalRetargetingParam,
+        skeletonBonesInfoTable,
+        m_effectiveLODDistance,
+        *(const CAnimData **)&v107.m_sourceTime,
+        useNearestFrame);
+      v67 = param->m_evalType.m_ChunkArray[0];
+      v65 = externalRetargetingParam;
+      *(float *)&v64 = evalInfo.m_sourceTime;
+    }
+    v69 = (int *)v102;
+    if ( (v67 & 0x80u) != 0
+      && v102
+      && (_DWORD)v64
+      && v65
+      && (externalRetargetingParama = 0, v107.m_sourceTime = *v102, SLODWORD(v107.m_sourceTime) > 0) )
+    {
+      v70 = v102 + 6;
+      while ( 1 )
+      {
+        CPartAnimation::Impl_MakeDebugString((CPartAnimation *)(v70 - 5), &v137, 0, *((_DWORD *)v70 - 1));
+        evalInfo.m_sourceTime = NAN;
+        CNoCaseStringID::PrivateSetContent((VertexElementID *)&evalInfo, 1, v137.data, 0);
+        m_sourceTime = evalInfo.m_sourceTime;
+        if ( LODWORD(evalInfo.m_sourceTime) == param->m_attachmentID.m_value )
+        {
+          m_value = param->m_parentBoneName.m_value;
+          if ( (m_value == -1 || *(_DWORD *)v70 == m_value) && v15 >= *(v70 - 3) && v15 <= *(v70 - 2) )
+          {
+            v73 = *((_BYTE *)v70 + 8);
+            if ( v73 == 1 || v73 == 8 )
+              break;
+          }
+        }
+        v70 += 8;
+        if ( ++externalRetargetingParama >= SLODWORD(v107.m_sourceTime) )
+          goto LABEL_63;
+      }
+      if ( *((_DWORD *)v70 - 4) )
+        v81 = (SAnimEvalInfo *)((char *)v70 + *((unsigned int *)v70 - 4) - 20);
+      else
+        v81 = 0LL;
+      externalRetargetingParamb = param->m_effectiveLODDistance;
+      GetEvalInfoAtTime(&v107, v15 - *(v70 - 3), v81);
+      p_m_animatedTranslation = &result->m_animatedTranslation;
+      p_m_animatedRotation = &result->m_animatedRotation;
+      if ( *((_BYTE *)v70 + 8) == 8 )
+      {
+        GetSingleJointRotationAtTime(
+          &v107,
+          pjr,
+          p_m_animatedRotation,
+          p_m_animatedTranslation,
+          &param->m_jointBitMask,
+          (const CAnimData *)v81,
+          param->m_subPartBoneIdx);
+        v84 = externalRetargetingParamb;
+      }
+      else
+      {
+        v84 = externalRetargetingParamb;
+        GetJointRotationsAtTime(
+          &v107,
+          pjr,
+          p_m_animatedRotation,
+          p_m_animatedTranslation,
+          &param->m_jointBitMask,
+          v65,
+          skeletonBonesInfoTable,
+          externalRetargetingParamb,
+          (const CAnimData *)v81,
+          0);
+      }
+      GetJointTranslationsAtTime(
+        &v107,
+        pjr,
+        &result->m_animatedRotation,
+        &result->m_animatedTranslation,
+        &param->m_jointBitMask,
+        v65,
+        skeletonBonesInfoTable,
+        v84,
+        (const CAnimData *)v81,
+        0);
+      result->m_hasAttachmentWeight = 1;
+      if ( !CRetargetingOpe::IsRetargetingObject(LODWORD(m_sourceTime))
+        || (m_externalAnimationMediator = param->m_externalAnimationMediator) == 0LL )
+      {
+LABEL_63:
+        v69 = (int *)v102;
+        goto LABEL_64;
+      }
+      v86 = m_externalAnimationMediator->m_skeletonDescription;
+      if ( v86 )
+        m_scale_low = (__m128)LODWORD(v86->m_scale);
+      else
+        m_scale_low = (__m128)(unsigned int)FLOAT_1_0;
+      CRetargetingOpe::RetargetingRequired(
+        (GenericHandle<CRetargetingParameter,NomadHandleTrait> *)&skeletonBonesInfoTable,
+        m_externalAnimationMediator,
+        this->m_animData);
+      v88 = skeletonBonesInfoTable;
+      v89 = ((unsigned __int8)skeletonBonesInfoTable & 1) == 0;
+      if ( ((unsigned __int8)skeletonBonesInfoTable & 1) != 0 )
+        v90 = *(_QWORD *)(((unsigned __int64)skeletonBonesInfoTable & 0xFFFFFFFFFFFFFFFEuLL) + 24);
+      else
+        v90 = *(_QWORD *)&skeletonBonesInfoTable[1].m_boneLODDistance;
+      if ( !v90 )
+        goto LABEL_105;
+      if ( ((unsigned __int8)skeletonBonesInfoTable & 1) != 0 )
+        v91 = *(_QWORD *)(((unsigned __int64)skeletonBonesInfoTable & 0xFFFFFFFFFFFFFFFEuLL) + 24);
+      else
+        v91 = *(_QWORD *)&skeletonBonesInfoTable[1].m_boneLODDistance;
+      m_scale_low.m128_f32[0] = m_scale_low.m128_f32[0] * *(float *)(v91 + 68);
+      if ( m_scale_low.m128_f32[0] != 1.0 )
+      {
+        v92 = &result->m_jointTransformArray.m_data;
+        if ( (result->m_jointTransformArray.m_properties.m_fullValue & 0x8000000000000000uLL) == 0LL )
+          v92 = (ndPosQuatTransform **)*v92;
+        v93 = m_scale_low;
+        v94 = m_scale_low;
+        v93.m128_f32[0] = m_scale_low.m128_f32[0] * *((float *)v92 + 4);
+        v94.m128_f32[0] = m_scale_low.m128_f32[0] * *((float *)v92 + 5);
+        m_scale_low.m128_f32[0] = m_scale_low.m128_f32[0] * *((float *)v92 + 6);
+        *((__m128 *)v92 + 1) = _mm_unpacklo_ps(_mm_unpacklo_ps(v93, m_scale_low), _mm_unpacklo_ps(v94, (__m128)0LL));
+      }
+      if ( isAdditive )
+      {
+LABEL_105:
+        v74 = animationMediator;
+      }
+      else
+      {
+        if ( v89 )
+          v95 = *(const CRetargetingParameter **)&v88[1].m_boneLODDistance;
+        else
+          v95 = *(const CRetargetingParameter **)(((unsigned __int64)v88 & 0xFFFFFFFFFFFFFFFEuLL) + 24);
+        v74 = animationMediator;
+        CRetargetingOpe::ApplyBoneOffset(animationMediator, result, v95, 0LL);
+      }
+      if ( !v89 )
+      {
+        v96 = (volatile signed __int32 *)((unsigned __int64)v88 & 0xFFFFFFFFFFFFFFFEuLL);
+        if ( _InterlockedExchangeAdd(v96 + 2, 0xFFFFFFFF) == 1 )
+        {
+          (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v96 + 8LL))(v96);
+          (**(void (__fastcall ***)(volatile signed __int32 *, __int64))v96)(v96, 1LL);
+        }
+      }
+      v69 = (int *)v102;
+    }
+    else
+    {
+LABEL_64:
+      v74 = animationMediator;
+    }
+    m_proxyAndType = (char *)retargetingParams.m_proxy.m_proxyAndType;
+  }
+  else
+  {
+    v69 = (int *)v102;
+    v74 = animationMediator;
+  }
+  if ( (param->m_evalType.m_ChunkArray[0] & 0x40) != 0 && v69 && *v69 > 0 )
+  {
+    v75 = (unsigned int)*v69;
+    v76 = v69 + 4;
+    do
+    {
+      if ( v15 >= *((float *)v76 - 1) && v15 <= *(float *)v76 )
+      {
+        v77 = *((_BYTE *)v76 + 16);
+        if ( v77 == 1 || v77 == 8 )
+          SPartAnimationArray::PushBack(&result->m_partEvents, (const CPartAnimation *)(v76 - 3));
+      }
+      v76 += 8;
+      --v75;
+    }
+    while ( v75 );
+  }
+  v78 = *m_proxyAndType;
+  v79 = *(_QWORD *)m_proxyAndType;
+  if ( (*m_proxyAndType & 1) != 0 )
+    v80 = *(_QWORD *)((v79 & 0xFFFFFFFFFFFFFFFEuLL) + 24);
+  else
+    v80 = *(_QWORD *)(v79 + 16);
+  if ( v80 )
+  {
+    CRetargetingOpe::GetRetargetingCenter(
+      (G4::Vector3f *)&pjr,
+      (const ndVector<CSharedPtr<CRenderToTextureObjectBase,RefCountPolicy::CThreadSafe>,NoLock,ndVectorProperties<CSharedPtr<CRenderToTextureObjectBase,RefCountPolicy::CThreadSafe> > > *)&this->m_animTechParam.m_anchorsData);
+    v97 = *(_QWORD *)m_proxyAndType;
+    if ( (*(_QWORD *)m_proxyAndType & 1) != 0 )
+      v98 = *(const CRetargetingParameter **)((v97 & 0xFFFFFFFFFFFFFFFEuLL) + 24);
+    else
+      v98 = *(const CRetargetingParameter **)(v97 + 16);
+    CRetargetingOpe::Retarget(v74, result, v98, (const G4::Vector3f *)&pjr, isAdditive);
+    v78 = *m_proxyAndType;
+  }
+  if ( (v78 & 1) != 0 )
+  {
+    v99 = (volatile signed __int32 *)(*(_QWORD *)m_proxyAndType & 0xFFFFFFFFFFFFFFFEuLL);
+    if ( _InterlockedExchangeAdd(v99 + 2, 0xFFFFFFFF) == 1 )
+    {
+      (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v99 + 8LL))(v99);
+      (**(void (__fastcall ***)(volatile signed __int32 *, __int64))v99)(v99, 1LL);
+    }
+  }
+}

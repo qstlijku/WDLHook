@@ -606,11 +606,19 @@ void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1,
         }
     }
 
+    if (counter < 100)
+    {
+        tprintf("ReadTwoValuesDetour: Before original func call...\n");
+        tprintf("------------------------------------------------------\n");
+        printChunkReaderState(&a1->firstChunkReader);
+    }
+
     ReadTwoValues(a1, quat1, quat2, interpolantBits);
 
-    if (counter < 10)
+    if (counter < 100)
     {
-        printf("After original func call...\n");
+        tprintf("ReadTwoValuesDetour: After original func call...\n");
+        tprintf("------------------------------------------------------\n");
         printChunkReaderState(&a1->firstChunkReader);
         /*
         std::string result = "Chunk reader stream: ";
@@ -628,10 +636,10 @@ void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1,
 
         glm::vec3 q1 = PrintQuat(quat1);
         glm::vec3 q2 = PrintQuat(quat2);
-        printf("First quat (raw): %f %f %f %f\n", quat1[0], quat1[1], quat1[2], quat1[3]);
-        printf("Second quat (raw): %f %f %f %f\n", quat2[0], quat2[1], quat2[2], quat2[3]);
-        printf("First quat (euler): %f %f %f\n", q1[0], q1[1], q1[2]);
-        printf("Second quat (euler): %f %f %f\n", q2[0], q2[1], q2[2]);
+        tprintf("First quat (raw): %f %f %f %f\n", quat1[0], quat1[1], quat1[2], quat1[3]);
+        tprintf("Second quat (raw): %f %f %f %f\n", quat2[0], quat2[1], quat2[2], quat2[3]);
+        tprintf("First quat (euler): %f %f %f\n", q1[0], q1[1], q1[2]);
+        tprintf("Second quat (euler): %f %f %f\n", q2[0], q2[1], q2[2]);
         counter++;
     }
 }
@@ -741,5 +749,5 @@ void ChunkReader::Initialize()
     //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
-    //HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
+    HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
 }

@@ -1,0 +1,65 @@
+00000000 struct __cppobj __declspec(align(16)) CAnimFrameChunkStreamReader<CQuaternion> : CAnimFrameChunkStreamReaderBase // sizeof=0x40
+00000000 {                                       // XREF: CAnimCompressedChunkStreamReader<CQuaternion>/r
+00000000                                         // CAnimCompressedChunkStreamReader<CQuaternion>/r
+00000030     unsigned int m_signBits;
+00000034     // padding byte
+00000035     // padding byte
+00000036     // padding byte
+00000037     // padding byte
+00000038     // padding byte
+00000039     // padding byte
+0000003A     // padding byte
+0000003B     // padding byte
+0000003C     // padding byte
+0000003D     // padding byte
+0000003E     // padding byte
+0000003F     // padding byte
+00000040 };
+
+00000000 struct __cppobj __declspec(align(16)) CAnimCompressedChunkStreamReader<CQuaternion> // sizeof=0x90
+00000000 {                                       // XREF: CAnimCompressedRotationStreamReader/r
+00000000                                         // _anonymous_namespace_::GetChunkedValueAtTime_CQuaternion_/r ...
+00000000     CAnimFrameChunkStreamReader<CQuaternion> m_firstChunkReader;
+00000040     CAnimFrameChunkStreamReader<CQuaternion> m_secondChunkReader;
+00000080     unsigned int m_firstFrameToRead;
+00000084     unsigned int m_secondFrameToRead;
+00000088     // padding byte
+00000089     // padding byte
+0000008A     // padding byte
+0000008B     // padding byte
+0000008C     // padding byte
+0000008D     // padding byte
+0000008E     // padding byte
+0000008F     // padding byte
+00000090 };
+
+00000000 struct __declspec(align(8)) Impl_SimpleLittleEndianBitStreamReader // sizeof=0x10
+00000000 {                                       // XREF: CAnimFrameChunkStreamReaderBase/r
+00000000                                         // SBitStreamReader/r
+00000000     const unsigned __int8 *m_base;
+00000008     unsigned int m_bitPosition;         // XREF: EvaluateAnimation(SAnimEvalInfo const &,CPoseAnimation const *,float,ushort const *,SBitMask<512,0> const &,ushort,bool,float *)+E6/o
+00000008                                         // EvaluateAnimation(SAnimEvalInfo const &,CPoseAnimation const *,float,ushort const *,SBitMask<512,0> const &,ushort,bool,float *)+172/o ...
+0000000C     // padding byte
+0000000D     // padding byte
+0000000E     // padding byte
+0000000F     // padding byte
+00000010 };
+
+00000000 struct __declspec(align(8)) CAnimFrameChunkStreamReaderBase // sizeof=0x30
+00000000 {                                       // XREF: CAnimFrameChunkStreamReader<CQuaternion>/r
+00000000                                         // CAnimFrameChunkStreamReader<CVector3>/r ...
+00000000     Impl_SimpleLittleEndianBitStreamReader m_bitstream;
+00000000                                         // XREF: EvaluateAnimation(SAnimEvalInfo const &,CPoseAnimation const *,float,ushort const *,SBitMask<512,0> const &,ushort,bool,float *)+E6/o
+00000000                                         // EvaluateAnimation(SAnimEvalInfo const &,CPoseAnimation const *,float,ushort const *,SBitMask<512,0> const &,ushort,bool,float *)+172/o ...
+00000010     unsigned int m_currentDynamicDatum;
+00000014     unsigned int m_numDynamicData;
+00000018     unsigned int m_numFramesInThisChunk;
+0000001C     unsigned int m_currentBitPosition;
+00000020     unsigned int m_startOfNextDatum;
+00000024     unsigned int m_currentNumInterpolantBits;
+00000028     unsigned int m_constFlags;
+0000002C     // padding byte
+0000002D     // padding byte
+0000002E     // padding byte
+0000002F     // padding byte
+00000030 };

@@ -1,0 +1,158 @@
+void __fastcall GetJointRotationsAtTime(
+        const SAnimEvalInfo *evalInfo,
+        ndPosQuatTransform *pjr,
+        CAnimatedJoint *animatedRotation,
+        CAnimatedJoint *animatedTranslation,
+        const TBitMask<long,640> *jointsMask,
+        unsigned int nbBonesInInfoTable,
+        const SSkeletonBoneInfo *skeletonBonesInfoTable,
+        unsigned int currentLODDistance,
+        const CAnimData *resolvedAnimData,
+        bool useNearestFrame)
+{
+  unsigned int v10; // ebx
+  CQuaternionPacked48 *v13; // r14
+  unsigned __int16 m_lastFrame; // cx
+  unsigned __int16 v15; // ax
+  unsigned __int64 v16; // rcx
+  __int64 v17; // rax
+  void *v18; // rsp
+  unsigned __int16 m_frame; // ax
+  CAnimCompressedChunkStream *m_chunkStream; // rcx
+  unsigned int v21; // r15d
+  __int16 v22; // ax
+  const unsigned __int8 *chunk1LocalAddress; // r8
+  unsigned int v24; // eax
+  int v25; // edx
+  CQuaternion *(__fastcall *v26)(CQuaternion *, CQuaternion *, CQuaternion *, float); // r15
+  unsigned __int64 v27; // r14
+  unsigned int v28; // edx
+  unsigned int v29; // eax
+  _OWORD *v30; // rax
+  CBoneAddressingTableEntry boneAddressingTable; // [rsp+30h] [rbp+0h] BYREF
+  const SAnimEvalInfo *v32; // [rsp+38h] [rbp+8h]
+  CAnimCompressedChunkStreamReader<CQuaternion> rotations; // [rsp+40h] [rbp+10h] BYREF
+  CAnimCompressedChunkStream jointRotations; // [rsp+D0h] [rbp+A0h] BYREF
+  CAnimChunkDataTransferHelper rotationChunkHelper; // [rsp+F0h] [rbp+C0h] BYREF
+  CQuaternion q1; // [rsp+120h] [rbp+F0h] BYREF
+  CQuaternion q2; // [rsp+130h] [rbp+100h] BYREF
+  CQuaternion v38; // [rsp+140h] [rbp+110h] BYREF
+
+  v10 = 0;
+  boneAddressingTable = (CBoneAddressingTableEntry)pjr;
+  v32 = evalInfo;
+  if ( resolvedAnimData && nbBonesInInfoTable )
+  {
+    if ( resolvedAnimData->m_offsets[4] )
+      v13 = (CQuaternionPacked48 *)((char *)resolvedAnimData + resolvedAnimData->m_offsets[4]);
+    else
+      v13 = 0LL;
+    m_lastFrame = resolvedAnimData->m_lastFrame;
+    jointRotations.m_dataCount = resolvedAnimData->m_dataCounts[4];
+    *(_DWORD *)&jointRotations.m_numFramesPerChunk = 196616;
+    if ( resolvedAnimData->m_offsets[6] )
+      jointRotations.m_dataEA = (char *)resolvedAnimData + resolvedAnimData->m_offsets[6];
+    else
+      jointRotations.m_dataEA = 0LL;
+    v15 = resolvedAnimData->m_nbBonesInAnim & 0xFFF;
+    jointRotations.m_lastFrame = m_lastFrame;
+    v16 = 8LL * v15;
+    v17 = v16 + 15;
+    if ( v16 + 15 < v16 )
+      v17 = 0xFFFFFFFFFFFFFF0LL;
+    v18 = alloca(v17 & 0xFFFFFFFFFFFFFFF0uLL);
+    FillBoneAddressingTable(
+      &boneAddressingTable,
+      0x10u,
+      nbBonesInInfoTable,
+      skeletonBonesInfoTable,
+      currentLODDistance,
+      resolvedAnimData);
+    rotationChunkHelper.m_chunkStream = &jointRotations;
+    m_frame = jointRotations.m_lastFrame;
+    if ( evalInfo->m_frame < jointRotations.m_lastFrame )
+      m_frame = evalInfo->m_frame;
+    rotationChunkHelper.m_clampedFrame = m_frame;
+    rotationChunkHelper.m_chunk = m_frame >> SLOBYTE(jointRotations.m_numBitsForFramesPerChunk);
+    rotationChunkHelper.m_isEmpty = jointRotations.m_dataCount == 0;
+    CAnimChunkDataTransferHelper::ReadChunkInfos(&rotationChunkHelper, Memtag_5);
+    m_chunkStream = rotationChunkHelper.m_chunkStream;
+    v21 = 0;
+    v22 = resolvedAnimData->m_nbBonesInAnim & 0xFFF;
+    chunk1LocalAddress = (const unsigned __int8 *)&rotationChunkHelper.m_chunkStream->m_dataEA[rotationChunkHelper.m_chunkInfos.m_chunkStartOffset];
+    q1.m_quat.q.v.m128_u64[0] = (unsigned __int64)chunk1LocalAddress;
+    if ( v22 )
+    {
+      do
+      {
+        if ( (*(&boneAddressingTable.m_boneFlags + 8 * v21) & 0x30) == 0x30 )
+        {
+          *(&boneAddressingTable.m_boneFlags + 8 * v21) &= ~0x10u;
+          if ( *(&boneAddressingTable.m_index + 2 * v21) != -1 )
+          {
+            v24 = jointsMask->m_ChunkArray[(unsigned __int64)v21 >> 5];
+            if ( _bittest((const int *)&v24, (unsigned __int8)((int)v21 % 32)) )
+            {
+              CQuaternionPacked48::operator CQuaternion(v13, &q2);
+              *(CQuaternion *)(32LL * *(&boneAddressingTable.m_index + 2 * v21) + *(_QWORD *)&boneAddressingTable) = (CQuaternion)q2.m_quat.q.v;
+              v25 = *(&boneAddressingTable.m_index + 2 * v21);
+              animatedRotation->m_animatedJointBitMask.m_ChunkArray[(unsigned __int64)(unsigned int)v25 >> 5] |= 1 << (v25 % 32);
+              if ( animatedRotation->m_animatedJointMinIdx > v25 )
+                animatedRotation->m_animatedJointMinIdx = v25;
+              if ( animatedRotation->m_animatedJointMaxIdx <= v25 )
+                animatedRotation->m_animatedJointMaxIdx = v25 + 1;
+            }
+          }
+          ++v13;
+        }
+        ++v21;
+      }
+      while ( v21 < (resolvedAnimData->m_nbBonesInAnim & 0xFFFu) );
+      m_chunkStream = rotationChunkHelper.m_chunkStream;
+      v10 = 0;
+      chunk1LocalAddress = (const unsigned __int8 *)q1.m_quat.q.v.m128_u64[0];
+    }
+    if ( !rotationChunkHelper.m_isEmpty )
+    {
+      CAnimCompressedChunkStreamReader<CQuaternion>::CAnimCompressedChunkStreamReader<CQuaternion>(
+        &rotations,
+        &jointRotations,
+        &rotationChunkHelper.m_chunkInfos,
+        rotationChunkHelper.m_clampedFrame % m_chunkStream->m_numFramesPerChunk,
+        chunk1LocalAddress);
+      v26 = lambda_6a35308e7b06159ac9c420bab1607891_::_lambda_invoker_cdecl_;
+      if ( useNearestFrame )
+        v26 = lambda_dec26ef2e1fc9d34c73a661a0643055f_::_lambda_invoker_cdecl_;
+      if ( (resolvedAnimData->m_nbBonesInAnim & 0xFFF) != 0 )
+      {
+        do
+        {
+          v27 = *((unsigned int *)&boneAddressingTable.m_index + 2 * v10);
+          if ( (*(&boneAddressingTable.m_boneFlags + 8 * v10) & 0x10) != 0 )
+          {
+            v28 = (*(&boneAddressingTable.m_boneFlags + 8 * v10) & 0xF) + 1;
+            if ( (_DWORD)v27 == -1
+              || (v29 = jointsMask->m_ChunkArray[(unsigned __int64)v10 >> 5],
+                  !_bittest((const int *)&v29, (unsigned __int8)((int)v10 % 32))) )
+            {
+              CAnimCompressedChunkStreamReader<CQuaternion>::SkipData(&rotations, v28);
+            }
+            else
+            {
+              CAnimCompressedChunkStreamReader<CQuaternion>::ReadDataAndExtractTwoValues(&rotations, &q1, &q2, v28);
+              v30 = (_OWORD *)((__int64 (__fastcall *)(CQuaternion *, CQuaternion *, CQuaternion *))v26)(&v38, &q1, &q2);
+              *(_OWORD *)(32LL * (int)v27 + *(_QWORD *)&boneAddressingTable) = *v30;
+              animatedRotation->m_animatedJointBitMask.m_ChunkArray[v27 >> 5] |= 1 << ((int)v27 % 32);
+              if ( animatedRotation->m_animatedJointMinIdx > (int)v27 )
+                animatedRotation->m_animatedJointMinIdx = v27;
+              if ( animatedRotation->m_animatedJointMaxIdx <= (int)v27 )
+                animatedRotation->m_animatedJointMaxIdx = v27 + 1;
+            }
+          }
+          ++v10;
+        }
+        while ( v10 < (resolvedAnimData->m_nbBonesInAnim & 0xFFFu) );
+      }
+    }
+  }
+}
