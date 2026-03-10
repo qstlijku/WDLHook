@@ -84,10 +84,18 @@ void checkAccuracy(float x, float y)
 }
 
 int lastSize = -1;
-int lastCounter2 = -1;
+int lastCounter2 = 0;
 
 void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int frameInsideChunk0, float* value0, int frameInsideChunk1, float* value1)
 {
+    if (a1->numDynamicData < 50)
+    {
+        ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
+        lastCounter2++;
+        return;
+    }
+    bool cond = (counter2 < 100) && a1->numDynamicData > 50;
+    /*
     if (lastSize == 0x179A8)
     {
         counter2 = 10;
@@ -95,7 +103,8 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
     }
     else if (lastCounter2 > 100)
         counter2 = 1000;
-    if (counter2 < 100)
+    */
+    if (cond)
     {
         tprintf("\nReadFrameData detour called\n");
         tprintf("flags (a2): %d\n", flags);
@@ -106,206 +115,206 @@ void ReadFrameData_Detour(ChunkReader::ChunkStreamReader* a1, char flags, int fr
     }
     float secondValue0 = -1.0f;
     float secondValue1 = -1.0f;
-    //if (counter2 < 50)
+
+    if ((flags & 1) != 0)
     {
-        if ((flags & 1) != 0)
+        // v7 = 0: result is 0.000015
+        // v7 = 31: -0.000015
+        // v7 = 2: 0.707118
+
+        // v7 must be 32767 or 32768
+        // 0x36A080 >> 6 = 0xDA82
+
+        // 0x0003FFFC >> 3 = 32767
+
+        // bit position: 22
+        // A0 00 gives 2 yet
+        // 55938 or DA82
+        // 1101 1010 1000 0010
+        auto bitPos = a1->bitstream.bitPosition;
+
+        if (cond)
         {
-            // v7 = 0: result is 0.000015
-            // v7 = 31: -0.000015
-            // v7 = 2: 0.707118
-
-            // v7 must be 32767 or 32768
-            // 0x36A080 >> 6 = 0xDA82
-
-            // 0x0003FFFC >> 3 = 32767
-
-            // bit position: 22
-            // A0 00 gives 2 yet
-            // 55938 or DA82
-            // 1101 1010 1000 0010
-            auto bitPos = a1->bitstream.bitPosition;
-            
-            if (counter2 < 1000)
-            {
-                tprintf("First branch\n");
-                tprintf("Bit position: %d\n", bitPos);
-            }
-            
-            auto b0 = a1->bitstream.base[bitPos >> 3];
-            auto b1 = a1->bitstream.base[(bitPos >> 3) + 1];
-            auto b2 = a1->bitstream.base[(bitPos >> 3) + 2];
-            auto b3 = a1->bitstream.base[(bitPos >> 3) + 3];
-            uint32_t num = b0 + 256 * b1 + 65536 * b2;
-
-            auto v6 = num >> (bitPos & 7);
-            auto v7 = v6 & 0xFFFF;
-            a1->bitstream.bitPosition += 16;
-            float v8 = v7 * 0.000030518044 - 1.0;
-
-            *value0 = v8;
-            *value1 = v8;
-            
-            if (counter2 < 1000)
-            {
-                tprintf("base of bitPos >> 3: %02X\n", b0);
-                tprintf("base of bitPos >> 3 + 1: %02X\n", b1);
-                tprintf("base of bitPos >> 3 + 2: %02X\n", b2);
-                tprintf("base of bitPos >> 3 + 3: %02X\n", b3);
-
-                tprintf("num: %08X\n", num);
-
-                tprintf("v6: %d\n", v6);
-                tprintf("v7: %d\n", v7);
-                tprintf("v8: %f\n", v8);
-            }
-            
-            return;
+            tprintf("First branch\n");
+            tprintf("Bit position: %d\n", bitPos);
         }
-        else
+
+        auto b0 = a1->bitstream.base[bitPos >> 3];
+        auto b1 = a1->bitstream.base[(bitPos >> 3) + 1];
+        auto b2 = a1->bitstream.base[(bitPos >> 3) + 2];
+        auto b3 = a1->bitstream.base[(bitPos >> 3) + 3];
+        uint32_t num = b0 + 256 * b1 + 65536 * b2;
+
+        auto v6 = num >> (bitPos & 7);
+        auto v7 = v6 & 0xFFFF;
+        a1->bitstream.bitPosition += 16;
+        float v8 = v7 * 0.000030518044 - 1.0;
+
+        *value0 = v8;
+        *value1 = v8;
+
+        if (cond)
         {
-            auto numInterpolantBits = a1->currentNumInterpolantBits;
-            auto bitPos = a1->bitstream.bitPosition;
+            tprintf("base of bitPos >> 3: %02X\n", b0);
+            tprintf("base of bitPos >> 3 + 1: %02X\n", b1);
+            tprintf("base of bitPos >> 3 + 2: %02X\n", b2);
+            tprintf("base of bitPos >> 3 + 3: %02X\n", b3);
 
-            if (counter2 < 1000)
-            {
-                tprintf("Second branch\n");
-                tprintf("Bit position: %d\n", bitPos);
-            }
+            tprintf("num: %08X\n", num);
 
-            auto b0 = a1->bitstream.base[bitPos >> 3];
-            auto b1 = a1->bitstream.base[(bitPos >> 3) + 1];
-            auto b2 = a1->bitstream.base[(bitPos >> 3) + 2];
-            auto b3 = a1->bitstream.base[(bitPos >> 3) + 3];
-            uint32_t num = b0 + 256 * b1 + 65536 * b2;
-
-            auto v6 = num >> (bitPos & 7);
-            auto v12 = v6 & 0xFFFF;
-            auto v11 = bitPos + 16;
-            float v13 = (v12 % 256) * 0.0078740157 - 1.0;
-
-            float v14 = (v12 >> 8) * 0.0078431377 * ms_interpolantScaleFactors[numInterpolantBits];
-            auto v15 = v11 + frameInsideChunk0 * numInterpolantBits;
-
-            /*
-            for (int i = 0; i < 1550; i++)
-            {
-                if (counter2 > 1) break;
-                printf("base of bitPos >> 3 + %d: %02X\n", i, a1->bitstream.base[(bitPos >> 3) + i]);
-            }*/
-            
-            if (counter2 < 1000)
-            {
-                tprintf("base of bitPos >> 3: %02X\n", b0);
-                tprintf("base of bitPos >> 3 + 1: %02X\n", b1);
-                tprintf("base of bitPos >> 3 + 2: %02X\n", b2);
-                tprintf("base of bitPos >> 3 + 3: %02X\n", b3);
-            }
-
-            auto c0 = a1->bitstream.base[v15 >> 3];
-            auto c1 = a1->bitstream.base[(v15 >> 3) + 1];
-            auto c2 = a1->bitstream.base[(v15 >> 3) + 2];
-            auto c3 = a1->bitstream.base[(v15 >> 3) + 3];
-
-            uint32_t num3 = c0 + 256 * c1 + 65536 * c2;
-            auto temp2 = num3 >> (v15 & 7);
-            auto v163 = temp2 & ((1 << numInterpolantBits) - 1);
-
-            secondValue0 = v163 * v14 + v13;
-            *value0 = secondValue0;
-
-            // v12 = 115 so num must be 1CC0
-            // GOOD: 0.005485 is correct (v163 * v14)
-            // value is now -0.094488
-            // TODO: try casts like (uint8) or % 256
-            
-            if (counter2 < 10)
-            {
-                tprintf("num: %08X\n", num);
-                tprintf("v6: %d\n", v6);
-                tprintf("v12 mod 256: %d\n", v12);
-
-                tprintf("num3: %08X\n", num3);
-                tprintf("temp2: %d\n", temp2);
-
-                tprintf("v163: %d\n", v163);
-                tprintf("v14: %f\n", v14);
-
-                tprintf("now v13: %f\n", v13);
-                tprintf("value to add to v13: %f\n", v163 * v14);
-                tprintf("added to v13: %f\n", v163 * v14 + v13);
-                tprintf("----------------------------------------\n");
-            }
-
-            if (counter2 < 1000)
-            {
-                tprintf("v15: %d\n", v15);
-
-                tprintf("base of v15 >> 3: %02X\n", c0);
-                tprintf("base of v15 >> 3 + 1: %02X\n", c1);
-                tprintf("base of v15 >> 3 + 2: %02X\n", c2);
-                tprintf("base of v15 >> 3 + 3: %02X\n", c3);
-            }
-
-            auto v17 = v11 + frameInsideChunk1 * numInterpolantBits;
-
-            auto d0 = a1->bitstream.base[v17 >> 3];
-            auto d1 = a1->bitstream.base[(v17 >> 3) + 1];
-            auto d2 = a1->bitstream.base[(v17 >> 3) + 2];
-            auto d3 = a1->bitstream.base[(v17 >> 3) + 3];
-
-            uint32_t num4 = d0 + 256 * d1 + 65536 * d2;
-            auto temp3 = num4 >> (v17 & 7);
-            auto v18 = temp3 & ((1 << numInterpolantBits) - 1);
-
-            secondValue1 = v18 * v14 + v13;
-            *value1 = secondValue1;
-
-            if (counter2 < 1000)
-            {
-                tprintf("v17: %d\n", v17);
-
-                tprintf("base of v17 >> 3: %02X\n", d0);
-                tprintf("base of v17 >> 3 + 1: %02X\n", d1);
-                tprintf("base of v17 >> 3 + 2: %02X\n", d2);
-                tprintf("base of v17 >> 3 + 3: %02X\n", d3);
-            }
-
-            if (counter2 < 100)
-            {
-                tprintf("num4: %08X\n", num4);
-                tprintf("temp3: %d\n", temp3);
-                tprintf("v18: %d\n", v18);
-
-                tprintf("now v13: %f\n", v13);
-                tprintf("value to add to v13: %f\n", v18 * v14);
-                tprintf("added to v13: %f\n", v18 * v14 + v13);
-                tprintf("----------------------------------------\n");
-            }
-
-            // v14 about 1.915e-6
-            // or doubled, 3.8306e-6
-
-            // actual value1: -0.690483
-            // v13: -0.692913
-            // 0.00243 diff SB, IS 0.007016
-            // they got 1269 for v18 instead of 3663
-            // instead of 1439, theirs was 2554
-
-            // very first time, bitPosition is 0x22 = 34
-            // rdx: now 0x783 = 1923
-
-            // TODO: Debug rax, try skipping 2787E5 and 2787E9
-            // just ending with 2787E0 and returning its value
-
-            // first one: should be 0.009783
-
-            a1->bitstream.bitPosition = v11 + numInterpolantBits * a1->numFramesInThisChunk;
-            counter2++;
-            return;
+            tprintf("v6: %d\n", v6);
+            tprintf("v7: %d\n", v7);
+            tprintf("v8: %f\n", v8);
         }
+
+        return;
+    }
+    else
+    {
+        auto numInterpolantBits = a1->currentNumInterpolantBits;
+        auto bitPos = a1->bitstream.bitPosition;
+
+        if (cond)
+        {
+            tprintf("Second branch\n");
+            tprintf("Bit position: %d\n", bitPos);
+        }
+
+        auto b0 = a1->bitstream.base[bitPos >> 3];
+        auto b1 = a1->bitstream.base[(bitPos >> 3) + 1];
+        auto b2 = a1->bitstream.base[(bitPos >> 3) + 2];
+        auto b3 = a1->bitstream.base[(bitPos >> 3) + 3];
+        uint32_t num = b0 + 256 * b1 + 65536 * b2;
+
+        auto v6 = num >> (bitPos & 7);
+        auto v12 = v6 & 0xFFFF;
+        auto v11 = bitPos + 16;
+        float v13 = (v12 % 256) * 0.0078740157 - 1.0;
+
+        float v14 = (v12 >> 8) * 0.0078431377 * ms_interpolantScaleFactors[numInterpolantBits];
+        auto v15 = v11 + frameInsideChunk0 * numInterpolantBits;
+
+        /*
+        for (int i = 0; i < 1550; i++)
+        {
+            if (counter2 > 1) break;
+            printf("base of bitPos >> 3 + %d: %02X\n", i, a1->bitstream.base[(bitPos >> 3) + i]);
+        }*/
+
+        if (cond)
+        {
+            tprintf("base of bitPos >> 3: %02X\n", b0);
+            tprintf("base of bitPos >> 3 + 1: %02X\n", b1);
+            tprintf("base of bitPos >> 3 + 2: %02X\n", b2);
+            tprintf("base of bitPos >> 3 + 3: %02X\n", b3);
+        }
+
+        auto c0 = a1->bitstream.base[v15 >> 3];
+        auto c1 = a1->bitstream.base[(v15 >> 3) + 1];
+        auto c2 = a1->bitstream.base[(v15 >> 3) + 2];
+        auto c3 = a1->bitstream.base[(v15 >> 3) + 3];
+
+        uint32_t num3 = c0 + 256 * c1 + 65536 * c2;
+        auto temp2 = num3 >> (v15 & 7);
+        auto v163 = temp2 & ((1 << numInterpolantBits) - 1);
+
+        secondValue0 = v163 * v14 + v13;
+        *value0 = secondValue0;
+
+        // v12 = 115 so num must be 1CC0
+        // GOOD: 0.005485 is correct (v163 * v14)
+        // value is now -0.094488
+        // TODO: try casts like (uint8) or % 256
+
+        /*
+        if (counter2 < 10)
+        {
+            tprintf("num: %08X\n", num);
+            tprintf("v6: %d\n", v6);
+            tprintf("v12 mod 256: %d\n", v12);
+
+            tprintf("num3: %08X\n", num3);
+            tprintf("temp2: %d\n", temp2);
+
+            tprintf("v163: %d\n", v163);
+            tprintf("v14: %f\n", v14);
+
+            tprintf("now v13: %f\n", v13);
+            tprintf("value to add to v13: %f\n", v163 * v14);
+            tprintf("added to v13: %f\n", v163 * v14 + v13);
+            tprintf("----------------------------------------\n");
+        }
+        */
+        if (cond)
+        {
+            tprintf("v15: %d\n", v15);
+
+            tprintf("base of v15 >> 3: %02X\n", c0);
+            tprintf("base of v15 >> 3 + 1: %02X\n", c1);
+            tprintf("base of v15 >> 3 + 2: %02X\n", c2);
+            tprintf("base of v15 >> 3 + 3: %02X\n", c3);
+        }
+
+        auto v17 = v11 + frameInsideChunk1 * numInterpolantBits;
+
+        auto d0 = a1->bitstream.base[v17 >> 3];
+        auto d1 = a1->bitstream.base[(v17 >> 3) + 1];
+        auto d2 = a1->bitstream.base[(v17 >> 3) + 2];
+        auto d3 = a1->bitstream.base[(v17 >> 3) + 3];
+
+        uint32_t num4 = d0 + 256 * d1 + 65536 * d2;
+        auto temp3 = num4 >> (v17 & 7);
+        auto v18 = temp3 & ((1 << numInterpolantBits) - 1);
+
+        secondValue1 = v18 * v14 + v13;
+        *value1 = secondValue1;
+
+        if (cond)
+        {
+            tprintf("v17: %d\n", v17);
+
+            tprintf("base of v17 >> 3: %02X\n", d0);
+            tprintf("base of v17 >> 3 + 1: %02X\n", d1);
+            tprintf("base of v17 >> 3 + 2: %02X\n", d2);
+            tprintf("base of v17 >> 3 + 3: %02X\n", d3);
+        }
+
+        /*
+        if (counter2 < 100)
+        {
+            tprintf("num4: %08X\n", num4);
+            tprintf("temp3: %d\n", temp3);
+            tprintf("v18: %d\n", v18);
+
+            tprintf("now v13: %f\n", v13);
+            tprintf("value to add to v13: %f\n", v18 * v14);
+            tprintf("added to v13: %f\n", v18 * v14 + v13);
+            tprintf("----------------------------------------\n");
+        }
+        */
+        // v14 about 1.915e-6
+        // or doubled, 3.8306e-6
+
+        // actual value1: -0.690483
+        // v13: -0.692913
+        // 0.00243 diff SB, IS 0.007016
+        // they got 1269 for v18 instead of 3663
+        // instead of 1439, theirs was 2554
+
+        // very first time, bitPosition is 0x22 = 34
+        // rdx: now 0x783 = 1923
+
+        // TODO: Debug rax, try skipping 2787E5 and 2787E9
+        // just ending with 2787E0 and returning its value
+
+        // first one: should be 0.009783
+
+        a1->bitstream.bitPosition = v11 + numInterpolantBits * a1->numFramesInThisChunk;
+        counter2++;
+        return;
     }
     ReadFrameData(a1, flags, frameInsideChunk0, value0, frameInsideChunk1, value1);
-    if (counter2 < 100)
+    if (cond)
     {
         tprintf("ReadFrameData value0: %f\n", *value0);
         tprintf("ReadFrameData value1: %f\n", *value1);
@@ -329,7 +338,7 @@ void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frame
         printf("frameInsideChunk0 (a3): %d\n", frameInsideChunk0);
         printf("frameInsideChunk1 (a5): %d\n", frameInsideChunk1);
 
-        //printChunkReaderState(a1);
+        printChunkReaderState(a1);
     }
     float secondValue0 = -1.0f;
     float secondValue1 = -1.0f;
@@ -414,7 +423,7 @@ void ReadFrameDataSafe(ChunkReader::ChunkStreamReader* a1, char flags, int frame
 
 void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameInsideChunk, float* q)
 {
-    if (counter3 < 10)
+    if (counter3 < 100)
     {
         printf("\nExtractAnyFrameValue detour called\n");
         printf("frameInsideChunk: %d\n", frameInsideChunk);
@@ -434,7 +443,7 @@ void ExtractAnyFrameValue_Detour(ChunkReader::ChunkStreamReader* a1, int frameIn
     a1->bitstream.bitPosition = bitPos;
     float sum = 0;
 
-    if (counter3 < 10)
+    if (counter3 < 100)
     {
         printf("ExtractAnyFrameValue: constFlags = %d\n", constFlags);
         printf("ExtractAnyFrameValue: bitPos = %d\n", bitPos);
@@ -744,9 +753,9 @@ void ChunkReader::Initialize()
     //HookOffset4(0x186710 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
     //HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
-    HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
-    HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
-    //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
+    //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
+    //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
+    HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
     //HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
