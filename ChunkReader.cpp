@@ -538,6 +538,7 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
     {
         int numFrames = a1->numFramesInThisChunk;
         //printf("numFrames: %d\n", numFrames);
+        int v12 = 0;
         do
         {
             int v14 = 24;
@@ -547,6 +548,11 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
             v8 += v14;
             // assign sign bit here
             a1->bitstream.bitPosition = v8;
+            auto v13 = num3 & ((1 << v14) - 1);
+            auto v18 = v12;
+            v12 += v14;
+            v13 = v13 | (v13 << v18);
+            a1->signBits = v13;
             numFrames -= v14;
         } while (numFrames);
     }
