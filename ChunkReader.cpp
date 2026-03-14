@@ -587,62 +587,65 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
 
 void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1, float* quat2, int interpolantBits)
 {
-    // TODO: Restore the state exactly and compare
+    counter++;
     if (counter < 10)
     {
         printf("\nReadTwoValues detour called\n");
         printf("firstFrameToRead: %d\n", a1->firstFrameToRead);
         printf("secondFrameToRead: %d\n", a1->secondFrameToRead);
         printf("------------------------------------------------------\n");
+    }
 
-        StartData_Detour(&a1->firstChunkReader, interpolantBits);
+    StartData(&a1->firstChunkReader, interpolantBits);
 
-        if (a1->secondChunkReader.bitstream.base)
+    if (a1->secondChunkReader.bitstream.base)
+    {
+        if (counter < 10)
         {
             printf("ReadTwoValues_Detour: Calling ExtractAnyFrameValue...\n");
             printf("First chunk reader state: \n");
             //printChunkReaderState(&a1->firstChunkReader);
             printf("Second chunk reader state: \n");
             //printChunkReaderState(&a1->secondChunkReader);
-            ExtractAnyFrameValue_Detour(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
-
-            //a1->firstChunkReader.bitstream.bitPosition = a1->firstChunkReader.startOfNextDatum;
-            //a1->firstChunkReader.currentDynamicDatum++;
-            //a1->firstChunkReader.startOfNextDatum = -1;
-
-            //StartData(&a1->secondChunkReader, interpolantBits);
-            //ExtractAnyFrameValue(&a1->secondChunkReader, a1->secondFrameToRead, quat2);
-
-            //a1->secondChunkReader.bitstream.bitPosition = a1->secondChunkReader.startOfNextDatum;
-            //a1->secondChunkReader.currentDynamicDatum++;
-            //a1->secondChunkReader.startOfNextDatum = -1;
-            //return;
         }
-        else
-        {
-            printf("ReadTwoValues_Detour: Skipping ExtractAnyFramePair for now\n");
-            printf("First chunk reader state: \n");
-            //printChunkReaderState(&a1->firstChunkReader);
-            ExtractAnyFrameValue_Detour(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
-            ExtractAnyFrameValue_Detour(&a1->firstChunkReader, a1->secondFrameToRead, quat2);
-            printf("First quat (mine): %f %f %f %f\n", quat1[0], quat1[1], quat1[2], quat1[3]);
-            printf("Second quat (mine): %f %f %f %f\n", quat2[0], quat2[1], quat2[2], quat2[3]);
-            //ExtractAnyFramePair(&a1->firstChunkReader, a1->firstFrameToRead, quat1, a1->secondFrameToRead, quat2);
+        ExtractAnyFrameValue(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
 
-            //a1->firstChunkReader.bitstream.bitPosition = a1->firstChunkReader.startOfNextDatum;
-            //a1->firstChunkReader.currentDynamicDatum++;
-            //a1->firstChunkReader.startOfNextDatum = -1;
-            //return;
-        }
+        a1->firstChunkReader.bitstream.bitPosition = a1->firstChunkReader.startOfNextDatum;
+        a1->firstChunkReader.currentDynamicDatum++;
+        a1->firstChunkReader.startOfNextDatum = -1;
+
+        StartData(&a1->secondChunkReader, interpolantBits);
+        ExtractAnyFrameValue(&a1->secondChunkReader, a1->secondFrameToRead, quat2);
+
+        a1->secondChunkReader.bitstream.bitPosition = a1->secondChunkReader.startOfNextDatum;
+        a1->secondChunkReader.currentDynamicDatum++;
+        a1->secondChunkReader.startOfNextDatum = -1;
+        return;
+    }
+    else
+    {
+        //printf("ReadTwoValues_Detour: Skipping ExtractAnyFramePair for now\n");
+        //printf("First chunk reader state: \n");
+        //printChunkReaderState(&a1->firstChunkReader);
+        ExtractAnyFrameValue(&a1->firstChunkReader, a1->firstFrameToRead, quat1);
+        ExtractAnyFrameValue(&a1->firstChunkReader, a1->secondFrameToRead, quat2);
+        //printf("First quat (mine): %f %f %f %f\n", quat1[0], quat1[1], quat1[2], quat1[3]);
+        //printf("Second quat (mine): %f %f %f %f\n", quat2[0], quat2[1], quat2[2], quat2[3]);
+        //ExtractAnyFramePair(&a1->firstChunkReader, a1->firstFrameToRead, quat1, a1->secondFrameToRead, quat2);
+
+        a1->firstChunkReader.bitstream.bitPosition = a1->firstChunkReader.startOfNextDatum;
+        a1->firstChunkReader.currentDynamicDatum++;
+        a1->firstChunkReader.startOfNextDatum = -1;
+        return;
     }
 
-    if (counter < 100)
+    if (counter < 10)
     {
         tprintf("ReadTwoValuesDetour: Before original func call...\n");
         tprintf("------------------------------------------------------\n");
         printChunkReaderState(&a1->firstChunkReader);
     }
-    //return;
+    return;
     ReadTwoValues(a1, quat1, quat2, interpolantBits);
 
     if (counter < 100)
@@ -773,9 +776,9 @@ void ChunkReader::Initialize()
 {
     HookOffset4(0x185E20 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
-    //HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
+    HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
     //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
-    //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
+    HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
     //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
     //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
