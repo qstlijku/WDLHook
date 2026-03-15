@@ -3,3 +3,4 @@
 /dinput8/x64/Debug
 .claude/settings.local.json
 wdlhook_log.txt
+*.ps1
