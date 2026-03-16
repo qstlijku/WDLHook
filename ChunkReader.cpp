@@ -589,12 +589,12 @@ void StartData_Detour(ChunkReader::ChunkStreamReader* a1, int interpolantBits)
 void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1, float* quat2, int interpolantBits)
 {
     counter++;
-    if (counter < 10)
+    if (counter < 100)
     {
-        printf("\nReadTwoValues detour called\n");
-        printf("firstFrameToRead: %d\n", a1->firstFrameToRead);
-        printf("secondFrameToRead: %d\n", a1->secondFrameToRead);
-        printf("------------------------------------------------------\n");
+        tprintf("\nReadTwoValues detour called\n");
+        tprintf("firstFrameToRead: %d\n", a1->firstFrameToRead);
+        tprintf("secondFrameToRead: %d\n", a1->secondFrameToRead);
+        tprintf("------------------------------------------------------\n");
     }
 
     /*
@@ -682,12 +682,13 @@ void ReadTwoValues_Detour(ChunkReader::CompressedStreamReader* a1, float* quat1,
 int jointRot = 0;
 uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a4, __int64 a5, int a6, __int64 a7, int a8, __int64 a9, bool a10)
 {
-    if (jointRot < 100)
+    if (jointRot < 10)
     {
-        printf("nbBonesInInfoTable: %d\n", a6);
-        printf("currentLODDistance: %d\n", a8);
-        printf("useNearestFrame: %d\n", a10);
-        Print32PtrAt(a9);
+        tprintf("GetJointRotations_Detour called\n");
+        tprintf("nbBonesInInfoTable: %d\n", a6);
+        tprintf("currentLODDistance: %d\n", a8);
+        tprintf("useNearestFrame: %d\n", a10);
+        //Print32PtrAt(a9);
     }
     jointRot++;
     return GetJointRotations(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
@@ -695,13 +696,40 @@ uintptr_t GetJointRotations_Detour(__int64 a1, __int64 a2, __int64 a3, __int64 a
 
 int fillb = 0;
 
-void FillBoneAddressingTable_Detour(__int64 a1, char flagToCheck, int a3, __int64 a4, int a5, __int64 a6)
+// SkeletonBoneInfo:
+// 58 fd 21 b0 ff ff 00 00 01 00 00 00 07 97 b9 04 ff ff 00 00 02 00 00 00 b2 f2 b4 a5 ff ff 00 00 (expected)
+// However BATEntry:
+// 01 00 00 00 5b bc 00 00 02 00 00 00 17 7f 00 00 03 00 00 00 17 00 00 00 04 00 00 00 17 00 00 00
+
+void FillBoneAddressingTable_Detour(__int64 a1, char flagToCheck, int a3, __int64 a4, int a5, ChunkReader::CAnimData *a6)
 {
     if (fillb < 10)
     {
-        printf("FillBoneAddressingTable_Detour called\n");
+        tprintf("FillBoneAddressingTable_Detour called\n");
+        tprintf("flag (a2): %d\n", flagToCheck);
+        tprintf("nbBonesInInfoTable: %d\n", a3);
+        tprintf("currentLODDistance: %d\n", a5);
+
+        tprintf("skeletonBonesInfo: \n");
+        Print32PtrAt(a4);
+
+        tprintf("skeletonBoneCRC: %llx\n", a6->skeletonBoneCRC);
+        tprintf("skeletonPathId: %llx\n", a6->skeletonPathId);
+        auto signature = a6->signature;
+        tprintf("signature: %02X %02X %02X\n", signature[0], signature[1], signature[2]);
+        tprintf("flags: %02X\n", a6->flags);
+        tprintf("animationDataSize: %04X\n", a6->animationDataSize);
+        tprintf("duration, frameRate: %04X %04X\n", a6->duration, a6->animFrameRate);
+        tprintf("duration, frameRate: %f %f\n", a6->duration, a6->animFrameRate);
     }
+    fillb++;
     FillBoneAddressingTable(a1, flagToCheck, a3, a4, a5, a6);
+    if (fillb < 10)
+    {
+        printf("After game function call\n");
+        printf("BAT: \n");
+        Print32PtrAt(a1);
+    }
 }
 
 int evalCount = 0;
@@ -793,8 +821,8 @@ void ChunkReader::Initialize()
     //HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
     //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
     //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
-    HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
-    //HookOffset4(0x185FE0 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
+    //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
+    HookOffset4(0x185420 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
-    //HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
+    HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
 }

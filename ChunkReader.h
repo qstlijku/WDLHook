@@ -106,7 +106,7 @@ public:
 		CMoveData *moveData;
 	};
 
-	typedef void(*FillBoneAddressingTable_t)(__int64, char, int, __int64, int, __int64);
+	typedef void(*FillBoneAddressingTable_t)(__int64, char, int, __int64, int, CAnimData *);
 	typedef void(*ReadFrameData_t)(ChunkStreamReader*, char, int, float*, int, float*);
 	typedef void(*StartData_t)(ChunkStreamReader*, int);
 	typedef void(*ExtractAnyFramePair_t)(ChunkStreamReader*, int, float*, int, float*);

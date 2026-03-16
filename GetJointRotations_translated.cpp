@@ -61,8 +61,8 @@ struct SSkeletonBoneInfo {
     int      m_index;            // output slot index in the pose array
 };
 
-// Global root bone CRC constant
-extern SBoneID animationRoot;
+// CRC32 hash of "Root" — root bone always maps to output slot 0
+static constexpr uint32_t ANIMATION_ROOT_CRC = 0xB6C65665u;
 
 // ============================================================================
 // FillBoneAddressingTable
@@ -125,7 +125,7 @@ void FillBoneAddressingTable(
         uint32_t boneCRC = boneCRCs[i];
 
         // Root bone always maps to output slot 0
-        if (boneCRC == animationRoot.m_value) {
+        if (boneCRC == ANIMATION_ROOT_CRC) {
             boneAddressingTable[i].m_index = 0;
             continue;
         }

@@ -1,0 +1,111 @@
+0 struct __declspec(align(4)) CBoneAddressingTableEntry // sizeof=0x8
+00000000 {                                       // XREF: ?GetJointRotationsAtTime@@YAXAEBUSAnimEvalInfo@@PEAVndPosQuatTransform@@AEAVCAnimatedJoint@@2AEBV?$TBitMask@J$0CIA@@@KPEBUSSkeletonBoneInfo@@KPEBVCAnimData@@_N@Z/r
+00000000                                         // ?GetJointTranslationsAtTime@@YAXAEBUSAnimEvalInfo@@PEAVndPosQuatTransform@@AEAVCAnimatedJoint@@2AEBV?$TBitMask@J$0CIA@@@KPEBUSSkeletonBoneInfo@@KPEBVCAnimData@@_N@Z/r ...
+00000000     int m_index;                        // XREF: GetJointRotationsAtTime(SAnimEvalInfo const &,ndPosQuatTransform *,CAnimatedJoint &,CAnimatedJoint &,TBitMask<long,640> const &,ulong,SSkeletonBoneInfo const *,ulong,CAnimData const *,bool)+43/w
+00000000                                         // GetJointRotationsAtTime(SAnimEvalInfo const &,ndPosQuatTransform *,CAnimatedJoint &,CAnimatedJoint &,TBitMask<long,640> const &,ulong,SSkeletonBoneInfo const *,ulong,CAnimData const *,bool)+1EE/r ...
+00000004     unsigned __int8 m_boneFlags;
+00000005     // padding byte
+00000006     // padding byte
+00000007     // padding byte
+00000008 };
+
+00000000 struct __cppobj SSkeletonBoneInfo // sizeof=0xC
+00000000 {
+00000000     CMeshNameID m_boneID;
+00000004     unsigned int m_boneLODDistance;
+00000008     unsigned int m_index;
+0000000C };
+
+00000000 struct __cppobj __declspec(align(4)) CAnimData // sizeof=0x70
+00000000 {
+00000000     unsigned __int64 m_skeletonBoneCRC;
+00000008     unsigned __int64 m_skeletonPathId;
+00000010     char m_signature[3];
+00000013     unsigned __int8 m_flags;
+00000014     unsigned int m_animationDataSize;
+00000018     float m_duration;
+0000001C     float m_animFrameRate;
+00000020     unsigned __int16 m_nbBonesInAnim;
+00000022     unsigned __int16 m_dataCounts[10];
+00000036     // padding byte
+00000037     // padding byte
+00000038     unsigned int m_offsets[12];
+00000068     unsigned int m_paddingToMatchPS3;
+0000006C     unsigned __int16 m_lastFrame;
+0000006E     // padding byte
+0000006F     // padding byte
+00000070 };
+
+void __fastcall FillBoneAddressingTable(
+        CBoneAddressingTableEntry *boneAddressingTable,
+        unsigned __int8 flagToCheck,
+        unsigned int nbBonesInInfoTable,
+        const SSkeletonBoneInfo *skeletonBonesInfoTable,
+        unsigned int currentLODDistance,
+        const CAnimData *resolvedAnimData)
+{
+  signed __int8 m_flags; // bl
+  const CAnimData **v11; // rax
+  const CAnimData *v12; // r9
+  unsigned __int8 *m_skeletonPathId; // r8
+  int v14; // ebp
+  int v15; // edx
+  __int64 v16; // rdi
+  unsigned __int8 v17; // al
+  int v18; // ebx
+  int v19; // eax
+  int v20; // eax
+
+  m_flags = resolvedAnimData->m_flags;
+  v11 = (const CAnimData **)&resolvedAnimData[1];
+  if ( m_flags >= 0 )
+    v12 = resolvedAnimData + 1;
+  else
+    v12 = *v11;
+  if ( m_flags >= 0 )
+    m_skeletonPathId = (unsigned __int8 *)v11 + 4 * (resolvedAnimData->m_nbBonesInAnim & 0xFFF);
+  else
+    m_skeletonPathId = (unsigned __int8 *)resolvedAnimData[1].m_skeletonPathId;
+  v14 = nbBonesInInfoTable - 1;
+  v15 = 0;
+  if ( (resolvedAnimData->m_nbBonesInAnim & 0xFFF) != 0 )
+  {
+    v16 = resolvedAnimData->m_nbBonesInAnim & 0xFFF;
+    do
+    {
+      v17 = *m_skeletonPathId;
+      boneAddressingTable->m_boneFlags = *m_skeletonPathId;
+      boneAddressingTable->m_index = -1;
+      if ( (v17 & flagToCheck) != 0 )
+      {
+        if ( LODWORD(v12->m_skeletonBoneCRC) == animationRoot.m_value )
+        {
+          boneAddressingTable->m_index = 0;
+        }
+        else
+        {
+          v18 = v15;
+          while ( LODWORD(v12->m_skeletonBoneCRC) != skeletonBonesInfoTable[v15].m_boneID.m_value )
+          {
+            v19 = v15++;
+            if ( v19 == v14 )
+              v15 = 0;
+            if ( v15 == v18 )
+              goto LABEL_22;
+          }
+          if ( currentLODDistance <= skeletonBonesInfoTable[v15].m_boneLODDistance )
+            boneAddressingTable->m_index = skeletonBonesInfoTable[v15].m_index;
+          v20 = v15++;
+          if ( v20 == v14 )
+            v15 = 0;
+        }
+      }
+LABEL_22:
+      ++m_skeletonPathId;
+      ++boneAddressingTable;
+      v12 = (const CAnimData *)((char *)v12 + 4);
+      --v16;
+    }
+    while ( v16 );
+  }
+}
