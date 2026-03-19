@@ -1,5 +1,6 @@
 #include "ChunkReader.h"
 #include "Main.h"
+#include "SkeletonPoseLogger.cpp"
 #include <iostream>
 
 using namespace std;
@@ -825,4 +826,6 @@ void ChunkReader::Initialize()
     HookOffset4(0x185420 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
     HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
+
+    SkeletonPoseLogger::Initialize();
 }
