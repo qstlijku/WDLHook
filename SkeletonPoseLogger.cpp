@@ -1,0 +1,156 @@
+// SkeletonPoseLogger.cpp
+// Hooks CBaseAnimationComponent::GetAnimationSkeletonPose to dump the animated
+// skeleton pose (bone hierarchy + local-to-parent transforms) to the log.
+//
+// Struct layouts confirmed from IDA types on the symbolized E3 build.
+// All offsets below are for DuniaDemo_clang_64_dx11.dll (WDL retail).
+//
+// Usage:
+//   Call SkeletonPoseLogger::Initialize() from ChunkReader::Initialize().
+//   On first call (filtered to the player skeleton), dumps:
+//     - Bone count
+//     - Per-bone: nameID (CRC32), parentIndex, bindLocalToParent (quat+pos)
+//     - Per-bone: animated localToParent (quat+pos) from current frame
+//   This is sufficient for DisruptEditor FK without parsing WDL XBG files.
+
+#include "ChunkReader.h"
+#include "Main.h"
+#include <cstdio>
+
+// ============================================================================
+// Struct definitions (confirmed from IDA, E3 symbolized build)
+// ============================================================================
+
+// 32 bytes: quat (16) + pos (16). Layout used by both localToParent and
+// localToModel arrays, and by CSkeletonBone::m_bindLocalToParent.
+struct ndPosQuatTransform
+{
+    float quat[4]; // x, y, z, w  (local-to-parent rotation)
+    float pos[4];  // x, y, z, 0  (local-to-parent translation)
+};
+
+// sizeof=0x30. One entry per bone in m_graphicBones.
+struct CSkeletonBone
+{
+    ndPosQuatTransform  m_bindLocalToParent; // +0x00  rest pose local-to-parent
+    unsigned int        m_nameID;            // +0x20  CRC32 of bone name
+    short               m_parentIndex;       // +0x24  -1 = root bone
+    unsigned short      m_numChildren;       // +0x26
+    unsigned short      m_numDescendants;    // +0x28
+    unsigned short      m_boneLODDistance;   // +0x2A
+    // 4 bytes padding                       // +0x2C
+};
+static_assert(sizeof(CSkeletonBone) == 0x30, "CSkeletonBone size mismatch");
+
+// sizeof=0x28. Assembled on-stack by GetAnimationSkeletonPose; pointers into
+// the live animation system arrays (no separate allocation).
+//
+// m_localToParentTransforms is the same buffer as
+//   CAnimationSystem::m_evalAnimResult->m_jointTransformArray.
+// After EvalOpe completes, this array holds animated transforms for animated
+// bones and bind pose values for non-animated bones (pre-filled by Reset).
+//
+// m_localToModelTransforms is lazily populated by UpdateIfNeeded_BoneLocalToModel
+// and may be stale at the time this hook fires. Check m_updateStates[i] ==
+// NoneNeedUpdate (0) before reading model-space transforms.
+struct CSkeletonPose
+{
+    const CSkeletonBone *m_bones;                    // +0x00  skeleton bone array
+    ndPosQuatTransform  *m_localToParentTransforms;  // +0x08  animated pose (always valid post-EvalOpe)
+    ndPosQuatTransform  *m_localToModelTransforms;   // +0x10  lazy, may be stale
+    unsigned __int8     *m_updateStates;             // +0x18  ESkelUpdateState per bone
+    unsigned int         m_numBones;                 // +0x20
+    float                m_scale;                    // +0x24
+};
+static_assert(sizeof(CSkeletonPose) == 0x28, "CSkeletonPose size mismatch");
+
+// ============================================================================
+// Hook state
+// ============================================================================
+
+typedef CSkeletonPose*(*GetAnimationSkeletonPose_t)(void* thisPtr, CSkeletonPose* result);
+static GetAnimationSkeletonPose_t GetAnimationSkeletonPose_orig;
+
+static int poseLogCount = 0;
+
+// ============================================================================
+// Detour
+// ============================================================================
+
+// Minimum bone count to consider this the player skeleton.
+// Filters out small skeletons (props, vehicles, etc.).
+static constexpr unsigned int MIN_PLAYER_BONES = 50;
+
+CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* result)
+{
+    CSkeletonPose* ret = GetAnimationSkeletonPose_orig(thisPtr, result);
+
+    if (poseLogCount >= 1)
+        return ret;
+    if (!result || result->m_numBones < MIN_PLAYER_BONES)
+        return ret;
+    if (!result->m_bones || !result->m_localToParentTransforms)
+        return ret;
+
+    tprintf("\n=== SkeletonPoseLogger: bone dump ===\n");
+    tprintf("numBones: %u\n", result->m_numBones);
+
+    for (unsigned int i = 0; i < result->m_numBones; i++)
+    {
+        const CSkeletonBone&    bone   = result->m_bones[i];
+        const ndPosQuatTransform& ltp  = result->m_localToParentTransforms[i];
+        const ndPosQuatTransform& bind = bone.m_bindLocalToParent;
+
+        tprintf("bone[%3u] nameID=%08X parent=%3d\n",
+            i, bone.m_nameID, (int)bone.m_parentIndex);
+
+        tprintf("  bind  quat: %f %f %f %f  pos: %f %f %f\n",
+            bind.quat[0], bind.quat[1], bind.quat[2], bind.quat[3],
+            bind.pos[0],  bind.pos[1],  bind.pos[2]);
+
+        tprintf("  anim  quat: %f %f %f %f  pos: %f %f %f\n",
+            ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
+            ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
+    }
+
+    tprintf("=== end bone dump ===\n");
+    poseLogCount++;
+
+    return ret;
+}
+
+// ============================================================================
+// Initialization
+// ============================================================================
+
+// TODO: find offset of CBaseAnimationComponent::GetAnimationSkeletonPose in
+// DuniaDemo_clang_64_dx11.dll. E3 symbolized address: 0x82DE7044.
+// Hook formula (same as other hooks): Imagebase + file_offset + 0xA00.
+// File offset: 0x0624CF70  RVA: 0x0624D970  (file_offset + 0xA00, retail DuniaDemo_clang_64_dx11.dll)
+// E3 symbolized address: 0x182DE7044
+static constexpr uintptr_t OFFSET_GetAnimationSkeletonPose = 0x0624D970;
+
+namespace SkeletonPoseLogger
+{
+    void Initialize()
+    {
+        if (OFFSET_GetAnimationSkeletonPose == 0)
+        {
+            tprintf("SkeletonPoseLogger: offset not set, skipping hook\n");
+            return;
+        }
+
+        auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+        auto target    = (LPVOID)(imagebase + OFFSET_GetAnimationSkeletonPose);
+
+        auto status = MH_CreateHook(target,
+            &GetAnimationSkeletonPose_Detour,
+            reinterpret_cast<LPVOID*>(&GetAnimationSkeletonPose_orig));
+        if (status != MH_OK) { tprintf("SkeletonPoseLogger: MH_CreateHook failed\n"); return; }
+
+        status = MH_EnableHook(target);
+        if (status != MH_OK) { tprintf("SkeletonPoseLogger: MH_EnableHook failed\n"); return; }
+
+        tprintf("SkeletonPoseLogger: hook enabled\n");
+    }
+}
