@@ -162,16 +162,27 @@ uintptr_t GameUIHandleInput_Detour(void *a1, __int64 actionValue)
     return GameUIHandleInput(a1, actionValue);
 }
 
-uintptr_t HandleBeta_Detour(void* a1, void* a2)
-{
-    printf("HandleBetaManager called\n");
-    return HandleBeta(a1, a2);
-}
-
-uintptr_t GetGameURL_Detour(void* a1, void* a2)
+void *GetGameURL_Detour(void *result, __int64 name)
 {
     printf("GetGameURL called\n");
-    return GetGameURL(a1, a2);
+    Print32MemoryAt(name);
+    //printf("name: %s\n", name->GetString())
+    /*
+    void* name_str = *(void**)((char*)name + 0x08);
+    if (name_str)
+        printf("Name: %s\n", (char*)name_str + 0x0C);*/
+    uintptr_t ra = (uintptr_t)_ReturnAddress();
+    printf("GetGameURL called from 0x%p\n", ra);
+    auto offset = ra - Imagebase - 0xA00;
+    printf("actual offset: %llX\n", offset);
+    void *url = GetGameURL(result, name);
+    /*
+    void* m_string = *(void**)((char*)result + 0x08);
+    if (m_string)
+        printf("Returned URL: %s\n", (char*)m_string + 0x0C);
+    else
+        printf("Returned URL: (null)\n");*/
+    return url;
 }
 
 int TakedownResult_Detour(__int64 a1)
