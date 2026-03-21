@@ -11,7 +11,8 @@
 using namespace std;
 
 static Misc::HandleInput_t GameUIHandleInput; // TODO change to singleton constructor
-
+static Misc::HandleBeta_t HandleBeta;
+static Misc::HandleBeta_t GetGameURL;
 static Misc::FileOpen_t FileOpen;
 static Misc::FormatPath_t FormatPath;
 static Misc::CreateResource_t GetResource;
@@ -159,6 +160,18 @@ uintptr_t GameUIHandleInput_Detour(void *a1, __int64 actionValue)
 {
     printf("GameUIHandleInput called\n");
     return GameUIHandleInput(a1, actionValue);
+}
+
+uintptr_t HandleBeta_Detour(void* a1, void* a2)
+{
+    printf("HandleBetaManager called\n");
+    return HandleBeta(a1, a2);
+}
+
+uintptr_t GetGameURL_Detour(void* a1, void* a2)
+{
+    printf("GetGameURL called\n");
+    return GetGameURL(a1, a2);
 }
 
 int TakedownResult_Detour(__int64 a1)
@@ -326,7 +339,10 @@ void Misc::Initialize()
     MH_Initialize();
     printf("MH initialized!\n");
 
-    ChunkReader::Initialize();
+    //HookOffset3(0x788AC40 + 0xA00, &HandleBeta_Detour, reinterpret_cast<LPVOID*>(&HandleBeta));
+    HookOffset3(0x7868150 + 0xA00, &GetGameURL_Detour, reinterpret_cast<LPVOID*>(&GetGameURL));
+
+    //ChunkReader::Initialize();
 
     //HookOffset3(0x5C14B20 + 0xA00, &GameUIHandleInput_Detour, reinterpret_cast<LPVOID*>(&GameUIHandleInput));
 

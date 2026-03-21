@@ -38,7 +38,7 @@ struct CSkeletonBone
     unsigned short      m_numChildren;       // +0x26
     unsigned short      m_numDescendants;    // +0x28
     unsigned short      m_boneLODDistance;   // +0x2A
-    // 4 bytes padding                       // +0x2C
+    unsigned int        _pad;                // +0x2C  explicit padding to match game struct
 };
 static_assert(sizeof(CSkeletonBone) == 0x30, "CSkeletonBone size mismatch");
 
