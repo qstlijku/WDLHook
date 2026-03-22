@@ -162,11 +162,36 @@ uintptr_t GameUIHandleInput_Detour(void *a1, __int64 actionValue)
     return GameUIHandleInput(a1, actionValue);
 }
 
-void *GetGameURL_Detour(void *result, __int64 name)
+char* Get4MemPtrAt2(uint64_t offset, uint64_t j)
+{
+    uintptr_t addr = (uintptr_t)(offset + j);
+    uint64_t i = *(uint64_t*)addr;
+    char buffer[100];
+    sprintf_s(buffer, "%02x %02x %02x %02x ", i & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF);
+    return buffer;
+}
+
+void Print32PtrAt2(uint64_t offset)
+{
+    printf("At offset: %x\n", offset);
+    if (offset == 0)
+    {
+        printf("Print32PtrAt: Offset was 0! Returning...\n");
+        return;
+    }
+    std::string result = "Memory contents: ";
+    for (uint64_t i = 0; i < 8; i++)
+    {
+        char* s = Get4MemPtrAt2(offset, 4 * i);
+        result += s;
+    }
+    result += "\n\nEnd\n";
+    std::cout << result;
+}
+
+void *GetGameURL_Detour(void *result, void *name)
 {
     printf("GetGameURL called\n");
-    Print32MemoryAt(name);
-    //printf("name: %s\n", name->GetString())
     /*
     void* name_str = *(void**)((char*)name + 0x08);
     if (name_str)
@@ -176,12 +201,13 @@ void *GetGameURL_Detour(void *result, __int64 name)
     auto offset = ra - Imagebase - 0xA00;
     printf("actual offset: %llX\n", offset);
     void *url = GetGameURL(result, name);
-    /*
-    void* m_string = *(void**)((char*)result + 0x08);
+    Print32PtrAt2((uint64_t) url);
+    void* m_string = *(void**)((char*)url + 0x00);
+    Print32PtrAt2((uint64_t)m_string);
     if (m_string)
         printf("Returned URL: %s\n", (char*)m_string + 0x0C);
     else
-        printf("Returned URL: (null)\n");*/
+        printf("Returned URL: (null)\n");
     return url;
 }
 
