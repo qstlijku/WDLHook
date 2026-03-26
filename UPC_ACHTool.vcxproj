@@ -147,6 +147,7 @@
     <ClCompile Include="ext\minhook\trampoline.c" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="Misc.cpp" />
+    <ClCompile Include="SkeletonPoseLogger.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ChunkReader.h" />
@@ -169,6 +170,7 @@
     <ClInclude Include="ext\minhook\trampoline.h" />
     <ClInclude Include="Main.h" />
     <ClInclude Include="Misc.h" />
+    <ClInclude Include="SkeletonPoseLogger.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

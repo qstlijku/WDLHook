@@ -1,6 +1,6 @@
 #include "ChunkReader.h"
 #include "Main.h"
-#include "SkeletonPoseLogger.cpp"
+#include "SkeletonPoseLogger.h"
 #include <iostream>
 
 using namespace std;
