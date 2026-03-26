@@ -4,6 +4,7 @@
 #include <iostream>
 
 FILE* g_logFile = nullptr;
+FILE* g_logFile2 = nullptr;
 
 void Main::Initialize() {
 	HMODULE hModule = GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
@@ -27,6 +28,7 @@ void Main::ShowConsole() {
 	HWND WindowHandle = ::GetConsoleWindow();
 
 	fopen_s(&g_logFile, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\wdlhook_log.txt", "w");
+	fopen_s(&g_logFile2, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_pose.h", "w");
 	printf("DE_Hook initialized...\n");
 
 	/*if (WindowHandle != NULL)

@@ -15,7 +15,11 @@
 
 #include "ChunkReader.h"
 #include "Main.h"
+#include "wdl_idle_pose.h"
 #include <cstdio>
+
+static constexpr unsigned int WDL_BIND_POSE_COUNT =
+    sizeof(wdlBindPose) / sizeof(wdlBindPose[0]);
 
 // ============================================================================
 // Struct definitions (confirmed from IDA, E3 symbolized build)
@@ -71,7 +75,7 @@ static_assert(sizeof(CSkeletonPose) == 0x28, "CSkeletonPose size mismatch");
 typedef CSkeletonPose*(*GetAnimationSkeletonPose_t)(void* thisPtr, CSkeletonPose* result);
 static GetAnimationSkeletonPose_t GetAnimationSkeletonPose_orig;
 
-static bool g_dumpNextFrame = false;
+static bool g_f9WasDown = false;
 
 // ============================================================================
 // Detour
@@ -85,20 +89,26 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
 {
     CSkeletonPose* ret = GetAnimationSkeletonPose_orig(thisPtr, result);
 
-    if (GetAsyncKeyState(VK_F9) & 1)
-        g_dumpNextFrame = true;
+    if (result->m_numBones == 1)
+        return ret;
+    /*
+    bool f9Down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+    bool f9Pressed = f9Down && !g_f9WasDown;
+    g_f9WasDown = f9Down;
 
-    if (!g_dumpNextFrame)
+    if (!f9Pressed)
         return ret;
     if (!result || result->m_numBones < MIN_PLAYER_BONES)
         return ret;
     if (!result->m_bones || !result->m_localToParentTransforms)
         return ret;
-
-    g_dumpNextFrame = false;
-
+    */
     tprintf("\n=== SkeletonPoseLogger: bone dump ===\n");
     tprintf("numBones: %u\n", result->m_numBones);
+    tprintf("// WDL player animated pose (captured via F9 trigger)\n");
+    tprintf("// Quaternion order: x, y, z, w  |  Position: x, y, z\n");
+    tprintf("struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
+    tprintf("static SkelBone wdlAnimPose[] = {\n");
 
     for (unsigned int i = 0; i < result->m_numBones; i++)
     {
@@ -116,8 +126,15 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
         tprintf("  anim  quat: %f %f %f %f  pos: %f %f %f\n",
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
             ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
+
+        const char* boneName = (i < WDL_BIND_POSE_COUNT) ? wdlBindPose[i].name : "unknown";
+        tprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
+            boneName, (int)bone.m_parentIndex,
+            ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
+            ltp.pos[0], ltp.pos[1], ltp.pos[2]);
     }
 
+    tprintf("};\n");
     tprintf("=== end bone dump ===\n");
 
     return ret;
