@@ -71,7 +71,7 @@ static_assert(sizeof(CSkeletonPose) == 0x28, "CSkeletonPose size mismatch");
 typedef CSkeletonPose*(*GetAnimationSkeletonPose_t)(void* thisPtr, CSkeletonPose* result);
 static GetAnimationSkeletonPose_t GetAnimationSkeletonPose_orig;
 
-static int poseLogCount = 0;
+static bool g_dumpNextFrame = false;
 
 // ============================================================================
 // Detour
@@ -85,12 +85,17 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
 {
     CSkeletonPose* ret = GetAnimationSkeletonPose_orig(thisPtr, result);
 
-    if (poseLogCount >= 1)
+    if (GetAsyncKeyState(VK_F9) & 1)
+        g_dumpNextFrame = true;
+
+    if (!g_dumpNextFrame)
         return ret;
     if (!result || result->m_numBones < MIN_PLAYER_BONES)
         return ret;
     if (!result->m_bones || !result->m_localToParentTransforms)
         return ret;
+
+    g_dumpNextFrame = false;
 
     tprintf("\n=== SkeletonPoseLogger: bone dump ===\n");
     tprintf("numBones: %u\n", result->m_numBones);
@@ -114,7 +119,6 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
     }
 
     tprintf("=== end bone dump ===\n");
-    poseLogCount++;
 
     return ret;
 }
