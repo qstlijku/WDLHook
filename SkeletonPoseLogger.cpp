@@ -105,10 +105,10 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
     */
     tprintf("\n=== SkeletonPoseLogger: bone dump ===\n");
     tprintf("numBones: %u\n", result->m_numBones);
-    tprintf("// WDL player animated pose (captured via F9 trigger)\n");
-    tprintf("// Quaternion order: x, y, z, w  |  Position: x, y, z\n");
-    tprintf("struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
-    tprintf("static SkelBone wdlAnimPose[] = {\n");
+    uprintf("// WDL player animated pose (captured via F9 trigger)\n");
+    uprintf("// Quaternion order: x, y, z, w  |  Position: x, y, z\n");
+    uprintf("struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
+    uprintf("static SkelBone wdlAnimPose[] = {\n");
 
     for (unsigned int i = 0; i < result->m_numBones; i++)
     {
@@ -128,14 +128,17 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
             ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
 
         const char* boneName = (i < WDL_BIND_POSE_COUNT) ? wdlBindPose[i].name : "unknown";
-        tprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
+        uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
             boneName, (int)bone.m_parentIndex,
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
             ltp.pos[0], ltp.pos[1], ltp.pos[2]);
     }
 
-    tprintf("};\n");
-    tprintf("=== end bone dump ===\n");
+    uprintf("};\n");
+
+    incrementLog();
+
+    //tprintf("=== end bone dump ===\n");
 
     return ret;
 }

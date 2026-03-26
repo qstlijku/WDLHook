@@ -5,6 +5,7 @@
 
 FILE* g_logFile = nullptr;
 FILE* g_logFile2 = nullptr;
+int logNum = 0;
 
 void Main::Initialize() {
 	HMODULE hModule = GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");

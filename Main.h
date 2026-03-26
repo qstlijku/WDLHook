@@ -2,6 +2,7 @@
 #include <Windows.h>
 #include <cstdio>
 #include <cstdarg>
+#include <string>
 
 extern FILE* g_logFile;
 extern FILE* g_logFile2;
@@ -34,6 +35,17 @@ inline void uprintf(const char* fmt, ...)
         va_end(args);
         fflush(g_logFile2);
     }
+}
+
+extern int logNum;
+
+inline void incrementLog()
+{
+    logNum++;
+    fclose(g_logFile2);
+    std::string basePath = "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_poses\anim_pose";
+    const char* logName = (basePath + std::to_string(logNum) + ".h").c_str();
+    fopen_s(&g_logFile2, logName, "w");
 }
 
 class Main
