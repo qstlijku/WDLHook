@@ -44,9 +44,9 @@ inline void incrementLog()
     logNum++;
     if (g_logFile2 != NULL)
         fclose(g_logFile2);
-    std::string basePath = "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_poses\\anim_pose";
-    const char* logName = (basePath + std::to_string(logNum) + ".h").c_str();
-    fopen_s(&g_logFile2, logName, "w");
+    std::string logName = "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_poses\\anim_pose"
+        + std::to_string(logNum) + ".h";
+    fopen_s(&g_logFile2, logName.c_str(), "w");
 }
 
 class Main
