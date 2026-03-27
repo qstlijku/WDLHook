@@ -15,6 +15,8 @@ static ChunkReader::ReadFrameData_t ReadFrameData3;
 static ChunkReader::GetJointRotations_t GetJointRotations;
 static ChunkReader::EvalOpe_t EvalOpe;
 
+static ChunkReader::LocalToParent_t LocalToModel;
+
 char* Get4MemPtrAt(uint64_t offset, uint64_t j)
 {
     uintptr_t addr = (uintptr_t)(offset + j);
@@ -770,6 +772,22 @@ void EvalOpe_Detour(ChunkReader::SingleAnimEvalOpe *a1, ChunkReader::CAnimationM
     EvalOpe(a1, a2, a3, a4, a5, a6, a7);
 }
 
+int local = 0;
+void LocalToModel_Detour(__int64 a1, unsigned int boneIndex)
+{
+    if (local < 1000 && boneIndex > 10)
+    {
+        printf("LocalToParentDetour for bone: %d\n", boneIndex);
+        local++;
+
+        uintptr_t ra = (uintptr_t)_ReturnAddress();
+        printf("GetGameURL called from 0x%p\n", ra);
+        auto offset = ra - Imagebase - 0xA00;
+        printf("actual offset: %llX\n", offset);
+    }
+    LocalToModel(a1, boneIndex);
+}
+
 char* Get4MemAtCR(uint64_t offset, uint64_t j)
 {
     uintptr_t addr = (uintptr_t)(Imagebase + offset + j);
@@ -816,16 +834,17 @@ void HookOffset4(int offset, LPVOID detour, LPVOID* orig)
 
 void ChunkReader::Initialize()
 {
-    HookOffset4(0x185C50 + 0xA00, &FillBoneAddressingTable_Detour, reinterpret_cast<LPVOID*>(&FillBoneAddressingTable));
-    HookOffset4(0x185E20 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
+    //HookOffset4(0x185C50 + 0xA00, &FillBoneAddressingTable_Detour, reinterpret_cast<LPVOID*>(&FillBoneAddressingTable));
+    //HookOffset4(0x185E20 + 0xA00, &ReadTwoValues_Detour, reinterpret_cast<LPVOID*>(&ReadTwoValues));
 
     //HookOffset4(0x207E90 + 0xA00, &StartData_Detour, reinterpret_cast<LPVOID*>(&StartData));
     //HookOffset4(0x207FC0 + 0xA00, &ExtractAnyFramePair_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFramePair));
     //HookOffset4(0x2083C0 + 0xA00, &ExtractAnyFrameValue_Detour, reinterpret_cast<LPVOID*>(&ExtractAnyFrameValue));
     //HookOffset4(0x208910 + 0xA00, &ReadFrameData_Detour, reinterpret_cast<LPVOID*>(&ReadFrameData));
-    HookOffset4(0x185420 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
+    //HookOffset4(0x185420 + 0xA00, &GetJointRotations_Detour, reinterpret_cast<LPVOID*>(&GetJointRotations));
 
-    HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
+    //HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
 
-    SkeletonPoseLogger::Initialize();
+    HookOffset4(0x118500 + 0xA00, &LocalToModel_Detour, reinterpret_cast<LPVOID*>(&LocalToModel));
+    //SkeletonPoseLogger::Initialize();
 }

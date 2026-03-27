@@ -115,5 +115,6 @@ public:
 	typedef uintptr_t(*GetJointRotations_t)(__int64, __int64, __int64, __int64, __int64, int, __int64, int, __int64, bool);
 	typedef void(*EvalOpe_t)(SingleAnimEvalOpe*, CAnimationMediator*, __int64, void*, bool, void *, bool);
 
+	typedef void(*LocalToParent_t)(__int64, unsigned int);
 	static void Initialize();
 };
