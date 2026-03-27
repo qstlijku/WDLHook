@@ -127,9 +127,9 @@ string lookup(ulong hash)
     return table[hash];
 }
 
-void readLines()
+void readLines(std::string path)
 {
-    ifstream file("C:\\Unpack_Decomp\\bin\\Debug\\net472\\filelist.txt");
+    ifstream file(path);
 
     // String to store each line of the file.
     string line;
@@ -372,12 +372,13 @@ void HookOffset(int offset)
 void Misc::Initialize()
 {
     // Not using this for now
-    //readLines();
+    //readLines("C:\\Unpack_Decomp\\bin\\Debug\\net472\\filelist.txt");
+    readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones.txt");
     MH_Initialize();
     printf("MH initialized!\n");
 
     //HookOffset3(0x788AC40 + 0xA00, &HandleBeta_Detour, reinterpret_cast<LPVOID*>(&HandleBeta));
-    HookOffset3(0x7868150 + 0xA00, &GetGameURL_Detour, reinterpret_cast<LPVOID*>(&GetGameURL));
+    //HookOffset3(0x7868150 + 0xA00, &GetGameURL_Detour, reinterpret_cast<LPVOID*>(&GetGameURL));
 
     ChunkReader::Initialize();
 
