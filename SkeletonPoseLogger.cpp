@@ -15,8 +15,15 @@
 
 #include "ChunkReader.h"
 #include "Main.h"
+#include "Misc.h"
 #include "wdl_idle_pose.h"
 #include <cstdio>
+#include <fstream>
+#include <string>
+#include <list>
+#include <unordered_map>
+
+using namespace std;
 
 static constexpr unsigned int WDL_BIND_POSE_COUNT =
     sizeof(wdlBindPose) / sizeof(wdlBindPose[0]);
@@ -92,9 +99,25 @@ struct CSkeletonPose
 static_assert(sizeof(CSkeletonPose) == 0x28, "CSkeletonPose size mismatch");
 
 // ============================================================================
-// Hook state
+// CRC32 (standard zlib/ISO 3309 — matches game bone nameID hashing)
 // ============================================================================
 
+static unsigned int CRC32(const char* str)
+{
+    unsigned int crc = 0xFFFFFFFF;
+    while (*str)
+    {
+        crc ^= (unsigned char)*str++;
+        for (int i = 0; i < 8; i++)
+            crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320u : 0u);
+    }
+    return ~crc;
+}
+
+// ============================================================================
+// Hook state
+// ============================================================================
+typedef unsigned long long ulong;
 typedef CSkeletonPose*(*GetAnimationSkeletonPose_t)(void* thisPtr, CSkeletonPose* result);
 static GetAnimationSkeletonPose_t GetAnimationSkeletonPose_orig;
 
@@ -110,6 +133,35 @@ static bool g_f9WasDown = false;
 // Minimum bone count to consider this the player skeleton.
 // Filters out small skeletons (props, vehicles, etc.).
 static constexpr unsigned int MIN_PLAYER_BONES = 50;
+
+static std::list<std::string> lines;
+static std::unordered_map<ulong, string> table;
+
+static string lookup(ulong hash)
+{
+    if (table.count(hash) == 0)
+        return "Unknown";
+    return table[hash];
+}
+
+static void readLines(std::string path)
+{
+    ifstream file(path);
+
+    // String to store each line of the file.
+    string line;
+
+    while (getline(file, line))
+    {
+        lines.push_back(line);
+    }
+
+    for (string line : lines)
+    {
+        ulong hash = CRC32(line.c_str());
+        table[hash] = line;
+    }
+}
 
 CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* result)
 {
@@ -136,7 +188,7 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
     uprintf("struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
     uprintf("static SkelBone wdlAnimPose[] = {\n");
 
-    for (unsigned int i = 0; i < result->m_numBones; i++)
+    for (int i = 0; i < result->m_numBones; i++)
     {
         const CSkeletonBone&    bone   = result->m_bones[i];
         const ndPosQuatTransform& ltp  = result->m_localToParentTransforms[i];
@@ -153,7 +205,8 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
             ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
 
-        const char* boneName = (i < WDL_BIND_POSE_COUNT) ? wdlBindPose[i].name : "unknown";
+        const char* boneName = lookup(bone.m_nameID).c_str();
+        //const char* boneName = (i < WDL_BIND_POSE_COUNT) ? wdlBindPose[i].name : "unknown";
         uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
             boneName, (int)bone.m_parentIndex,
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
@@ -255,6 +308,28 @@ namespace SkeletonPoseLogger
 {
     void Initialize()
     {
+        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones.txt");
+
+        auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+        auto target = (LPVOID)(imagebase + OFFSET_GetAnimationSkeletonPose);
+
+        auto status = MH_CreateHook(target,
+            &GetAnimationSkeletonPose_Detour,
+            reinterpret_cast<LPVOID*>(&GetAnimationSkeletonPose_orig));
+        if (status != MH_OK) { tprintf("SkeletonPoseLogger: MH_CreateHook failed\n"); return; }
+
+        status = MH_EnableHook(target);
+        if (status != MH_OK) { tprintf("SkeletonPoseLogger: MH_EnableHook failed\n"); return; }
+
+        tprintf("SkeletonPoseLogger: hook enabled\n");
+    }
+}
+
+/*
+namespace SkeletonPoseLogger
+{
+    void Initialize()
+    {
         auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
 
         {
@@ -272,3 +347,4 @@ namespace SkeletonPoseLogger
         (void)GetAnimationSkeletonPose_orig;
     }
 }
+*/

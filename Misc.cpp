@@ -373,7 +373,7 @@ void Misc::Initialize()
 {
     // Not using this for now
     //readLines("C:\\Unpack_Decomp\\bin\\Debug\\net472\\filelist.txt");
-    readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones.txt");
+    //readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones.txt");
     MH_Initialize();
     printf("MH initialized!\n");
 
