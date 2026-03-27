@@ -46,6 +46,29 @@ struct CSkeletonBone
 };
 static_assert(sizeof(CSkeletonBone) == 0x30, "CSkeletonBone size mismatch");
 
+// Forward declarations
+struct CAnimationSystem;
+struct CSkeletonDescription;
+struct CCharacterPhysComponent;
+
+// CBaseAnimationComponent partial layout.
+// Base class (CEntityComponent) is 0x40 bytes.
+// Field offsets estimated from E3 symbolized build field ordering.
+// VERIFY m_animationSystem and m_skeletonDescription offsets in IDA before use.
+struct CBaseAnimationComponent
+{
+    char                        _base[0x40];                 // +0x00  CEntityComponent
+    char                        _lock[0x08];                 // +0x40  CCritSectionShared m_animUpdateInProgressLock
+    bool                        m_animUpdateInProgress;      // +0x48
+    char                        _pad49[0x07];                // +0x49  alignment to next pointer
+    CAnimationSystem           *m_animationSystem;           // +0x50
+    CCharacterPhysComponent    *m_characterPhysComponent;    // +0x58
+    const CSkeletonDescription *m_skeletonDescription;       // +0x60
+    // Fields beyond +0x68 involve variably-sized template types
+    // (CAnimationCriteriaList, ndVector, ndHashMap<...,400>, etc.)
+    // and cannot be sized without IDA confirmation.
+};
+
 // sizeof=0x28. Assembled on-stack by GetAnimationSkeletonPose; pointers into
 // the live animation system arrays (no separate allocation).
 //
