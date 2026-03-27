@@ -98,6 +98,9 @@ static_assert(sizeof(CSkeletonPose) == 0x28, "CSkeletonPose size mismatch");
 typedef CSkeletonPose*(*GetAnimationSkeletonPose_t)(void* thisPtr, CSkeletonPose* result);
 static GetAnimationSkeletonPose_t GetAnimationSkeletonPose_orig;
 
+typedef void(*CSkeletonObjectUpdate_t)(void* thisPtr);
+static CSkeletonObjectUpdate_t CSkeletonObjectUpdate_orig;
+
 static bool g_f9WasDown = false;
 
 // ============================================================================
@@ -167,37 +170,105 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
 }
 
 // ============================================================================
+// CSkeletonObject::Update detour
+// Fires after all bones have had Impl_ComputeLocalToModel called.
+// m_localToModelTransforms is fully populated on return.
+//
+// CSkeletonObject ndVector field access (confirmed from disassembly of 0x0010A3A0):
+//   numBones  = (*(uint64_t*)(this+0x20) >> 32) & 0x7FFFFFFF
+//   bones ptr = ndvec_data(this, props=+0x20, data=+0x28)
+//   ltm ptr   = ndvec_data(this, props=+0x68, data=+0x70)
+//   ltp ptr   = ndvec_data(this, props=+0x58, data=+0x60)
+//
+// ndvec_data: if sign bit of props is set, data is inline at the data field address;
+//             otherwise *(ptr) at the data field is the heap pointer.
+// ============================================================================
+
+static void* NdVecData(void* obj, int propsOff, int dataOff)
+{
+    if (*(int64_t*)((char*)obj + propsOff) < 0)
+        return (char*)obj + dataOff;       // inline
+    return *(void**)((char*)obj + dataOff); // heap
+}
+
+void CSkeletonObjectUpdate_Detour(void* thisPtr)
+{
+    CSkeletonObjectUpdate_orig(thisPtr);
+
+    uint32_t numBones = (uint32_t)((*(uint64_t*)((char*)thisPtr + 0x20) >> 32) & 0x7FFFFFFF);
+    if (numBones < MIN_PLAYER_BONES)
+        return;
+
+    bool f9Down    = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+    bool f9Pressed = f9Down && !g_f9WasDown;
+    g_f9WasDown    = f9Down;
+    if (!f9Pressed)
+        return;
+
+    auto* bones = (const CSkeletonBone*)      NdVecData(thisPtr, 0x20, 0x28);
+    auto* ltm   = (const ndPosQuatTransform*) NdVecData(thisPtr, 0x68, 0x70);
+    if (!bones || !ltm)
+        return;
+
+    tprintf("\n=== CSkeletonObject::Update: model-space pose dump ===\n");
+    tprintf("numBones: %u\n", numBones);
+    uprintf("// WDL player local-to-model pose (post-CSkeletonObject::Update)\n");
+    uprintf("// Quaternion: x, y, z, w  |  Position: x, y, z\n");
+    uprintf("struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
+    uprintf("static SkelBone wdlModelPose[] = {\n");
+
+    for (uint32_t i = 0; i < numBones; i++)
+    {
+        const CSkeletonBone&      bone = bones[i];
+        const ndPosQuatTransform& m    = ltm[i];
+
+        tprintf("bone[%3u] nameID=%08X parent=%3d\n",
+            i, bone.m_nameID, (int)bone.m_parentIndex);
+        tprintf("  ltm quat: %f %f %f %f  pos: %f %f %f\n",
+            m.quat[0], m.quat[1], m.quat[2], m.quat[3],
+            m.pos[0],  m.pos[1],  m.pos[2]);
+
+        const char* boneName = (i < WDL_BIND_POSE_COUNT) ? wdlBindPose[i].name : "unknown";
+        uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
+            boneName, (int)bone.m_parentIndex,
+            m.quat[0], m.quat[1], m.quat[2], m.quat[3],
+            m.pos[0],  m.pos[1],  m.pos[2]);
+    }
+
+    uprintf("};\n");
+    incrementLog();
+}
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
-// TODO: find offset of CBaseAnimationComponent::GetAnimationSkeletonPose in
-// DuniaDemo_clang_64_dx11.dll. E3 symbolized address: 0x82DE7044.
-// Hook formula (same as other hooks): Imagebase + file_offset + 0xA00.
-// File offset: 0x0624CF70  RVA: 0x0624D970  (file_offset + 0xA00, retail DuniaDemo_clang_64_dx11.dll)
-// E3 symbolized address: 0x182DE7044
+// File offset: 0x0624CF70  RVA: 0x0624D970
 static constexpr uintptr_t OFFSET_GetAnimationSkeletonPose = 0x0624D970;
+
+// RVA: 0x0010ADA0  File: 0x0010A3A0
+// E3: CSkeletonObject::Update — loops over all bones calling Impl_ComputeLocalToModel.
+// After this returns, m_localToModelTransforms is fully populated for all bones.
+static constexpr uintptr_t OFFSET_CSkeletonObjectUpdate = 0x0010ADA0;
 
 namespace SkeletonPoseLogger
 {
     void Initialize()
     {
-        if (OFFSET_GetAnimationSkeletonPose == 0)
+        auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+
         {
-            tprintf("SkeletonPoseLogger: offset not set, skipping hook\n");
-            return;
+            auto target = (LPVOID)(imagebase + OFFSET_CSkeletonObjectUpdate);
+            auto status = MH_CreateHook(target, &CSkeletonObjectUpdate_Detour,
+                reinterpret_cast<LPVOID*>(&CSkeletonObjectUpdate_orig));
+            if (status != MH_OK) { tprintf("CSkeletonObject::Update hook failed (%d)\n", status); return; }
+            status = MH_EnableHook(target);
+            if (status != MH_OK) { tprintf("CSkeletonObject::Update enable failed (%d)\n", status); return; }
+            tprintf("CSkeletonObject::Update hook enabled\n");
         }
 
-        auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
-        auto target    = (LPVOID)(imagebase + OFFSET_GetAnimationSkeletonPose);
-
-        auto status = MH_CreateHook(target,
-            &GetAnimationSkeletonPose_Detour,
-            reinterpret_cast<LPVOID*>(&GetAnimationSkeletonPose_orig));
-        if (status != MH_OK) { tprintf("SkeletonPoseLogger: MH_CreateHook failed\n"); return; }
-
-        status = MH_EnableHook(target);
-        if (status != MH_OK) { tprintf("SkeletonPoseLogger: MH_EnableHook failed\n"); return; }
-
-        tprintf("SkeletonPoseLogger: hook enabled\n");
+        // GetAnimationSkeletonPose hook left disabled for now — use CSkeletonObject::Update instead.
+        (void)OFFSET_GetAnimationSkeletonPose;
+        (void)GetAnimationSkeletonPose_orig;
     }
 }
