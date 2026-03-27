@@ -102,13 +102,13 @@ static_assert(sizeof(CSkeletonPose) == 0x28, "CSkeletonPose size mismatch");
 // CRC32 (standard zlib/ISO 3309 — matches game bone nameID hashing)
 // ============================================================================
 
-static unsigned int CRC32(const char* str)
+static unsigned int CRC32(std::string str)
 {
     unsigned int crc = 0xFFFFFFFF;
-    while (*str)
+    for (int i = 0; i < str.length(); i++)
     {
-        crc ^= (unsigned char)*str++;
-        for (int i = 0; i < 8; i++)
+        crc ^= (unsigned char)str[i];
+        for (int j = 0; j < 8; j++)
             crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320u : 0u);
     }
     return ~crc;
@@ -158,7 +158,7 @@ static void readLines(std::string path)
 
     for (string line : lines)
     {
-        ulong hash = CRC32(line.c_str());
+        unsigned int hash = CRC32(line);
         table[hash] = line;
     }
 }
@@ -205,10 +205,10 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
             ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
 
-        const char* boneName = lookup(bone.m_nameID).c_str();
+        auto boneName = lookup(bone.m_nameID);
         //const char* boneName = (i < WDL_BIND_POSE_COUNT) ? wdlBindPose[i].name : "unknown";
         uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
-            boneName, (int)bone.m_parentIndex,
+            boneName.c_str(), (int)bone.m_parentIndex,
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
             ltp.pos[0], ltp.pos[1], ltp.pos[2]);
     }
