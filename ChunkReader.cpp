@@ -846,5 +846,6 @@ void ChunkReader::Initialize()
     //HookOffset4(0x1A6930 + 0xA00, &EvalOpe_Detour, reinterpret_cast<LPVOID*>(&EvalOpe));
 
     //HookOffset4(0x118500 + 0xA00, &LocalToModel_Detour, reinterpret_cast<LPVOID*>(&LocalToModel));
+    //HookOffset4(0x1A78AB0 + 0xA00, &PlayAnimUpdate_Detour, reinterpret_cast<LPVOID*>(&PlayAnimUpdate));
     SkeletonPoseLogger::Initialize();
 }

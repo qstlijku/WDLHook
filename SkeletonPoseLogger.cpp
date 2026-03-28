@@ -22,6 +22,7 @@
 #include <string>
 #include <list>
 #include <unordered_map>
+#include <mutex>
 
 using namespace std;
 
@@ -308,6 +309,7 @@ static void* NdVecData(void* obj, int propsOff, int dataOff)
 */
 
 int skel = 0;
+static std::mutex g_logMutex;
 
 void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
 {
@@ -333,6 +335,11 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
     if (!bones || !ltps || !ltms)
         return;
 
+    //if (numBones > 120) return;
+
+    tprintf("skeleton numBones: %u\n", numBones);
+    std::lock_guard<std::mutex> lock(g_logMutex);
+
     skel++;
     if (skel > 10)
         return;
@@ -341,7 +348,7 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
     uprintf("// WDL player local-to-model pose (post-CSkeletonObject::Update)\n");
     uprintf("// Quaternion: x, y, z, w  |  Position: x, y, z\n");
     uprintf("struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
-    uprintf("static SkelBone wdlModelPose[] = {\n");
+    uprintf("static SkelBone wdlAnimPose[] = {\n");
 
     for (int i = 0; i < numBones; i++)
     {
@@ -368,8 +375,13 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
         auto boneName = lookup(bone.m_nameID);
         uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
             boneName.c_str(), (int)bone.m_parentIndex,
+            
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
             ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
+        /*
+            bind.quat[0], bind.quat[1], bind.quat[2], bind.quat[3],
+            bind.pos[0], bind.pos[1], bind.pos[2]);
+            */
     }
 
     uprintf("};\n");
@@ -415,7 +427,9 @@ namespace SkeletonPoseLogger
 {
     void Initialize()
     {
-        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones.txt");
+        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones1.txt");
+        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones2.txt");
+        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones3.txt");
         auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
 
         auto target = (LPVOID)(imagebase + OFFSET_CSkeletonObjectUpdate);
