@@ -99,6 +99,68 @@ struct CSkeletonPose
 static_assert(sizeof(CSkeletonPose) == 0x28, "CSkeletonPose size mismatch");
 
 // ============================================================================
+// ndVector<T> — Dunia engine dynamic array used in CSkeletonObject.
+//
+// Layout (16 bytes):
+//   +0x00  int64_t props   — upper 31 bits of high word = element count;
+//                            sign bit set = data stored inline at &data field
+//   +0x08  T*      data    — heap pointer if not inline, else inline storage
+//
+// Confirmed from disassembly of CSkeletonObject::Update (0x0010A3A0).
+// ============================================================================
+
+template<typename T>
+struct ndVector
+{
+    int64_t props;  // sign bit = inline; (props >> 32) & 0x7FFFFFFF = count
+    T*      data;   // heap ptr if not inline, else data is stored here
+
+    uint32_t size() const
+    {
+        return (uint32_t)(((uint64_t)props >> 32) & 0x7FFFFFFF);
+    }
+
+    T* ptr()
+    {
+        if (props < 0)
+            return reinterpret_cast<T*>(&data); // inline: data lives at &data
+        return data;                             // heap pointer
+    }
+
+    const T* ptr() const
+    {
+        if (props < 0)
+            return reinterpret_cast<const T*>(&data);
+        return data;
+    }
+};
+static_assert(sizeof(ndVector<int>) == 0x10, "ndVector size mismatch");
+
+// ============================================================================
+// CSkeletonObject — confirmed field offsets from disassembly of 0x0010A3A0
+// ============================================================================
+
+struct CSkeletonObject
+{
+    char                              _pad00[0x20];                  // +0x00
+    ndVector<CSkeletonBone>           m_bones;                       // +0x20
+    char                              _pad30[0x28];                  // +0x30
+    ndVector<ndPosQuatTransform>      m_localToParentTransforms;     // +0x58
+    ndVector<ndPosQuatTransform>      m_localToModelTransforms;      // +0x68
+    ndVector<unsigned __int8>         m_updateStates;                // +0x78
+    char                              _pad88[0x38];                  // +0x88
+    float                             m_scale;                       // +0xC0
+    char                              _padC4[0x3D];                  // +0xC4
+    unsigned __int8                   m_dirtyFlags;                  // +0x101
+};
+static_assert(offsetof(CSkeletonObject, m_bones)                   == 0x20, "offset mismatch");
+static_assert(offsetof(CSkeletonObject, m_localToParentTransforms) == 0x58, "offset mismatch");
+static_assert(offsetof(CSkeletonObject, m_localToModelTransforms)  == 0x68, "offset mismatch");
+static_assert(offsetof(CSkeletonObject, m_updateStates)            == 0x78, "offset mismatch");
+static_assert(offsetof(CSkeletonObject, m_scale)                   == 0xC0, "offset mismatch");
+static_assert(offsetof(CSkeletonObject, m_dirtyFlags)              == 0x101, "offset mismatch");
+
+// ============================================================================
 // CRC32 (standard zlib/ISO 3309 — matches game bone nameID hashing)
 // ============================================================================
 
@@ -121,7 +183,7 @@ typedef unsigned long long ulong;
 typedef CSkeletonPose*(*GetAnimationSkeletonPose_t)(void* thisPtr, CSkeletonPose* result);
 static GetAnimationSkeletonPose_t GetAnimationSkeletonPose_orig;
 
-typedef void(*CSkeletonObjectUpdate_t)(void* thisPtr);
+typedef void(*CSkeletonObjectUpdate_t)(CSkeletonObject* thisPtr);
 static CSkeletonObjectUpdate_t CSkeletonObjectUpdate_orig;
 
 static bool g_f9WasDown = false;
@@ -236,33 +298,39 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
 //             otherwise *(ptr) at the data field is the heap pointer.
 // ============================================================================
 
+/*
 static void* NdVecData(void* obj, int propsOff, int dataOff)
 {
     if (*(int64_t*)((char*)obj + propsOff) < 0)
         return (char*)obj + dataOff;       // inline
     return *(void**)((char*)obj + dataOff); // heap
 }
+*/
 
 int skel = 0;
 
-void CSkeletonObjectUpdate_Detour(void* thisPtr)
+void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
 {
     CSkeletonObjectUpdate_orig(thisPtr);
 
-    uint32_t numBones = (uint32_t)((*(uint64_t*)((char*)thisPtr + 0x20) >> 32) & 0x7FFFFFFF);
+    uint32_t numBones = thisPtr->m_bones.size();
     if (numBones < MIN_PLAYER_BONES)
         return;
 
-    /*
+    
     bool f9Down    = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
     bool f9Pressed = f9Down && !g_f9WasDown;
     g_f9WasDown    = f9Down;
     if (!f9Pressed)
+    {
+        skel = 0;
         return;
-    */
-    auto* bones = (const CSkeletonBone*)      NdVecData(thisPtr, 0x20, 0x28);
-    auto* ltm   = (const ndPosQuatTransform*) NdVecData(thisPtr, 0x68, 0x70);
-    if (!bones || !ltm)
+    }
+    
+    const CSkeletonBone*       bones = thisPtr->m_bones.ptr();
+    const ndPosQuatTransform*  ltps   = thisPtr->m_localToParentTransforms.ptr();
+    const ndPosQuatTransform*  ltms   = thisPtr->m_localToModelTransforms.ptr();
+    if (!bones || !ltps || !ltms)
         return;
 
     skel++;
@@ -278,25 +346,30 @@ void CSkeletonObjectUpdate_Detour(void* thisPtr)
     for (int i = 0; i < numBones; i++)
     {
         const CSkeletonBone&      bone = bones[i];
-        const ndPosQuatTransform& m    = ltm[i];
         const ndPosQuatTransform& bind = bone.m_bindLocalToParent;
+        const ndPosQuatTransform& ltp    = ltps[i];
+        const ndPosQuatTransform& mtp    = ltms[i];
 
         tprintf("bone[%3u] nameID=%08X parent=%3d\n",
             i, bone.m_nameID, (int)bone.m_parentIndex);
 
         tprintf("  bind  quat: %f %f %f %f  pos: %f %f %f\n",
             bind.quat[0], bind.quat[1], bind.quat[2], bind.quat[3],
-            bind.pos[0], bind.pos[1], bind.pos[2]);
+            bind.pos[0],  bind.pos[1],  bind.pos[2]);
 
-        tprintf("  ltm quat: %f %f %f %f  pos: %f %f %f\n",
-            m.quat[0], m.quat[1], m.quat[2], m.quat[3],
-            m.pos[0],  m.pos[1],  m.pos[2]);
+        tprintf("  ltp   quat: %f %f %f %f  pos: %f %f %f\n",
+            ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
+            ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
+
+        tprintf("  ltm   quat: %f %f %f %f  pos: %f %f %f\n",
+            mtp.quat[0], mtp.quat[1], mtp.quat[2], mtp.quat[3],
+            mtp.pos[0],  mtp.pos[1],  mtp.pos[2]);
 
         auto boneName = lookup(bone.m_nameID);
         uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
             boneName.c_str(), (int)bone.m_parentIndex,
-            m.quat[0], m.quat[1], m.quat[2], m.quat[3],
-            m.pos[0],  m.pos[1],  m.pos[2]);
+            ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
+            ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
     }
 
     uprintf("};\n");
