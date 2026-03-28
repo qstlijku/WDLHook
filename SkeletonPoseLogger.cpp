@@ -206,7 +206,6 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
             ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
 
         auto boneName = lookup(bone.m_nameID);
-        //const char* boneName = (i < WDL_BIND_POSE_COUNT) ? wdlBindPose[i].name : "unknown";
         uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
             boneName.c_str(), (int)bone.m_parentIndex,
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
@@ -244,6 +243,8 @@ static void* NdVecData(void* obj, int propsOff, int dataOff)
     return *(void**)((char*)obj + dataOff); // heap
 }
 
+int skel = 0;
+
 void CSkeletonObjectUpdate_Detour(void* thisPtr)
 {
     CSkeletonObjectUpdate_orig(thisPtr);
@@ -252,17 +253,21 @@ void CSkeletonObjectUpdate_Detour(void* thisPtr)
     if (numBones < MIN_PLAYER_BONES)
         return;
 
+    /*
     bool f9Down    = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
     bool f9Pressed = f9Down && !g_f9WasDown;
     g_f9WasDown    = f9Down;
     if (!f9Pressed)
         return;
-
+    */
     auto* bones = (const CSkeletonBone*)      NdVecData(thisPtr, 0x20, 0x28);
     auto* ltm   = (const ndPosQuatTransform*) NdVecData(thisPtr, 0x68, 0x70);
     if (!bones || !ltm)
         return;
 
+    skel++;
+    if (skel > 10)
+        return;
     tprintf("\n=== CSkeletonObject::Update: model-space pose dump ===\n");
     tprintf("numBones: %u\n", numBones);
     uprintf("// WDL player local-to-model pose (post-CSkeletonObject::Update)\n");
@@ -270,7 +275,7 @@ void CSkeletonObjectUpdate_Detour(void* thisPtr)
     uprintf("struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
     uprintf("static SkelBone wdlModelPose[] = {\n");
 
-    for (uint32_t i = 0; i < numBones; i++)
+    for (int i = 0; i < numBones; i++)
     {
         const CSkeletonBone&      bone = bones[i];
         const ndPosQuatTransform& m    = ltm[i];
@@ -281,9 +286,9 @@ void CSkeletonObjectUpdate_Detour(void* thisPtr)
             m.quat[0], m.quat[1], m.quat[2], m.quat[3],
             m.pos[0],  m.pos[1],  m.pos[2]);
 
-        const char* boneName = (i < WDL_BIND_POSE_COUNT) ? wdlBindPose[i].name : "unknown";
+        auto boneName = lookup(bone.m_nameID);
         uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
-            boneName, (int)bone.m_parentIndex,
+            boneName.c_str(), (int)bone.m_parentIndex,
             m.quat[0], m.quat[1], m.quat[2], m.quat[3],
             m.pos[0],  m.pos[1],  m.pos[2]);
     }
@@ -304,6 +309,7 @@ static constexpr uintptr_t OFFSET_GetAnimationSkeletonPose = 0x0624D970;
 // After this returns, m_localToModelTransforms is fully populated for all bones.
 static constexpr uintptr_t OFFSET_CSkeletonObjectUpdate = 0x0010ADA0;
 
+/*
 namespace SkeletonPoseLogger
 {
     void Initialize()
@@ -324,27 +330,21 @@ namespace SkeletonPoseLogger
         tprintf("SkeletonPoseLogger: hook enabled\n");
     }
 }
+*/
 
-/*
 namespace SkeletonPoseLogger
 {
     void Initialize()
     {
+        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones.txt");
         auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
 
-        {
-            auto target = (LPVOID)(imagebase + OFFSET_CSkeletonObjectUpdate);
-            auto status = MH_CreateHook(target, &CSkeletonObjectUpdate_Detour,
-                reinterpret_cast<LPVOID*>(&CSkeletonObjectUpdate_orig));
-            if (status != MH_OK) { tprintf("CSkeletonObject::Update hook failed (%d)\n", status); return; }
-            status = MH_EnableHook(target);
-            if (status != MH_OK) { tprintf("CSkeletonObject::Update enable failed (%d)\n", status); return; }
-            tprintf("CSkeletonObject::Update hook enabled\n");
-        }
-
-        // GetAnimationSkeletonPose hook left disabled for now — use CSkeletonObject::Update instead.
-        (void)OFFSET_GetAnimationSkeletonPose;
-        (void)GetAnimationSkeletonPose_orig;
+        auto target = (LPVOID)(imagebase + OFFSET_CSkeletonObjectUpdate);
+        auto status = MH_CreateHook(target, &CSkeletonObjectUpdate_Detour,
+            reinterpret_cast<LPVOID*>(&CSkeletonObjectUpdate_orig));
+        if (status != MH_OK) { tprintf("CSkeletonObject::Update hook failed (%d)\n", status); return; }
+        status = MH_EnableHook(target);
+        if (status != MH_OK) { tprintf("CSkeletonObject::Update enable failed (%d)\n", status); return; }
+        tprintf("CSkeletonObject::Update hook enabled\n");
     }
 }
-*/
