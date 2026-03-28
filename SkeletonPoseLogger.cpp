@@ -279,9 +279,15 @@ void CSkeletonObjectUpdate_Detour(void* thisPtr)
     {
         const CSkeletonBone&      bone = bones[i];
         const ndPosQuatTransform& m    = ltm[i];
+        const ndPosQuatTransform& bind = bone.m_bindLocalToParent;
 
         tprintf("bone[%3u] nameID=%08X parent=%3d\n",
             i, bone.m_nameID, (int)bone.m_parentIndex);
+
+        tprintf("  bind  quat: %f %f %f %f  pos: %f %f %f\n",
+            bind.quat[0], bind.quat[1], bind.quat[2], bind.quat[3],
+            bind.pos[0], bind.pos[1], bind.pos[2]);
+
         tprintf("  ltm quat: %f %f %f %f  pos: %f %f %f\n",
             m.quat[0], m.quat[1], m.quat[2], m.quat[3],
             m.pos[0],  m.pos[1],  m.pos[2]);
