@@ -310,6 +310,36 @@ static void* NdVecData(void* obj, int propsOff, int dataOff)
 
 int skel = 0;
 static std::mutex g_logMutex;
+static bool g_bindPoseDumped = false;
+static bool g_animPoseDumped = false;
+
+static void dumpPoseToFile(const char* filename, const char* arrayName, const char* comment,
+    const CSkeletonBone* bones, const ndPosQuatTransform* transforms, uint32_t numBones)
+{
+    FILE* fp = fopen(filename, "w");
+    if (!fp) { tprintf("Failed to open %s for writing\n", filename); return; }
+
+    fprintf(fp, "// %s\n", comment);
+    fprintf(fp, "// Quaternion: x, y, z, w  |  Position: x, y, z\n");
+    fprintf(fp, "struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
+    fprintf(fp, "static SkelBone %s[] = {\n", arrayName);
+
+    for (uint32_t i = 0; i < numBones; i++)
+    {
+        const CSkeletonBone& bone = bones[i];
+        const ndPosQuatTransform& t = transforms[i];
+        auto boneName = lookup(bone.m_nameID);
+
+        fprintf(fp, "    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
+            boneName.c_str(), (int)bone.m_parentIndex,
+            t.quat[0], t.quat[1], t.quat[2], t.quat[3],
+            t.pos[0], t.pos[1], t.pos[2]);
+    }
+
+    fprintf(fp, "};\n");
+    fclose(fp);
+    tprintf("Dumped %s (%u bones) to %s\n", arrayName, numBones, filename);
+}
 
 void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
 {
@@ -319,7 +349,32 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
     if (numBones < MIN_PLAYER_BONES)
         return;
 
-    
+    const CSkeletonBone*       bones = thisPtr->m_bones.ptr();
+    const ndPosQuatTransform*  ltps  = thisPtr->m_localToParentTransforms.ptr();
+    const ndPosQuatTransform*  ltms  = thisPtr->m_localToModelTransforms.ptr();
+    if (!bones || !ltps || !ltms)
+        return;
+
+    // Auto-dump bind pose once on first encounter
+    if (!g_bindPoseDumped)
+    {
+        std::lock_guard<std::mutex> lock(g_logMutex);
+        if (!g_bindPoseDumped)
+        {
+            // Build bind pose array from m_bindLocalToParent
+            std::vector<ndPosQuatTransform> bindTransforms(numBones);
+            for (uint32_t i = 0; i < numBones; i++)
+                bindTransforms[i] = bones[i].m_bindLocalToParent;
+
+            dumpPoseToFile("wdl_bind_pose.h", "wdlBindPose",
+                "WDL bind pose (rest pose from CSkeletonBone::m_bindLocalToParent)",
+                bones, bindTransforms.data(), numBones);
+
+            g_bindPoseDumped = true;
+        }
+    }
+
+    // F9 trigger: dump animated pose
     bool f9Down    = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
     bool f9Pressed = f9Down && !g_f9WasDown;
     g_f9WasDown    = f9Down;
@@ -328,64 +383,27 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
         skel = 0;
         return;
     }
-    
-    const CSkeletonBone*       bones = thisPtr->m_bones.ptr();
-    const ndPosQuatTransform*  ltps   = thisPtr->m_localToParentTransforms.ptr();
-    const ndPosQuatTransform*  ltms   = thisPtr->m_localToModelTransforms.ptr();
-    if (!bones || !ltps || !ltms)
-        return;
 
-    //if (numBones > 120) return;
-
-    tprintf("skeleton numBones: %u\n", numBones);
     std::lock_guard<std::mutex> lock(g_logMutex);
-
     skel++;
     if (skel > 10)
         return;
-    tprintf("\n=== CSkeletonObject::Update: model-space pose dump ===\n");
-    tprintf("numBones: %u\n", numBones);
-    uprintf("// WDL player local-to-model pose (post-CSkeletonObject::Update)\n");
-    uprintf("// Quaternion: x, y, z, w  |  Position: x, y, z\n");
-    uprintf("struct SkelBone { const char* name; int parent; float x,y,z,w, px,py,pz; };\n");
-    uprintf("static SkelBone wdlAnimPose[] = {\n");
 
-    for (int i = 0; i < numBones; i++)
-    {
-        const CSkeletonBone&      bone = bones[i];
-        const ndPosQuatTransform& bind = bone.m_bindLocalToParent;
-        const ndPosQuatTransform& ltp    = ltps[i];
-        const ndPosQuatTransform& mtp    = ltms[i];
+    tprintf("\n=== CSkeletonObject::Update: pose dump (skel %d, %u bones) ===\n", skel, numBones);
 
-        tprintf("bone[%3u] nameID=%08X parent=%3d\n",
-            i, bone.m_nameID, (int)bone.m_parentIndex);
+    // Dump local-to-parent (animated) pose
+    char ltpFilename[256];
+    snprintf(ltpFilename, sizeof(ltpFilename), "wdl_anim_ltp_%d.h", skel);
+    dumpPoseToFile(ltpFilename, "wdlAnimPose",
+        "WDL animated local-to-parent pose (post-CSkeletonObject::Update)",
+        bones, ltps, numBones);
 
-        tprintf("  bind  quat: %f %f %f %f  pos: %f %f %f\n",
-            bind.quat[0], bind.quat[1], bind.quat[2], bind.quat[3],
-            bind.pos[0],  bind.pos[1],  bind.pos[2]);
-
-        tprintf("  ltp   quat: %f %f %f %f  pos: %f %f %f\n",
-            ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
-            ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
-
-        tprintf("  ltm   quat: %f %f %f %f  pos: %f %f %f\n",
-            mtp.quat[0], mtp.quat[1], mtp.quat[2], mtp.quat[3],
-            mtp.pos[0],  mtp.pos[1],  mtp.pos[2]);
-
-        auto boneName = lookup(bone.m_nameID);
-        uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
-            boneName.c_str(), (int)bone.m_parentIndex,
-            
-            ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
-            ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
-        /*
-            bind.quat[0], bind.quat[1], bind.quat[2], bind.quat[3],
-            bind.pos[0], bind.pos[1], bind.pos[2]);
-            */
-    }
-
-    uprintf("};\n");
-    incrementLog();
+    // Dump local-to-model (world space) pose
+    char ltmFilename[256];
+    snprintf(ltmFilename, sizeof(ltmFilename), "wdl_anim_ltm_%d.h", skel);
+    dumpPoseToFile(ltmFilename, "wdlModelPose",
+        "WDL animated local-to-model pose (post-CSkeletonObject::Update)",
+        bones, ltms, numBones);
 }
 
 // ============================================================================
@@ -427,6 +445,7 @@ namespace SkeletonPoseLogger
 {
     void Initialize()
     {
+        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones_wdl.txt");
         readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones1.txt");
         readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones2.txt");
         readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones3.txt");
