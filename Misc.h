@@ -3,6 +3,13 @@
 #include "ext/minhook/minhook.h"
 #include "glm/glm.hpp"
 #include <glm/gtc/quaternion.hpp>
+#include <string>
+
+// CRC64/FNV path hash (matches CPathID in WDL)
+typedef unsigned long long ulong;
+ulong CRC64(std::string str);
+std::string lookup(ulong hash);
+void readLines(std::string path);
 
 class Misc
 {

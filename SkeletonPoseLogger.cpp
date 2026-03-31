@@ -187,6 +187,12 @@ static GetAnimationSkeletonPose_t GetAnimationSkeletonPose_orig;
 typedef void(*CSkeletonObjectUpdate_t)(CSkeletonObject* thisPtr);
 static CSkeletonObjectUpdate_t CSkeletonObjectUpdate_orig;
 
+typedef void(*CAnimatedGraphicComponent_UpdateSkeleton_t)(void* thisPtr);
+static CAnimatedGraphicComponent_UpdateSkeleton_t CAnimatedGraphicComponent_UpdateSkeleton_orig;
+
+// Last known model resource path ID, set by UpdateSkeleton hook
+static uint64_t g_lastModelResID = 0;
+
 static bool g_f9WasDown = false;
 
 // ============================================================================
@@ -197,17 +203,17 @@ static bool g_f9WasDown = false;
 // Filters out small skeletons (props, vehicles, etc.).
 static constexpr unsigned int MIN_PLAYER_BONES = 50;
 
-static std::list<std::string> lines;
-static std::unordered_map<ulong, string> table;
+static std::list<std::string> boneLines;
+static std::unordered_map<unsigned int, string> boneTable;
 
-static string lookup(ulong hash)
+static string lookupBone(unsigned int hash)
 {
-    if (table.count(hash) == 0)
+    if (boneTable.count(hash) == 0)
         return "Unknown";
-    return table[hash];
+    return boneTable[hash];
 }
 
-static void readLines(std::string path)
+static void readBoneLines(std::string path)
 {
     ifstream file(path);
 
@@ -216,13 +222,13 @@ static void readLines(std::string path)
 
     while (getline(file, line))
     {
-        lines.push_back(line);
+        boneLines.push_back(line);
     }
 
-    for (string line : lines)
+    for (string line : boneLines)
     {
         unsigned int hash = CRC32(line);
-        table[hash] = line;
+        boneTable[hash] = line;
     }
 }
 
@@ -268,7 +274,7 @@ CSkeletonPose* GetAnimationSkeletonPose_Detour(void* thisPtr, CSkeletonPose* res
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
             ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
 
-        auto boneName = lookup(bone.m_nameID);
+        auto boneName = lookupBone(bone.m_nameID);
         uprintf("    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
             boneName.c_str(), (int)bone.m_parentIndex,
             ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
@@ -308,10 +314,10 @@ static void* NdVecData(void* obj, int propsOff, int dataOff)
 }
 */
 
-int skel = 0;
+static int skel = 0;
+static int skelLimit = 0;
+static int globalIdx = 0;
 static std::mutex g_logMutex;
-static bool g_bindPoseDumped = false;
-static bool g_animPoseDumped = false;
 
 static void dumpPoseToFile(const char* filename, const char* arrayName, const char* comment,
     const CSkeletonBone* bones, const ndPosQuatTransform* transforms, uint32_t numBones)
@@ -329,7 +335,7 @@ static void dumpPoseToFile(const char* filename, const char* arrayName, const ch
     {
         const CSkeletonBone& bone = bones[i];
         const ndPosQuatTransform& t = transforms[i];
-        auto boneName = lookup(bone.m_nameID);
+        auto boneName = lookupBone(bone.m_nameID);
 
         fprintf(fp, "    { \"%s\", %d, %ff,%ff,%ff,%ff, %ff,%ff,%ff },\n",
             boneName.c_str(), (int)bone.m_parentIndex,
@@ -341,6 +347,38 @@ static void dumpPoseToFile(const char* filename, const char* arrayName, const ch
     fclose(fp);
     tprintf("Dumped %s (%u bones) to %s\n", arrayName, numBones, filename);
 }
+
+// ============================================================================
+// CAnimatedGraphicComponent::UpdateSkeleton detour
+// Extracts model resource path ID before CSkeletonObject::Update fires.
+//
+// CAnimatedGraphicComponent layout:
+//   +0x0F8: CSmartResourcePtr<CModelResource> m_modelResource (inherited from CSimpleGraphicComponent)
+//   +0x1B8: CGraphicComponentSkeletonObject* m_skeleton
+//
+// CSmartResourcePtr: m_resAndLock (uint64, LSB = lock bit) → deref → CResource
+// CResource: +0x10 = CPathID m_resID (uint64)
+// ============================================================================
+
+void CAnimatedGraphicComponent_UpdateSkeleton_Detour(void* thisPtr)
+{
+    // Extract model resource path ID
+    // this + 0xF8 = CSmartResourcePtr<CModelResource>.m_resAndLock
+    uint64_t resAndLock = *(uint64_t*)((char*)thisPtr + 0xF8);
+    if (resAndLock > 1)
+    {
+        char* resource = (char*)(resAndLock & ~1ULL); // mask off lock bit
+        g_lastModelResID = *(uint64_t*)(resource + 0x10); // CResource.m_resID
+    }
+    else
+    {
+        g_lastModelResID = 0;
+    }
+
+    CAnimatedGraphicComponent_UpdateSkeleton_orig(thisPtr);
+}
+
+// ============================================================================
 
 void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
 {
@@ -356,52 +394,71 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
     if (!bones || !ltps || !ltms)
         return;
 
-    // Auto-dump bind pose once on first encounter
-    if (!g_bindPoseDumped)
-    {
-        std::lock_guard<std::mutex> lock(g_logMutex);
-        if (!g_bindPoseDumped)
-        {
-            // Build bind pose array from m_bindLocalToParent
-            std::vector<ndPosQuatTransform> bindTransforms(numBones);
-            for (uint32_t i = 0; i < numBones; i++)
-                bindTransforms[i] = bones[i].m_bindLocalToParent;
-
-            dumpPoseToFile("wdl_bind_pose.h", "wdlBindPose",
-                "WDL bind pose (rest pose from CSkeletonBone::m_bindLocalToParent)",
-                bones, bindTransforms.data(), numBones);
-
-            g_bindPoseDumped = true;
-        }
-    }
-
-    // F9 trigger: dump animated pose
+    // F9 trigger: dump next 10 skeletons
     bool f9Down    = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
     bool f9Pressed = f9Down && !g_f9WasDown;
     g_f9WasDown    = f9Down;
-    if (!f9Pressed)
+    if (f9Pressed)
     {
         skel = 0;
-        return;
+        skelLimit = 10;
     }
+    if (skel >= skelLimit)
+        return;
 
     std::lock_guard<std::mutex> lock(g_logMutex);
     skel++;
-    if (skel > 10)
-        return;
+    int idx = globalIdx++;
 
-    tprintf("\n=== CSkeletonObject::Update: pose dump (skel %d, %u bones) ===\n", skel, numBones);
+    auto modelPath = lookup(g_lastModelResID);
+    tprintf("\n=== CSkeletonObject::Update: pose dump (skel %d, %u bones, resID=0x%016llX, model=%s) ===\n", idx, numBones, g_lastModelResID, modelPath.c_str());
+
+    // Per-bone debug output to console and log
+    for (uint32_t i = 0; i < numBones; i++)
+    {
+        const CSkeletonBone&      bone = bones[i];
+        const ndPosQuatTransform& bind = bone.m_bindLocalToParent;
+        const ndPosQuatTransform& ltp  = ltps[i];
+        const ndPosQuatTransform& ltm  = ltms[i];
+
+        auto boneName = lookupBone(bone.m_nameID);
+        tprintf("bone[%3u] nameID=%08X parent=%3d  \"%s\"\n",
+            i, bone.m_nameID, (int)bone.m_parentIndex, boneName.c_str());
+
+        tprintf("  bind  quat: %f %f %f %f  pos: %f %f %f\n",
+            bind.quat[0], bind.quat[1], bind.quat[2], bind.quat[3],
+            bind.pos[0],  bind.pos[1],  bind.pos[2]);
+
+        tprintf("  ltp   quat: %f %f %f %f  pos: %f %f %f\n",
+            ltp.quat[0], ltp.quat[1], ltp.quat[2], ltp.quat[3],
+            ltp.pos[0],  ltp.pos[1],  ltp.pos[2]);
+
+        tprintf("  ltm   quat: %f %f %f %f  pos: %f %f %f\n",
+            ltm.quat[0], ltm.quat[1], ltm.quat[2], ltm.quat[3],
+            ltm.pos[0],  ltm.pos[1],  ltm.pos[2]);
+    }
+
+    // Dump bind pose
+    std::vector<ndPosQuatTransform> bindTransforms(numBones);
+    for (uint32_t i = 0; i < numBones; i++)
+        bindTransforms[i] = bones[i].m_bindLocalToParent;
+
+    char bindFilename[256];
+    snprintf(bindFilename, sizeof(bindFilename), "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_poses\\wdl_bind_pose_%d.h", idx);
+    dumpPoseToFile(bindFilename, "wdlBindPose",
+        "WDL bind pose (rest pose from CSkeletonBone::m_bindLocalToParent)",
+        bones, bindTransforms.data(), numBones);
 
     // Dump local-to-parent (animated) pose
     char ltpFilename[256];
-    snprintf(ltpFilename, sizeof(ltpFilename), "wdl_anim_ltp_%d.h", skel);
+    snprintf(ltpFilename, sizeof(ltpFilename), "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_poses\\wdl_anim_ltp_%d.h", idx);
     dumpPoseToFile(ltpFilename, "wdlAnimPose",
         "WDL animated local-to-parent pose (post-CSkeletonObject::Update)",
         bones, ltps, numBones);
 
     // Dump local-to-model (world space) pose
     char ltmFilename[256];
-    snprintf(ltmFilename, sizeof(ltmFilename), "wdl_anim_ltm_%d.h", skel);
+    snprintf(ltmFilename, sizeof(ltmFilename), "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_poses\\wdl_anim_ltm_%d.h", idx);
     dumpPoseToFile(ltmFilename, "wdlModelPose",
         "WDL animated local-to-model pose (post-CSkeletonObject::Update)",
         bones, ltms, numBones);
@@ -418,6 +475,10 @@ static constexpr uintptr_t OFFSET_GetAnimationSkeletonPose = 0x0624D970;
 // E3: CSkeletonObject::Update — loops over all bones calling Impl_ComputeLocalToModel.
 // After this returns, m_localToModelTransforms is fully populated for all bones.
 static constexpr uintptr_t OFFSET_CSkeletonObjectUpdate = 0x0010ADA0;
+
+// CAnimatedGraphicComponent::UpdateSkeleton — wrapper that calls CSkeletonObject::Update(this->m_skeleton)
+// TODO: set correct RVA from IDA
+static constexpr uintptr_t OFFSET_CAnimatedGraphicComponent_UpdateSkeleton = 0x0; // PLACEHOLDER
 
 /*
 namespace SkeletonPoseLogger
@@ -446,10 +507,17 @@ namespace SkeletonPoseLogger
 {
     void Initialize()
     {
-        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones_wdl.txt");
-        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones1.txt");
-        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones2.txt");
-        readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones3.txt");
+        char cwd[512];
+        GetCurrentDirectoryA(sizeof(cwd), cwd);
+        tprintf("Working directory: %s\n", cwd);
+
+        readBoneLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones_wdl.txt");
+        readBoneLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones1.txt");
+        readBoneLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones2.txt");
+        readBoneLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones3.txt");
+
+        // Load file path list for CPathID → filename resolution
+        readLines("C:\\Unpack_Decomp\\bin\\Debug\\net472\\filelist.txt");
         auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
 
         auto target = (LPVOID)(imagebase + OFFSET_CSkeletonObjectUpdate);
@@ -458,6 +526,21 @@ namespace SkeletonPoseLogger
         if (status != MH_OK) { tprintf("CSkeletonObject::Update hook failed (%d)\n", status); return; }
         status = MH_EnableHook(target);
         if (status != MH_OK) { tprintf("CSkeletonObject::Update enable failed (%d)\n", status); return; }
+
+        // Hook CAnimatedGraphicComponent::UpdateSkeleton to get model resource path
+        if (OFFSET_CAnimatedGraphicComponent_UpdateSkeleton != 0) {
+            auto target2 = (LPVOID)(imagebase + OFFSET_CAnimatedGraphicComponent_UpdateSkeleton);
+            status = MH_CreateHook(target2, &CAnimatedGraphicComponent_UpdateSkeleton_Detour,
+                reinterpret_cast<LPVOID*>(&CAnimatedGraphicComponent_UpdateSkeleton_orig));
+            if (status != MH_OK) { tprintf("UpdateSkeleton hook failed (%d)\n", status); }
+            else {
+                status = MH_EnableHook(target2);
+                if (status != MH_OK) { tprintf("UpdateSkeleton enable failed (%d)\n", status); }
+                else { tprintf("CAnimatedGraphicComponent::UpdateSkeleton hook enabled\n"); }
+            }
+        } else {
+            tprintf("UpdateSkeleton hook skipped (offset is 0 — set OFFSET_CAnimatedGraphicComponent_UpdateSkeleton)\n");
+        }
         tprintf("CSkeletonObject::Update hook enabled\n");
     }
 }
