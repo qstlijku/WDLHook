@@ -316,7 +316,8 @@ static bool g_animPoseDumped = false;
 static void dumpPoseToFile(const char* filename, const char* arrayName, const char* comment,
     const CSkeletonBone* bones, const ndPosQuatTransform* transforms, uint32_t numBones)
 {
-    FILE* fp = fopen(filename, "w");
+    FILE* fp = nullptr;
+    fopen_s(&fp, filename, "w");
     if (!fp) { tprintf("Failed to open %s for writing\n", filename); return; }
 
     fprintf(fp, "// %s\n", comment);
