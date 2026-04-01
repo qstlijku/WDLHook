@@ -58,6 +58,35 @@ static_assert(sizeof(CSkeletonBone) == 0x30, "CSkeletonBone size mismatch");
 struct CAnimationSystem;
 struct CSkeletonDescription;
 struct CCharacterPhysComponent;
+struct CGeometryResource;
+struct CSceneGraphicObjectInstanceHelper;
+
+// CSmartResourcePtr<T> — smart pointer with lock bit in LSB
+struct CSmartResourcePtr
+{
+    uint64_t m_resAndLock; // LSB = lock bit, mask with ~1 to get CResource*
+};
+
+// CResource — base resource with path ID
+// +0x10: CPathID m_resID (uint64)
+// (full layout: CBaseResource base, then m_resID at +0x10)
+
+// CSimpleGraphicComponent partial layout (parent of CAnimatedGraphicComponent)
+// +0x0F8: CSmartResourcePtr<CModelResource> m_modelResource
+// +0x10C: bool m_skipGeomResourceLoading
+// +0x10D: bool m_finalized
+
+// CAnimatedGraphicComponent — inherits CSimpleGraphicComponent
+// CSimpleGraphicComponent is 0x120 bytes in both E3 and retail (m_BBoxIncreaseMin at +0x120 confirms)
+// m_modelResource at +0xF8 (in CSimpleGraphicComponent, unchanged between builds)
+// m_skeleton at +0x270 in retail (was +0x1B8 in E3 — CAnimatedGraphicComponent fields grew)
+struct CAnimatedGraphicComponent
+{
+    char _base[0xF8];                                  // CSimpleGraphicComponent base up to m_modelResource
+    CSmartResourcePtr m_modelResource;                 // +0x0F8 (in CSimpleGraphicComponent)
+    char _pad100[0x270 - 0x100];                       // gap to m_skeleton (retail)
+    void* m_skeleton;                                  // +0x270 (retail) — CSkeletonObject* (forward declared)
+};
 
 // CBaseAnimationComponent partial layout.
 // Base class (CEntityComponent) is 0x40 bytes.
@@ -187,11 +216,12 @@ static GetAnimationSkeletonPose_t GetAnimationSkeletonPose_orig;
 typedef void(*CSkeletonObjectUpdate_t)(CSkeletonObject* thisPtr);
 static CSkeletonObjectUpdate_t CSkeletonObjectUpdate_orig;
 
-typedef void(*CAnimatedGraphicComponent_UpdateSkeleton_t)(void* thisPtr);
-static CAnimatedGraphicComponent_UpdateSkeleton_t CAnimatedGraphicComponent_UpdateSkeleton_orig;
+typedef void(*CAnimatedGraphicComponent_UpdateSubParts_t)(CAnimatedGraphicComponent* thisPtr, bool updateBBox);
+static CAnimatedGraphicComponent_UpdateSubParts_t CAnimatedGraphicComponent_UpdateSubParts_orig;
 
-// Last known model resource path ID, set by UpdateSkeleton hook
-static uint64_t g_lastModelResID = 0;
+// Map skeleton pointer -> model resource path ID
+// Populated by UpdateSubParts, read by CSkeletonObjectUpdate
+static std::unordered_map<void*, uint64_t> g_skeletonToModelResID;
 
 static bool g_f9WasDown = false;
 
@@ -315,7 +345,7 @@ static void* NdVecData(void* obj, int propsOff, int dataOff)
 */
 
 static int skel = 0;
-static int skelLimit = 0;
+static int skelLimit = 10;
 static int globalIdx = 0;
 static std::mutex g_logMutex;
 
@@ -360,23 +390,23 @@ static void dumpPoseToFile(const char* filename, const char* arrayName, const ch
 // CResource: +0x10 = CPathID m_resID (uint64)
 // ============================================================================
 
-void CAnimatedGraphicComponent_UpdateSkeleton_Detour(void* thisPtr)
+void CAnimatedGraphicComponent_UpdateSubParts_Detour(CAnimatedGraphicComponent* thisPtr, bool updateBBox)
 {
-    // Extract model resource path ID
-    // this + 0xF8 = CSmartResourcePtr<CModelResource>.m_resAndLock
-    uint64_t resAndLock = *(uint64_t*)((char*)thisPtr + 0xF8);
+    // Map this component's skeleton to its model resource ID
+    uint64_t resAndLock = thisPtr->m_modelResource.m_resAndLock;
+    uint64_t resID = 0;
     if (resAndLock > 1)
     {
-        char* resource = (char*)(resAndLock & ~1ULL); // mask off lock bit
-        g_lastModelResID = *(uint64_t*)(resource + 0x10); // CResource.m_resID
+        char* resource = (char*)(resAndLock & ~1ULL);
+        resID = *(uint64_t*)(resource + 0x08);
     }
-    else
-    {
-        g_lastModelResID = 0;
-    }
+    if (thisPtr->m_skeleton)
+        g_skeletonToModelResID[thisPtr->m_skeleton] = resID;
 
-    CAnimatedGraphicComponent_UpdateSkeleton_orig(thisPtr);
+    CAnimatedGraphicComponent_UpdateSubParts_orig(thisPtr, updateBBox);
 }
+
+uintptr_t imagebase;
 
 // ============================================================================
 
@@ -401,17 +431,27 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
     if (f9Pressed)
     {
         skel = 0;
-        skelLimit = 10;
     }
     if (skel >= skelLimit)
         return;
+    else
+    {
+        uintptr_t ra = (uintptr_t)_ReturnAddress();
+        tprintf("SkeletonObjectUpdate detour called from 0x%p\n", ra);
+        auto offset = ra - imagebase - 0xA00;
+        tprintf("actual offset: %llX\n", offset);
+    }
 
     std::lock_guard<std::mutex> lock(g_logMutex);
     skel++;
     int idx = globalIdx++;
 
-    auto modelPath = lookup(g_lastModelResID);
-    tprintf("\n=== CSkeletonObject::Update: pose dump (skel %d, %u bones, resID=0x%016llX, model=%s) ===\n", idx, numBones, g_lastModelResID, modelPath.c_str());
+    uint64_t modelResID = 0;
+    auto it = g_skeletonToModelResID.find(thisPtr);
+    if (it != g_skeletonToModelResID.end())
+        modelResID = it->second;
+    auto modelPath = lookup(modelResID);
+    tprintf("\n=== CSkeletonObject::Update: pose dump (skel %d, %u bones, resID=0x%016llX, model=%s) ===\n", idx, numBones, modelResID, modelPath.c_str());
 
     // Per-bone debug output to console and log
     for (uint32_t i = 0; i < numBones; i++)
@@ -425,6 +465,7 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
         tprintf("bone[%3u] nameID=%08X parent=%3d  \"%s\"\n",
             i, bone.m_nameID, (int)bone.m_parentIndex, boneName.c_str());
 
+        /*
         tprintf("  bind  quat: %f %f %f %f  pos: %f %f %f\n",
             bind.quat[0], bind.quat[1], bind.quat[2], bind.quat[3],
             bind.pos[0],  bind.pos[1],  bind.pos[2]);
@@ -435,7 +476,7 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
 
         tprintf("  ltm   quat: %f %f %f %f  pos: %f %f %f\n",
             ltm.quat[0], ltm.quat[1], ltm.quat[2], ltm.quat[3],
-            ltm.pos[0],  ltm.pos[1],  ltm.pos[2]);
+            ltm.pos[0],  ltm.pos[1],  ltm.pos[2]);*/
     }
 
     // Dump bind pose
@@ -476,9 +517,9 @@ static constexpr uintptr_t OFFSET_GetAnimationSkeletonPose = 0x0624D970;
 // After this returns, m_localToModelTransforms is fully populated for all bones.
 static constexpr uintptr_t OFFSET_CSkeletonObjectUpdate = 0x0010ADA0;
 
-// CAnimatedGraphicComponent::UpdateSkeleton — wrapper that calls CSkeletonObject::Update(this->m_skeleton)
-// TODO: set correct RVA from IDA
-static constexpr uintptr_t OFFSET_CAnimatedGraphicComponent_UpdateSkeleton = 0x0; // PLACEHOLDER
+// CAnimatedGraphicComponent::UpdateSubParts — calls CSkeletonObject::Update during loading and runtime
+// RVA: 0x0615C0A0  (entry point of function containing return address 0x615B737)
+static constexpr uintptr_t OFFSET_CAnimatedGraphicComponent_UpdateSkeleton = 0x0615C0A0;
 
 /*
 namespace SkeletonPoseLogger
@@ -518,7 +559,7 @@ namespace SkeletonPoseLogger
 
         // Load file path list for CPathID → filename resolution
         readLines("C:\\Unpack_Decomp\\bin\\Debug\\net472\\filelist.txt");
-        auto imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+        imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
 
         auto target = (LPVOID)(imagebase + OFFSET_CSkeletonObjectUpdate);
         auto status = MH_CreateHook(target, &CSkeletonObjectUpdate_Detour,
@@ -527,19 +568,19 @@ namespace SkeletonPoseLogger
         status = MH_EnableHook(target);
         if (status != MH_OK) { tprintf("CSkeletonObject::Update enable failed (%d)\n", status); return; }
 
-        // Hook CAnimatedGraphicComponent::UpdateSkeleton to get model resource path
+        // Hook CAnimatedGraphicComponent::UpdateSubParts to get model resource path
         if (OFFSET_CAnimatedGraphicComponent_UpdateSkeleton != 0) {
             auto target2 = (LPVOID)(imagebase + OFFSET_CAnimatedGraphicComponent_UpdateSkeleton);
-            status = MH_CreateHook(target2, &CAnimatedGraphicComponent_UpdateSkeleton_Detour,
-                reinterpret_cast<LPVOID*>(&CAnimatedGraphicComponent_UpdateSkeleton_orig));
-            if (status != MH_OK) { tprintf("UpdateSkeleton hook failed (%d)\n", status); }
+            status = MH_CreateHook(target2, &CAnimatedGraphicComponent_UpdateSubParts_Detour,
+                reinterpret_cast<LPVOID*>(&CAnimatedGraphicComponent_UpdateSubParts_orig));
+            if (status != MH_OK) { tprintf("UpdateSubParts hook failed (%d)\n", status); }
             else {
                 status = MH_EnableHook(target2);
-                if (status != MH_OK) { tprintf("UpdateSkeleton enable failed (%d)\n", status); }
-                else { tprintf("CAnimatedGraphicComponent::UpdateSkeleton hook enabled\n"); }
+                if (status != MH_OK) { tprintf("UpdateSubParts enable failed (%d)\n", status); }
+                else { tprintf("CAnimatedGraphicComponent::UpdateSubParts hook enabled\n"); }
             }
         } else {
-            tprintf("UpdateSkeleton hook skipped (offset is 0 — set OFFSET_CAnimatedGraphicComponent_UpdateSkeleton)\n");
+            tprintf("UpdateSubParts hook skipped (offset is 0)\n");
         }
         tprintf("CSkeletonObject::Update hook enabled\n");
     }
