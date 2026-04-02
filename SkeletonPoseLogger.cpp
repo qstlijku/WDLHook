@@ -13,6 +13,7 @@
 //     - Per-bone: animated localToParent (quat+pos) from current frame
 //   This is sufficient for DisruptEditor FK without parsing WDL XBG files.
 
+#include "SkeletonPoseLogger.h"
 #include "ChunkReader.h"
 #include "Main.h"
 #include "Misc.h"
@@ -506,6 +507,108 @@ void CSkeletonObjectUpdate_Detour(CSkeletonObject* thisPtr)
 }
 
 // ============================================================================
+// CSceneSkeletonPrivateData::GetParameterProvider detour
+// Captures the final blend matrices that the GPU uses for skinning.
+// These are post-transpose float4x3 matrices (3 float4 registers per bone).
+// ============================================================================
+
+typedef const CBlendMatricesParameterProvider* (*GetParameterProvider_t)(
+    CSceneSkeletonPrivateData* thisPtr,
+    const CBufferRenderResource* skinningConfigBuffer);
+static GetParameterProvider_t GetParameterProvider_orig;
+
+static int g_blendCaptures = 0;
+static int g_blendCaptureLimit = 0;
+static bool g_f9WasDown_blend = false;
+
+static void GetParameterProvider_Detour_impl(
+    CSceneSkeletonPrivateData* thisPtr,
+    const CBufferRenderResource* skinningConfigBuffer,
+    const CBlendMatricesParameterProvider* result)
+{
+    if (!result) return;
+
+    // Access the matrix data from the parameter provider
+    auto& matVec = const_cast<CBlendMatricesParameterProvider*>(result)->m_matrices;
+    float* matData = matVec.m_data.ptr();
+    uint32_t numFloats = matVec.m_data.size();
+    uint32_t numBones = numFloats / 12; // 3 float4 registers per bone = 12 floats
+
+    if (!matData || numBones == 0)
+        return;
+
+    // F9 trigger: capture next batch
+    bool f9Down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+    bool f9Pressed = f9Down && !g_f9WasDown_blend;
+    g_f9WasDown_blend = f9Down;
+    if (f9Pressed)
+    {
+        g_blendCaptures = 0;
+        g_blendCaptureLimit = 5;
+        tprintf("BlendMatrices capture triggered (F9)\n");
+    }
+    if (g_blendCaptures >= g_blendCaptureLimit)
+        return;
+
+    // Only capture skeletons with enough bones to be a character
+    if (numBones < MIN_PLAYER_BONES)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    int idx = g_blendCaptures++;
+
+    tprintf("\n=== BlendMatrices capture %d: %u bones, %u floats ===\n", idx, numBones, numFloats);
+
+    // Dump as a C header file with float4x3 matrices (row-major, 4 rows x 3 cols)
+    char filename[256];
+    snprintf(filename, sizeof(filename),
+        "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_poses\\wdl_blend_matrices_%d.h", idx);
+
+    FILE* fp = nullptr;
+    fopen_s(&fp, filename, "w");
+    if (!fp) { tprintf("Failed to open %s\n", filename); return; }
+
+    fprintf(fp, "// WDL blend matrices captured from CBlendMatricesParameterProvider\n");
+    fprintf(fp, "// %u bones, float4x3 format (3 float4 registers per bone, row-major for GPU)\n", numBones);
+    fprintf(fp, "// Each matrix: row0(xyz), row1(xyz), row2(xyz), row3(xyz) where row3=translation\n");
+    fprintf(fp, "static const int WDL_BLEND_BONE_COUNT = %u;\n", numBones);
+    fprintf(fp, "static const float wdl_blend_matrices[][12] = {\n");
+
+    for (uint32_t i = 0; i < numBones; i++)
+    {
+        float* m = &matData[i * 12];
+        // 3 float4 registers: each is 4 floats (xyzw)
+        // Register 0: m[0..3], Register 1: m[4..7], Register 2: m[8..11]
+        fprintf(fp, "    /* [%3u] */ { %ff,%ff,%ff,%ff, %ff,%ff,%ff,%ff, %ff,%ff,%ff,%ff },\n",
+            i,
+            m[0], m[1], m[2], m[3],
+            m[4], m[5], m[6], m[7],
+            m[8], m[9], m[10], m[11]);
+
+        if (i < 3) {
+            tprintf("  bone[%u]: reg0=(%f,%f,%f,%f) reg1=(%f,%f,%f,%f) reg2=(%f,%f,%f,%f)\n",
+                i, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+        }
+    }
+
+    fprintf(fp, "};\n");
+    fclose(fp);
+    tprintf("Dumped blend matrices to %s\n", filename);
+}
+
+const CBlendMatricesParameterProvider* GetParameterProvider_Detour(
+    CSceneSkeletonPrivateData* thisPtr,
+    const CBufferRenderResource* skinningConfigBuffer)
+{
+    const CBlendMatricesParameterProvider* result =
+        GetParameterProvider_orig(thisPtr, skinningConfigBuffer);
+
+    GetParameterProvider_Detour_impl(thisPtr, skinningConfigBuffer, result);
+
+    return result;
+}
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -520,6 +623,11 @@ static constexpr uintptr_t OFFSET_CSkeletonObjectUpdate = 0x0010ADA0;
 // CAnimatedGraphicComponent::UpdateSubParts — calls CSkeletonObject::Update during loading and runtime
 // RVA: 0x0615C0A0  (entry point of function containing return address 0x615B737)
 static constexpr uintptr_t OFFSET_CAnimatedGraphicComponent_UpdateSkeleton = 0x0615C0A0;
+
+// CSceneSkeletonPrivateData::GetParameterProvider — returns CBlendMatricesParameterProvider*
+// Symbolized DLL: 0x1835D5AC0
+// Retail DLL RVA: TODO — find via signature scan or IDA comparison
+static constexpr uintptr_t OFFSET_GetParameterProvider = 0; // TODO: set retail RVA
 
 /*
 namespace SkeletonPoseLogger
@@ -583,5 +691,20 @@ namespace SkeletonPoseLogger
             tprintf("UpdateSubParts hook skipped (offset is 0)\n");
         }
         tprintf("CSkeletonObject::Update hook enabled\n");
+
+        // Hook GetParameterProvider to capture blend matrices
+        if (OFFSET_GetParameterProvider != 0) {
+            auto target3 = (LPVOID)(imagebase + OFFSET_GetParameterProvider);
+            status = MH_CreateHook(target3, &GetParameterProvider_Detour,
+                reinterpret_cast<LPVOID*>(&GetParameterProvider_orig));
+            if (status != MH_OK) { tprintf("GetParameterProvider hook failed (%d)\n", status); }
+            else {
+                status = MH_EnableHook(target3);
+                if (status != MH_OK) { tprintf("GetParameterProvider enable failed (%d)\n", status); }
+                else { tprintf("GetParameterProvider hook enabled (blend matrix capture ready, press F9)\n"); }
+            }
+        } else {
+            tprintf("GetParameterProvider hook skipped (offset is 0 — set OFFSET_GetParameterProvider)\n");
+        }
     }
 }
