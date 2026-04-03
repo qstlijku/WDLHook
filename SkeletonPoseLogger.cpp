@@ -626,8 +626,8 @@ static constexpr uintptr_t OFFSET_CAnimatedGraphicComponent_UpdateSkeleton = 0x0
 
 // CSceneSkeletonPrivateData::GetParameterProvider — returns CBlendMatricesParameterProvider*
 // Symbolized DLL: 0x1835D5AC0
-// Retail DLL RVA: TODO — find via signature scan or IDA comparison
-static constexpr uintptr_t OFFSET_GetParameterProvider = 0; // TODO: set retail RVA
+// Retail DLL RVA: 0x074C1440 (sub_1874C1440)
+static constexpr uintptr_t OFFSET_GetParameterProvider = 0x074C1440;
 
 /*
 namespace SkeletonPoseLogger
