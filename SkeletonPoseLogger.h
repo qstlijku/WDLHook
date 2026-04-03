@@ -40,14 +40,26 @@ struct IShaderParameter
 };
 static_assert(sizeof(IShaderParameter) == 0x04, "IShaderParameter size mismatch");
 
+// ndVector<float> inline for this header (same layout as ndVector<T> in SkeletonPoseLogger.cpp)
+struct ndVectorFloat
+{
+    int64_t props;  // sign bit = inline; (props >> 32) & 0x7FFFFFFF = count
+    float*  data;   // heap ptr if not inline
+
+    uint32_t size() const { return (uint32_t)(((uint64_t)props >> 32) & 0x7FFFFFFF); }
+    float* ptr() { return (props < 0) ? reinterpret_cast<float*>(&data) : data; }
+    const float* ptr() const { return (props < 0) ? reinterpret_cast<const float*>(&data) : data; }
+};
+
 // CShaderParameterRawVector<float,0,4,1534> — holds the actual matrix data
 // sizeof = 0x28
 struct CShaderParameterRawVector_float
 {
     IShaderParameter _base;              // +0x00
-    ndVector<float> m_data;              // +0x08  the actual float array
+    uint32_t _pad04;                     // +0x04  padding to align ndVector at +0x08
+    ndVectorFloat m_data;                // +0x08  the actual float array
     void* m_ptr;                         // +0x18  cached pointer
-    uint16_t m_size;                     // +0x20  element count (num float4x3 registers)
+    uint16_t m_size;                     // +0x20  element count
     char _pad22[6];                      // +0x22
 };
 static_assert(sizeof(CShaderParameterRawVector_float) == 0x28, "CShaderParameterRawVector size mismatch");
