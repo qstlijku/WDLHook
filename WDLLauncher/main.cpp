@@ -12,6 +12,8 @@
 #include <Windows.h>
 #include <shlwapi.h>
 #include <stdio.h>
+#include <thread>
+#include <intrin.h>
 
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "User32.lib")
@@ -40,7 +42,7 @@ typedef int(__cdecl* RunGame_t)(HINSTANCE hInstance, const char* lpCmdLine, unsi
 // kUseCustomRunGame on. The splash function + HWND global are NOT in the RunGame decompile (retail
 // has no visible ShowSplashScreen; it's likely inside the engine-init sub_180004980) -> left 0x0 TODO.
 // Kept OFF by default so it can never run against wrong offsets.
-static const bool kUseCustomRunGame = false;
+static const bool kUseCustomRunGame = true;
 
 static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
 {
@@ -69,6 +71,8 @@ static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
     DriverCmdLineInit(g_driverParams, lpCmdLine);
     printf("[MyRunGame] <- DriverCmdLineInit returned\n"); fflush(stdout);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+
     printf("[MyRunGame] -> ShowSplashScreen(hInstance=%p)\n", hInstance); fflush(stdout);
     ShowSplashScreen(hInstance);
     printf("[MyRunGame] <- ShowSplashScreen returned (splash HWND = %p)\n", *g_splashHwnd); fflush(stdout);
@@ -92,12 +96,97 @@ static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
     return 0;
 }
 
+// ---- anti-anti-debug shim ---------------------------------------------------
+// The retail DLL's protection layer (Denuvo/VMProtect) starts a watcher thread at load that pops
+// "A debugger has been found running..." whenever a debugger is attached. It's anti-DEBUG only
+// (harmless without one). Applied BEFORE LoadLibraryW, this hides the debugger so we can attach /
+// breakpoint: clears the PEB debug flags and hooks the two ntdll syscall stubs the checks use.
+// Self-contained (no MinHook): x64 ntdll stubs have a fixed prologue we copy to a trampoline; if a
+// stub doesn't match the expected shape we skip that hook (the PEB clear still applies), so it can
+// never corrupt anything. OFF by default -- flip on only when you want to debug. If the watcher
+// still fires, it's using a check we don't cover yet (NtQuerySystemInformation / debug-registers /
+// rdtsc timing) -> extend here or just use ScyllaHide, which covers them all.
+static const bool kHideDebugger = false;
+
+// Copy a target x64 ntdll syscall stub's first 16 bytes to an exec trampoline (+ jmp back to
+// target+16) and patch the target with a jmp to `detour`. Returns the trampoline (callable as the
+// original), or nullptr if the stub isn't the standard "mov r10,rcx; mov eax,ssn; test ...; ..." shape.
+static void* HookSyscallStub(void* target, void* detour)
+{
+    unsigned char* t = (unsigned char*)target;
+    // 4C 8B D1 (mov r10,rcx) | B8 .. (mov eax,ssn) | F6 04 25 .. (test byte [SharedUserData+0x308],1)
+    if (!(t[0] == 0x4C && t[1] == 0x8B && t[2] == 0xD1 && t[3] == 0xB8 && t[8] == 0xF6 && t[9] == 0x04))
+        return nullptr; // unexpected stub shape -> skip (don't corrupt)
+
+    const size_t kSteal = 16; // 3 + 5 + 8, all whole instructions
+    unsigned char* tramp = (unsigned char*)VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) return nullptr;
+    memcpy(tramp, t, kSteal);
+    tramp[kSteal] = 0xFF; tramp[kSteal + 1] = 0x25;          // jmp qword ptr [rip+0]
+    *(DWORD*)(tramp + kSteal + 2) = 0;
+    *(void**)(tramp + kSteal + 6) = t + kSteal;              // -> target+16
+
+    DWORD old;
+    if (!VirtualProtect(t, kSteal, PAGE_EXECUTE_READWRITE, &old)) return nullptr;
+    t[0] = 0x48; t[1] = 0xB8; *(void**)(t + 2) = detour;     // mov rax, imm64(detour)
+    t[10] = 0xFF; t[11] = 0xE0;                              // jmp rax
+    for (size_t i = 12; i < kSteal; ++i) t[i] = 0x90;        // nop pad (unreachable)
+    VirtualProtect(t, kSteal, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), t, kSteal);
+    return tramp;
+}
+
+typedef LONG(__stdcall* NtQIP_t)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+typedef LONG(__stdcall* NtSIT_t)(HANDLE, ULONG, PVOID, ULONG);
+static NtQIP_t g_realNtQIP = nullptr;
+static NtSIT_t g_realNtSIT = nullptr;
+
+static LONG __stdcall NtQIP_Detour(HANDLE h, ULONG cls, PVOID info, ULONG len, PULONG retLen)
+{
+    LONG st = g_realNtQIP(h, cls, info, len, retLen);
+    if (st >= 0 && info)
+    {
+        if (cls == 7  && len >= sizeof(void*)) *(void**)info = nullptr;                       // ProcessDebugPort -> none
+        if (cls == 30 && len >= sizeof(void*)) { *(void**)info = nullptr; st = (LONG)0xC0000353; } // DebugObjectHandle -> PORT_NOT_SET
+        if (cls == 31 && len >= sizeof(ULONG)) *(ULONG*)info = 1;                             // ProcessDebugFlags -> not-debugged
+    }
+    return st;
+}
+
+static LONG __stdcall NtSIT_Detour(HANDLE h, ULONG cls, PVOID info, ULONG len)
+{
+    if (cls == 0x11) return 0; // ThreadHideFromDebugger -> swallow (keep threads visible, report success)
+    return g_realNtSIT(h, cls, info, len);
+}
+
+static void InstallDebuggerHider()
+{
+    // 1) PEB debug flags (x64 offsets). Safe, well-known fields.
+    unsigned char* peb = (unsigned char*)__readgsqword(0x60);
+    peb[0x02] = 0;                    // BeingDebugged        -> IsDebuggerPresent()/PEB checks see "no"
+    *(DWORD*)(peb + 0xBC) &= ~0x70u;  // NtGlobalFlag         -> clear FLG_HEAP_* debug bits
+
+    // 2) hook the ntdll checks the watcher uses.
+    if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"))
+    {
+        if (void* p = GetProcAddress(ntdll, "NtQueryInformationProcess")) g_realNtQIP = (NtQIP_t)HookSyscallStub(p, &NtQIP_Detour);
+        if (void* p = GetProcAddress(ntdll, "NtSetInformationThread"))    g_realNtSIT = (NtSIT_t)HookSyscallStub(p, &NtSIT_Detour);
+    }
+    printf("[shim] debugger-hider installed (NtQIP tramp=%p, NtSIT tramp=%p)\n", (void*)g_realNtQIP, (void*)g_realNtSIT);
+    fflush(stdout);
+}
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmdLine, int /*nShowCmd*/)
 {
     // Console for the MyRunGame logs (mirrors WDLE3Launcher).
     AllocConsole();
     FILE* dummy = nullptr;
     freopen_s(&dummy, "CONOUT$", "w", stdout);
+
+    printf("WDLLauncher: WinMain executing\n");
+
+    // Hide the debugger BEFORE the DLL (and its anti-debug watcher) loads.
+    if (kHideDebugger) InstallDebuggerHider();
 
     // Resolve + load the main DLL next to this exe (common to both paths). This keeps the DLL's own
     // dependencies (uplay_r2_loader64, dbdata, ...) resolvable from the same folder.
