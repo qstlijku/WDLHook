@@ -6,3 +6,5 @@ wdlhook_log.txt
 *.ps1
 /anim_poses
 anim_pose.h
+/wlu_work
+/anim_poses_old
