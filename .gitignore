@@ -8,3 +8,7 @@ wdlhook_log.txt
 anim_pose.h
 /wlu_work
 /anim_poses_old
+/WDLLauncher/x64
+/dinput8/dinput8
+/DE_Hook/x64
+*.txt
