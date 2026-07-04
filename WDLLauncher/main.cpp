@@ -758,6 +758,10 @@ static void InstallUplayAuxDefense()
 typedef void (__cdecl* PVFV)(void);
 typedef LONG (NTAPI* LdrpHandleTlsData_t)(void* ldrEntry);
 static const uintptr_t kLdrpHandleTlsDataRva = 0x10F30; // Win11 26200 ntdll (same as E3)
+// E3 booted fine WITHOUT running the TLS callbacks (thread-locals init lazily on first access). Retail's
+// TlsCallback_0/1 are the Denuvo VM bootstrap -> flip this OFF to try skipping it (dodge the anti-debug
+// arming); ON runs it (safer if Denuvo-protected engine code needs its VM init).
+static const bool kRunTlsCallbacks = false;
 
 static void* ML_FindLdrEntry(HMODULE mod)
 {
@@ -789,37 +793,44 @@ static void ML_RunTlsCallbacks(HMODULE mod)
     uintptr_t base = (uintptr_t)mod;
     auto nt = (PIMAGE_NT_HEADERS)(base + ((PIMAGE_DOS_HEADER)base)->e_lfanew);
     auto e = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
-    if (!e.VirtualAddress) return;
+    if (!e.VirtualAddress) { tprintf("[ml] no TLS data directory\n"); return; }
     auto tls = (PIMAGE_TLS_DIRECTORY)(base + e.VirtualAddress);
+    tprintf("[ml] TLS dir @ +0x%X, AddressOfCallBacks=%p\n", e.VirtualAddress, (void*)tls->AddressOfCallBacks); fflush(stdout);
     auto cb = (PIMAGE_TLS_CALLBACK*)tls->AddressOfCallBacks;
-    if (!cb || !*cb) { tprintf("[ml] no TLS callbacks\n"); return; }
+    if (!cb || !*cb) { tprintf("[ml] TLS callback list empty\n"); return; }
     int n = 0;
-    return;
     for (; *cb; ++cb, ++n) { tprintf("[ml] TLS callback[%d] %p (Denuvo VM) ...\n", n, (void*)*cb); fflush(stdout); (*cb)((PVOID)base, DLL_PROCESS_ATTACH, nullptr); }
     tprintf("[ml] ran %d TLS callback(s)\n", n); fflush(stdout);
 }
 
-// Locate __xc (the C++ ctor array) heuristically: the longest run of valid .text pointers in .rdata.
+// Locate __xc (the C++ ctor array) = the longest run of pointers-into-executable-code in any readable
+// section. Uses section CHARACTERISTICS, not names: Denuvo renames/merges sections (.text is a tiny
+// stub; the engine code lives in a huge section named .rdata), so name matching is useless.
 static bool ML_FindCtorArray(uintptr_t base, uintptr_t& xca, uintptr_t& xcz)
 {
     auto nt = (PIMAGE_NT_HEADERS)(base + ((PIMAGE_DOS_HEADER)base)->e_lfanew);
-    uintptr_t tS = 0, tE = 0, rS = 0, rE = 0;
     auto sec = IMAGE_FIRST_SECTION(nt);
-    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i)
-    {
-        uintptr_t s = base + sec[i].VirtualAddress, en = s + sec[i].Misc.VirtualSize;
-        if (!memcmp(sec[i].Name, ".text", 5)) { tS = s; tE = en; }
-        else if (!memcmp(sec[i].Name, ".rdata", 6)) { rS = s; rE = en; }
-    }
-    if (!tS || !rS) return false;
+    WORD nsec = nt->FileHeader.NumberOfSections;
+    struct { uintptr_t s, e; } exec[48]; int ne = 0;
+    for (WORD i = 0; i < nsec && ne < 48; ++i)
+        if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
+            exec[ne++] = { base + sec[i].VirtualAddress, base + sec[i].VirtualAddress + sec[i].Misc.VirtualSize };
+    tprintf("[ml] ctor scan: %d executable section(s)\n", ne); fflush(stdout);
+    auto isCode = [&](uintptr_t v) { for (int j = 0; j < ne; ++j) if (v >= exec[j].s && v < exec[j].e) return true; return false; };
     uintptr_t bA = 0, bZ = 0, rA = 0; size_t bL = 0, rL = 0;
-    for (uintptr_t p = rS; p + 8 <= rE; p += 8)
+    for (WORD i = 0; i < nsec; ++i)
     {
-        uintptr_t v = *(uintptr_t*)p;
-        if (v >= tS && v < tE) { if (!rL) rA = p; ++rL; }
-        else { if (rL > bL) { bL = rL; bA = rA; bZ = p; } rL = 0; }
+        if (!(sec[i].Characteristics & IMAGE_SCN_MEM_READ)) continue;
+        uintptr_t s = base + sec[i].VirtualAddress, en = s + sec[i].Misc.VirtualSize;
+        for (uintptr_t p = s; p + 8 <= en; p += 8)
+        {
+            uintptr_t v = *(uintptr_t*)p;
+            if (isCode(v)) { if (!rL) rA = p; ++rL; }
+            else { if (rL > bL) { bL = rL; bA = rA; bZ = p; } rL = 0; }
+        }
+        if (rL > bL) { bL = rL; bA = rA; bZ = en; }
+        rL = 0;
     }
-    if (rL > bL) { bL = rL; bA = rA; bZ = rE; }
     if (bL < 1000) return false; // __xc is huge (~22k); anything smaller isn't it
     xca = bA; xcz = bZ; return true;
 }
@@ -829,8 +840,22 @@ static void ML_RunInitTerms(uintptr_t xca, uintptr_t xcz, uintptr_t xia, uintptr
     HMODULE ucrt = GetModuleHandleW(L"ucrtbase.dll");
     auto p_e = ucrt ? (int  (__cdecl*)(void*, void*))GetProcAddress(ucrt, "_initterm_e") : nullptr;
     auto p_c = ucrt ? (void (__cdecl*)(void*, void*))GetProcAddress(ucrt, "_initterm")   : nullptr;
-    if (xia && xiz && p_e) { tprintf("[ml] _initterm_e(__xi) ...\n"); fflush(stdout); int rc = p_e((void*)xia, (void*)xiz); tprintf("[ml] _initterm_e -> %d\n", rc); fflush(stdout); }
-    if (xca && xcz && p_c) { tprintf("[ml] _initterm(__xc) -- %lld ctors ...\n", (long long)((xcz - xca) / 8)); fflush(stdout); p_c((void*)xca, (void*)xcz); tprintf("[ml] _initterm done\n"); fflush(stdout); }
+    if (xia && xiz && p_e)
+    {
+        tprintf("[ml] _initterm_e(__xi) ...\n");
+        fflush(stdout);
+        int rc = p_e((void*)xia, (void*)xiz);
+        tprintf("[ml] _initterm_e -> %d\n", rc);
+        fflush(stdout);
+    }
+    if (xca && xcz && p_c)
+    {
+        tprintf("[ml] _initterm(__xc) -- %lld ctors ...\n", (long long)((xcz - xca) / 8));
+        fflush(stdout);
+        p_c((void*)xca, (void*)xcz);
+        tprintf("[ml] _initterm done\n");
+        fflush(stdout);
+    }
 }
 
 static bool ManualInitDll(HMODULE mod)
@@ -873,7 +898,8 @@ static bool ManualInitDll(HMODULE mod)
 
     // 1.5) static TLS (LdrpHandleTlsData)  1.6) TLS callbacks (Denuvo VM bootstrap)
     if (!ML_SetupTls(mod)) tprintf("[ml] TLS setup incomplete -- ctors may fault\n");
-    ML_RunTlsCallbacks(mod);
+    if (kRunTlsCallbacks) ML_RunTlsCallbacks(mod);
+    else tprintf("[ml] TLS callbacks SKIPPED (kRunTlsCallbacks=false) -- relying on lazy thread-local init\n");
 
     // 2) locate __xc by scan (retail's initterm operands are VM'd) and run the ctors. __xi = TODO
     //    (find __scrt_initialize_thread_safe_statics's array in IDA if magic statics crash).

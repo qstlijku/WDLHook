@@ -661,6 +661,65 @@ static void InstallTokenCapture()
     tprintf("[token] token capture + activation watch installed (dbdata hooked=%d)\n", (int)g_tokenHooked);
 }
 
+// ---- _initterm logger (ported from E3_Hook) ------------------------------------------------------
+// Hook the shared ucrtbase _initterm/_initterm_e and log every dynamic initializer as module+RVA,
+// running each bracketed so a crash pinpoints the culprit. The retail WDLLauncher manual load calls
+// ucrtbase _initterm directly with the DLL's __xc array, so this detour catches those ~22k ctors and
+// turns a silent ctor crash into "died on DuniaDemo_clang_64_dx11.dll+RVA".
+typedef void (__cdecl *PVFV)(void);
+typedef int  (__cdecl *PIFV)(void);
+typedef void (__cdecl *initterm_t)(PVFV*, PVFV*);
+typedef int  (__cdecl *initterm_e_t)(PIFV*, PIFV*);
+static initterm_t   g_initterm_orig   = nullptr;
+static initterm_e_t g_initterm_e_orig = nullptr;
+static int g_initBatch = 0;
+
+static void LogInit(const char* tag, void* fn, int idx)
+{
+    HMODULE m = nullptr; char nm[MAX_PATH] = "?"; const char* b = nm; unsigned long long off = 0;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)fn, &m) && m)
+    { GetModuleFileNameA(m, nm, MAX_PATH); const char* s = strrchr(nm, '\\'); b = s ? s + 1 : nm; off = (unsigned long long)((uintptr_t)fn - (uintptr_t)m); }
+    tprintf("[init] %s[%d] %p = %s+0x%llX\n", tag, idx, fn, b, off);
+}
+
+static void __cdecl initterm_Detour(PVFV* first, PVFV* last)
+{
+    int batch = g_initBatch++;
+    tprintf("[init] === _initterm (C++ .CRT$XC) batch %d: %lld entries ===\n", batch, (long long)(last - first));
+    int i = 0;
+    for (PVFV* p = first; p < last; ++p, ++i)
+        if (*p) {
+            LogInit("XC", (void*)*p, i);
+            (*p)();
+        }
+    tprintf("[init] === _initterm batch %d done ===\n", batch);
+}
+
+static int __cdecl initterm_e_Detour(PIFV* first, PIFV* last)
+{
+    int batch = g_initBatch++;
+    tprintf("[init] === _initterm_e (C .CRT$XI) batch %d: %lld entries ===\n", batch, (long long)(last - first));
+    int i = 0;
+    for (PIFV* p = first; p < last; ++p, ++i)
+        if (*p) { LogInit("XI", (void*)*p, i); int rc = (*p)(); if (rc) { tprintf("[init] XI[%d] returned %d -> abort\n", i, rc); return rc; } }
+    tprintf("[init] === _initterm_e batch %d done ===\n", batch);
+    return 0;
+}
+
+static void InstallInitTermLogger()
+{
+    HMODULE crt = GetModuleHandleW(L"ucrtbase.dll");
+    if (!crt) crt = GetModuleHandleW(L"api-ms-win-crt-runtime-l1-1-0.dll");
+    if (!crt) { tprintf("[init] ucrtbase not found -- can't hook _initterm\n"); return; }
+    if (void* p = (void*)GetProcAddress(crt, "_initterm"))
+        if (MH_CreateHook(p, &initterm_Detour, reinterpret_cast<LPVOID*>(&g_initterm_orig)) == MH_OK && MH_EnableHook(p) == MH_OK)
+            tprintf("[init] hooked _initterm @ %p\n", p);
+    if (void* p = (void*)GetProcAddress(crt, "_initterm_e"))
+        if (MH_CreateHook(p, &initterm_e_Detour, reinterpret_cast<LPVOID*>(&g_initterm_e_orig)) == MH_OK && MH_EnableHook(p) == MH_OK)
+            tprintf("[init] hooked _initterm_e @ %p\n", p);
+    fflush(stdout);
+}
+
 // Called SYNCHRONOUSLY from dinput8's DllMain (Main::Initialize), BEFORE the CreateThread'd
 // MainThread -- so the LoadLibrary/GetProcAddress/getGameTokenInterface hooks are in place before
 // RunGame's early token+activation flow runs. A spawned thread can't do this: it's blocked until the
@@ -671,6 +730,7 @@ void Misc::InstallEarlyHooks()
     g_earlyHooksDone = true;
     MH_Initialize();
     InstallTokenCapture();
+    InstallInitTermLogger(); // ported from E3_Hook: brackets each ctor so a manual-load crash pinpoints it
 }
 
 void Misc::Initialize()
