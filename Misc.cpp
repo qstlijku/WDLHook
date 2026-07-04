@@ -701,7 +701,14 @@ static int __cdecl initterm_e_Detour(PIFV* first, PIFV* last)
     tprintf("[init] === _initterm_e (C .CRT$XI) batch %d: %lld entries ===\n", batch, (long long)(last - first));
     int i = 0;
     for (PIFV* p = first; p < last; ++p, ++i)
-        if (*p) { LogInit("XI", (void*)*p, i); int rc = (*p)(); if (rc) { tprintf("[init] XI[%d] returned %d -> abort\n", i, rc); return rc; } }
+        if (*p) {
+            LogInit("XI", (void*)*p, i);
+            int rc = (*p)();
+            if (rc) {
+                tprintf("[init] XI[%d] returned %d -> abort\n", i, rc);
+                return rc;
+            }
+        }
     tprintf("[init] === _initterm_e batch %d done ===\n", batch);
     return 0;
 }

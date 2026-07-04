@@ -763,6 +763,22 @@ static const uintptr_t kLdrpHandleTlsDataRva = 0x10F30; // Win11 26200 ntdll (sa
 // arming); ON runs it (safer if Denuvo-protected engine code needs its VM init).
 static const bool kRunTlsCallbacks = false;
 
+// Retail's real __xi/__xc arrays, recovered statically from dllmain_crt_process_attach (sub_189D85164),
+// which is plain .rdata -- NOT VM'd. Its two init calls are:
+//    _initterm_e(&unk_18A973168, &unk_18A973178)   -> __xi (1 real C init: __scrt_initialize_thread_safe_statics)
+//    _initterm  (&unk_18A968108, &unk_18A973138)   -> __xc (5637 C++ ctors, all -> real low-.rdata engine code)
+// The heuristic ML_FindCtorArray instead latches onto a 45,321-entry DECOY array Denuvo plants in .rsrc
+// (a section it marks EXECUTE|CNT_CODE); every decoy entry points into resource data, so calling XC[0]
+// executes .rsrc bytes and faults. Flip kRetailHardcodedCtors ON to bypass the scan and use these exact
+// bounds. Chain (all .rdata, for reference): DllMainCRTStartup 0x9D854B8 (Denuvo PE entry = 0x225DD1D5 in
+// .hN,), _security_init_cookie 0x9D854F8, dllmain_crt_process_attach 0x9D85164, _initterm 0x9DBD990,
+// _initterm_e 0x9DBD9A0. RVAs are for DuniaDemo_clang_64_dx11.dll (imagebase 0x180000000).
+static const bool      kRetailHardcodedCtors = true;
+static const uintptr_t kRetailXiaRva = 0xA973168; // __xi_a
+static const uintptr_t kRetailXizRva = 0xA973178; // __xi_z
+static const uintptr_t kRetailXcaRva = 0xA968108; // __xc_a
+static const uintptr_t kRetailXczRva = 0xA973138; // __xc_z
+
 static void* ML_FindLdrEntry(HMODULE mod)
 {
     uintptr_t peb = __readgsqword(0x60);
@@ -901,14 +917,29 @@ static bool ManualInitDll(HMODULE mod)
     if (kRunTlsCallbacks) ML_RunTlsCallbacks(mod);
     else tprintf("[ml] TLS callbacks SKIPPED (kRunTlsCallbacks=false) -- relying on lazy thread-local init\n");
 
-    // 2) locate __xc by scan (retail's initterm operands are VM'd) and run the ctors. __xi = TODO
-    //    (find __scrt_initialize_thread_safe_statics's array in IDA if magic statics crash).
-    uintptr_t xca = 0, xcz = 0;
-    if (ML_FindCtorArray(base, xca, xcz))
-        tprintf("[ml] __xc scan -> %p .. %p (%lld ctors)\n", (void*)xca, (void*)xcz, (long long)((xcz - xca) / 8));
+    // 2) run __xi (C initializers) then __xc (C++ ctors). Prefer the hardcoded bounds recovered from
+    //    dllmain_crt_process_attach; the ML_FindCtorArray heuristic latches onto Denuvo's .rsrc decoy.
+    uintptr_t xia = 0, xiz = 0, xca = 0, xcz = 0;
+    if (kRetailHardcodedCtors)
+    {
+        xia = base + kRetailXiaRva; xiz = base + kRetailXizRva;
+        xca = base + kRetailXcaRva; xcz = base + kRetailXczRva;
+        tprintf("[ml] __xi hardcoded -> +0x%llX .. +0x%llX (%lld) ; __xc hardcoded -> +0x%llX .. +0x%llX (%lld ctors)\n",
+                (unsigned long long)kRetailXiaRva, (unsigned long long)kRetailXizRva, (long long)((xiz - xia) / 8),
+                (unsigned long long)kRetailXcaRva, (unsigned long long)kRetailXczRva, (long long)((xcz - xca) / 8));
+    }
+    else if (ML_FindCtorArray(base, xca, xcz))
+    {
+        char nm[MAX_PATH] = "?"; const char* b = nm;
+        if (GetModuleFileNameA((HMODULE)base, nm, MAX_PATH)) { const char* s = strrchr(nm, '\\'); b = s ? s + 1 : nm; }
+        tprintf("[ml] __xc scan -> %p .. %p = %s+0x%llX .. +0x%llX (%lld ctors)\n",
+                (void*)xca, (void*)xcz, b,
+                (unsigned long long)(xca - base), (unsigned long long)(xcz - base),
+                (long long)((xcz - xca) / 8));
+    }
     else
         tprintf("[ml] __xc array NOT found by scan\n");
-    ML_RunInitTerms(xca, xcz, 0, 0);
+    ML_RunInitTerms(xca, xcz, xia, xiz);
     tprintf("[ml] manual init complete\n"); fflush(stdout);
     return true;
 }
