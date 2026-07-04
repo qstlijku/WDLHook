@@ -58,7 +58,7 @@ typedef int(__cdecl* RunGame_t)(HINSTANCE hInstance, const char* lpCmdLine, unsi
 // Kept OFF by default so it can never run against wrong offsets.
 // OFF for the offline-emu test: the emu is exercised only by the FULL engine boot (real RunGame calls
 // getGameTokenInterface). MyRunGame is just the parsers+splash experiment and never reaches the token.
-static const bool kUseCustomRunGame = false;
+static const bool kUseCustomRunGame = true;
 
 static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
 {
@@ -749,6 +749,145 @@ static void InstallUplayAuxDefense()
     fflush(stdout);
 }
 
+// ================= MANUAL / REFLECTIVE LOAD (ported from WDLE3Launcher) =============================
+// DONT_RESOLVE_DLL_REFERENCES maps the DLL dead (no imports/ctors/TLS/DllMain); redo the init ourselves.
+// Same technique proven on E3. Retail differences: (1) __xc/__xi aren't readable from IDA (retail's
+// dllmain_crt_process_attach is Denuvo-VM'd) -> LOCATE __xc by scanning .rdata for the huge run of .text
+// pointers; __xi (thread_safe_statics) is left TODO. (2) retail's TLS callbacks are Denuvo-VM'd, so
+// running them executes the protection bootstrap. Expect iteration -- first pass just replicates.
+typedef void (__cdecl* PVFV)(void);
+typedef LONG (NTAPI* LdrpHandleTlsData_t)(void* ldrEntry);
+static const uintptr_t kLdrpHandleTlsDataRva = 0x10F30; // Win11 26200 ntdll (same as E3)
+
+static void* ML_FindLdrEntry(HMODULE mod)
+{
+    uintptr_t peb = __readgsqword(0x60);
+    uintptr_t ldr = *(uintptr_t*)(peb + 0x18);            // PEB->Ldr
+    LIST_ENTRY* head = (LIST_ENTRY*)(ldr + 0x10);         // InLoadOrderModuleList
+    for (LIST_ENTRY* it = head->Flink; it != head; it = it->Flink)
+        if (*(void**)((uintptr_t)it + 0x30) == (void*)mod) return (void*)it; // DllBase @ LDR+0x30
+    return nullptr;
+}
+
+static bool ML_SetupTls(HMODULE mod)
+{
+    uintptr_t base = (uintptr_t)mod;
+    auto nt = (PIMAGE_NT_HEADERS)(base + ((PIMAGE_DOS_HEADER)base)->e_lfanew);
+    if (!nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress) { tprintf("[ml] no TLS dir\n"); return true; }
+    void* ldrEntry = ML_FindLdrEntry(mod);
+    if (!ldrEntry) { tprintf("[ml] LDR entry not found\n"); return false; }
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    auto fn = (LdrpHandleTlsData_t)((uintptr_t)ntdll + kLdrpHandleTlsDataRva);
+    tprintf("[ml] LdrpHandleTlsData=%p ldrEntry=%p ...\n", (void*)fn, ldrEntry); fflush(stdout);
+    LONG st = fn(ldrEntry);
+    tprintf("[ml] LdrpHandleTlsData -> 0x%lX\n", st); fflush(stdout);
+    return st >= 0;
+}
+
+static void ML_RunTlsCallbacks(HMODULE mod)
+{
+    uintptr_t base = (uintptr_t)mod;
+    auto nt = (PIMAGE_NT_HEADERS)(base + ((PIMAGE_DOS_HEADER)base)->e_lfanew);
+    auto e = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+    if (!e.VirtualAddress) return;
+    auto tls = (PIMAGE_TLS_DIRECTORY)(base + e.VirtualAddress);
+    auto cb = (PIMAGE_TLS_CALLBACK*)tls->AddressOfCallBacks;
+    if (!cb || !*cb) { tprintf("[ml] no TLS callbacks\n"); return; }
+    int n = 0;
+    return;
+    for (; *cb; ++cb, ++n) { tprintf("[ml] TLS callback[%d] %p (Denuvo VM) ...\n", n, (void*)*cb); fflush(stdout); (*cb)((PVOID)base, DLL_PROCESS_ATTACH, nullptr); }
+    tprintf("[ml] ran %d TLS callback(s)\n", n); fflush(stdout);
+}
+
+// Locate __xc (the C++ ctor array) heuristically: the longest run of valid .text pointers in .rdata.
+static bool ML_FindCtorArray(uintptr_t base, uintptr_t& xca, uintptr_t& xcz)
+{
+    auto nt = (PIMAGE_NT_HEADERS)(base + ((PIMAGE_DOS_HEADER)base)->e_lfanew);
+    uintptr_t tS = 0, tE = 0, rS = 0, rE = 0;
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+    {
+        uintptr_t s = base + sec[i].VirtualAddress, en = s + sec[i].Misc.VirtualSize;
+        if (!memcmp(sec[i].Name, ".text", 5)) { tS = s; tE = en; }
+        else if (!memcmp(sec[i].Name, ".rdata", 6)) { rS = s; rE = en; }
+    }
+    if (!tS || !rS) return false;
+    uintptr_t bA = 0, bZ = 0, rA = 0; size_t bL = 0, rL = 0;
+    for (uintptr_t p = rS; p + 8 <= rE; p += 8)
+    {
+        uintptr_t v = *(uintptr_t*)p;
+        if (v >= tS && v < tE) { if (!rL) rA = p; ++rL; }
+        else { if (rL > bL) { bL = rL; bA = rA; bZ = p; } rL = 0; }
+    }
+    if (rL > bL) { bL = rL; bA = rA; bZ = rE; }
+    if (bL < 1000) return false; // __xc is huge (~22k); anything smaller isn't it
+    xca = bA; xcz = bZ; return true;
+}
+
+static void ML_RunInitTerms(uintptr_t xca, uintptr_t xcz, uintptr_t xia, uintptr_t xiz)
+{
+    HMODULE ucrt = GetModuleHandleW(L"ucrtbase.dll");
+    auto p_e = ucrt ? (int  (__cdecl*)(void*, void*))GetProcAddress(ucrt, "_initterm_e") : nullptr;
+    auto p_c = ucrt ? (void (__cdecl*)(void*, void*))GetProcAddress(ucrt, "_initterm")   : nullptr;
+    if (xia && xiz && p_e) { tprintf("[ml] _initterm_e(__xi) ...\n"); fflush(stdout); int rc = p_e((void*)xia, (void*)xiz); tprintf("[ml] _initterm_e -> %d\n", rc); fflush(stdout); }
+    if (xca && xcz && p_c) { tprintf("[ml] _initterm(__xc) -- %lld ctors ...\n", (long long)((xcz - xca) / 8)); fflush(stdout); p_c((void*)xca, (void*)xcz); tprintf("[ml] _initterm done\n"); fflush(stdout); }
+}
+
+static bool ManualInitDll(HMODULE mod)
+{
+    uintptr_t base = (uintptr_t)mod;
+    auto dos = (PIMAGE_DOS_HEADER)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) { tprintf("[ml] bad DOS sig\n"); return false; }
+    auto nt = (PIMAGE_NT_HEADERS)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) { tprintf("[ml] bad NT sig\n"); return false; }
+
+    // 1) resolve imports into the IAT
+    auto iatDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IAT];
+    DWORD oldProt = 0;
+    if (iatDir.VirtualAddress && iatDir.Size) VirtualProtect((LPVOID)(base + iatDir.VirtualAddress), iatDir.Size, PAGE_READWRITE, &oldProt);
+    auto impDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    int nDlls = 0, nFuncs = 0;
+    if (impDir.VirtualAddress)
+    {
+        auto imp = (PIMAGE_IMPORT_DESCRIPTOR)(base + impDir.VirtualAddress);
+        for (; imp->Name; ++imp, ++nDlls)
+        {
+            const char* depName = (const char*)(base + imp->Name);
+            HMODULE dep = LoadLibraryA(depName);
+            if (!dep) { tprintf("[ml] dependency load FAILED: %s (err %lu)\n", depName, GetLastError()); return false; }
+            DWORD iltRva = imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk;
+            auto ilt = (PIMAGE_THUNK_DATA)(base + iltRva);
+            auto iat = (PIMAGE_THUNK_DATA)(base + imp->FirstThunk);
+            for (; ilt->u1.AddressOfData; ++ilt, ++iat, ++nFuncs)
+            {
+                FARPROC fn;
+                if (IMAGE_SNAP_BY_ORDINAL(ilt->u1.Ordinal)) fn = GetProcAddress(dep, (LPCSTR)(uintptr_t)(ilt->u1.Ordinal & 0xFFFF));
+                else fn = GetProcAddress(dep, ((PIMAGE_IMPORT_BY_NAME)(base + ilt->u1.AddressOfData))->Name);
+                if (!fn) { tprintf("[ml] unresolved import in %s\n", depName); return false; }
+                iat->u1.Function = (ULONGLONG)fn;
+            }
+        }
+    }
+    if (iatDir.VirtualAddress && iatDir.Size) VirtualProtect((LPVOID)(base + iatDir.VirtualAddress), iatDir.Size, oldProt, &oldProt);
+    tprintf("[ml] resolved %d imports across %d DLLs\n", nFuncs, nDlls); fflush(stdout);
+
+    // 1.5) static TLS (LdrpHandleTlsData)  1.6) TLS callbacks (Denuvo VM bootstrap)
+    if (!ML_SetupTls(mod)) tprintf("[ml] TLS setup incomplete -- ctors may fault\n");
+    ML_RunTlsCallbacks(mod);
+
+    // 2) locate __xc by scan (retail's initterm operands are VM'd) and run the ctors. __xi = TODO
+    //    (find __scrt_initialize_thread_safe_statics's array in IDA if magic statics crash).
+    uintptr_t xca = 0, xcz = 0;
+    if (ML_FindCtorArray(base, xca, xcz))
+        tprintf("[ml] __xc scan -> %p .. %p (%lld ctors)\n", (void*)xca, (void*)xcz, (long long)((xcz - xca) / 8));
+    else
+        tprintf("[ml] __xc array NOT found by scan\n");
+    ML_RunInitTerms(xca, xcz, 0, 0);
+    tprintf("[ml] manual init complete\n"); fflush(stdout);
+    return true;
+}
+// ===================================================================================================
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmdLine, int /*nShowCmd*/)
 {
     // Console for the live logs (mirrors WDLE3Launcher).
@@ -778,13 +917,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     PathRemoveFileSpecW(path);
     PathAppendW(path, kRendererDll);
-    HMODULE dll = LoadLibraryW(path);
+    //HMODULE dll = LoadLibraryW(path);
+    HMODULE dll = LoadLibraryExW(path, NULL, DONT_RESOLVE_DLL_REFERENCES);
     if (!dll)
     {
         wchar_t msg[300];
         swprintf_s(msg, L"Could not load %s (0x%08x)", kRendererDll, GetLastError());
         MessageBoxW(nullptr, msg, L"WDLLauncher", MB_ICONERROR);
         return static_cast<int>(0x80000000);
+    }
+
+    // DONT_RESOLVE mapped it dead -- do the init ourselves (ported from E3; retail = first attempt).
+    if (!ManualInitDll(dll))
+    {
+        tprintf("[WDLLauncher] ManualInitDll FAILED -- aborting\n"); fflush(stdout);
+        TerminateProcess(GetCurrentProcess(), 2); return 2;
     }
 
     int rc;
