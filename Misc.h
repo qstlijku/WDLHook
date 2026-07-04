@@ -27,5 +27,6 @@ public:
 	typedef uintptr_t(*PlayAnim_t)(EntityId, EntityId, EntityId, EntityId, unsigned int, const char*, const char*, const char*, const char*, const char*, const char*);
 
 	static void Initialize();
+	static void InstallEarlyHooks(); // token + activation hooks, called from DllMain (before RunGame)
 
 };

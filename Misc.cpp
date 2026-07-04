@@ -1,4 +1,5 @@
 #include "Misc.h"
+#include "Main.h"
 #include "ChunkReader.h"
 #include <iostream>
 #include <chrono>
@@ -369,6 +370,309 @@ void HookOffset(int offset)
     printf("Hook at offset %llx enabled...\n", offset);
 }
 
+// ===========================================================================
+// TOKEN CAPTURE (ACMHook / WDLLauncher parity) -----------------------------------
+// This DLL runs INSIDE the real Connect-launched game, so the uplay_aux gate PASSES
+// (verdict 0) and dbdata's getGameTokenInterface builds a REAL IGameTokenInterface --
+// unlike the standalone launcher, where the gate self-terminates before it returns.
+// We hook the export, DUMP the returned object, and return a WRAPPER whose vtable
+// thunks LOG every method the engine calls (args + return + token blobs ->
+// wdl_token_slot<N>.bin), forwarding to the real method on the real object. Capture
+// only -- no uplay_aux patches needed here. Same object shape as Shadows (identical
+// uplay_aux_r164.dll): dual vtable at +0x00 / +0x38.
+// ===========================================================================
+typedef void* (*getGameTokenInterface_t)(void*, unsigned __int64);
+static getGameTokenInterface_t g_getToken_orig = nullptr;
+static bool g_tokenHooked = false;
+
+static void DumpTokenObject(void* obj)
+{
+    if (!obj) { tprintf("[dump] token object is NULL (no valid object built)\n"); return; }
+    uintptr_t base = (uintptr_t)GetModuleHandleW(L"uplay_aux_r164.dll");
+    unsigned char raw[0x48] = {};
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), obj, raw, sizeof(raw), &got) || got < 0x40)
+    { tprintf("[dump] object %p unreadable\n", obj); return; }
+
+    tprintf("[dump] === IGameTokenInterface @ %p  (uplay_aux base %p) ===\n", obj, (void*)base);
+    char line[160];
+    for (SIZE_T i = 0; i < got; i += 16)
+    {
+        int n = sprintf_s(line, sizeof(line), "[dump]   +0x%02llX: ", (unsigned long long)i);
+        for (SIZE_T j = 0; j < 16 && i + j < got; ++j)
+            n += sprintf_s(line + n, sizeof(line) - n, "%02X ", raw[i + j]);
+        tprintf("%s\n", line);
+    }
+    auto rel = [&](uintptr_t p) -> unsigned long long { return base && p > base ? (unsigned long long)(p - base) : 0; };
+    uintptr_t vt1 = *(uintptr_t*)(raw + 0x00);
+    uintptr_t vt2 = *(uintptr_t*)(raw + 0x38);
+    tprintf("[dump]  +0x00 vtbl1 = %p (uplay_aux+0x%llX; Shadows was 0xF2CC0)\n", (void*)vt1, rel(vt1));
+    tprintf("[dump]  +0x08 = 0x%llX   +0x10 = 0x%llX\n", *(unsigned long long*)(raw + 0x08), *(unsigned long long*)(raw + 0x10));
+    tprintf("[dump]  +0x24 = 0x%08X (dword)   +0x28 = 0x%llX   +0x30 = 0x%llX\n",
+        *(unsigned int*)(raw + 0x24), *(unsigned long long*)(raw + 0x28), *(unsigned long long*)(raw + 0x30));
+    tprintf("[dump]  +0x38 vtbl2 = %p (uplay_aux+0x%llX; Shadows was 0xF3090)\n", (void*)vt2, rel(vt2));
+    uintptr_t m[10];
+    if (vt1 && ReadProcessMemory(GetCurrentProcess(), (void*)vt1, m, sizeof(m), &got))
+        for (int i = 0; i < 10; ++i) tprintf("[dump]  vtbl1[%d] = uplay_aux+0x%llX\n", i, rel(m[i]));
+    if (vt2 && ReadProcessMemory(GetCurrentProcess(), (void*)vt2, m, 6 * sizeof(uintptr_t), &got))
+        for (int i = 0; i < 6; ++i) tprintf("[dump]  vtbl2[%d] = uplay_aux+0x%llX\n", i, rel(m[i]));
+
+    uintptr_t bufBegin = *(uintptr_t*)(raw + 0x08);
+    uintptr_t bufEnd   = *(uintptr_t*)(raw + 0x10);
+    if (bufBegin && bufEnd > bufBegin)
+    {
+        size_t bufLen = (size_t)(bufEnd - bufBegin);
+        if (bufLen > 0x200) bufLen = 0x200;
+        unsigned char buf[0x200] = {};
+        if (ReadProcessMemory(GetCurrentProcess(), (void*)bufBegin, buf, bufLen, &got) && got)
+        {
+            tprintf("[dump]  token blob @ %p  (%llu bytes, from +0x08..+0x10):\n", (void*)bufBegin, (unsigned long long)got);
+            for (SIZE_T i = 0; i < got; i += 16)
+            {
+                int n = sprintf_s(line, sizeof(line), "[dump]    %04llX: ", (unsigned long long)i);
+                for (SIZE_T j = 0; j < 16 && i + j < got; ++j)
+                    n += sprintf_s(line + n, sizeof(line) - n, "%02X ", buf[i + j]);
+                n += sprintf_s(line + n, sizeof(line) - n, " | ");
+                for (SIZE_T j = 0; j < 16 && i + j < got; ++j)
+                    n += sprintf_s(line + n, sizeof(line) - n, "%c", (buf[i + j] >= 32 && buf[i + j] < 127) ? buf[i + j] : '.');
+                tprintf("%s\n", line);
+            }
+        }
+    }
+    tprintf("[dump] === end ===\n");
+}
+
+static void*    g_realObj   = nullptr;
+static void**   g_realVtbl1 = nullptr;
+static void**   g_realVtbl2 = nullptr;
+static uint64_t g_wrapObj[9];
+static void*    g_wrapVtbl1[10];
+static void*    g_wrapVtbl2[6];
+typedef __int64 (*TokenMethod_t)(void*, void*, void*, void*);
+
+static void WrapPeek(const char* tag, void* p, size_t n = 0x20)
+{
+    if (!p || (uintptr_t)p < 0x10000) return;
+    unsigned char b[0x50]; if (n > sizeof(b)) n = sizeof(b);
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), p, b, n, &got) || !got) return;
+    char line[512]; int m = sprintf_s(line, sizeof(line), "[wrap]     %s @%p:", tag, p);
+    for (SIZE_T i = 0; i < got; ++i) m += sprintf_s(line + m, sizeof(line) - m, " %02X", b[i]);
+    m += sprintf_s(line + m, sizeof(line) - m, "  | ");
+    for (SIZE_T i = 0; i < got; ++i) m += sprintf_s(line + m, sizeof(line) - m, "%c", (b[i] >= 32 && b[i] < 127) ? b[i] : '.');
+    tprintf("%s\n", line);
+}
+
+static void WrapPeekBig(const char* tag, void* p, size_t n)
+{
+    if (!p || (uintptr_t)p < 0x10000) return;
+    static unsigned char buf[0x800]; if (n > sizeof(buf)) n = sizeof(buf);
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), p, buf, n, &got) || !got) return;
+    tprintf("[wrap]     %s @%p  (%llu bytes):\n", tag, p, (unsigned long long)got);
+    char line[160];
+    for (SIZE_T i = 0; i < got; i += 16)
+    {
+        int m = sprintf_s(line, sizeof(line), "[wrap]      %04llX: ", (unsigned long long)i);
+        SIZE_T j = 0;
+        for (; j < 16 && i + j < got; ++j) m += sprintf_s(line + m, sizeof(line) - m, "%02X ", buf[i + j]);
+        for (; j < 16; ++j)                m += sprintf_s(line + m, sizeof(line) - m, "   ");
+        m += sprintf_s(line + m, sizeof(line) - m, " | ");
+        for (j = 0; j < 16 && i + j < got; ++j) { unsigned char c = buf[i + j]; m += sprintf_s(line + m, sizeof(line) - m, "%c", (c >= 32 && c < 127) ? c : '.'); }
+        tprintf("%s\n", line);
+    }
+}
+
+static void DumpBlobToFile(int slot, void* p, size_t len)
+{
+    if (!p || (uintptr_t)p < 0x10000 || !len || len > 0x20000) return;
+    char path[MAX_PATH];
+    sprintf_s(path, sizeof(path), "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\wdl_token_slot%d.bin", slot);
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { tprintf("[wrap]     (blob file open failed for slot %d)\n", slot); return; }
+    DWORD wrote = 0; WriteFile(h, p, (DWORD)len, &wrote, NULL); CloseHandle(h);
+    tprintf("[wrap]     wrote %lu bytes -> wdl_token_slot%d.bin\n", wrote, slot);
+}
+
+template<int SLOT>
+static __int64 WrapThunk(void* self, void* a2, void* a3, void* a4)
+{
+    const bool v2 = SLOT >= 100;
+    const int  idx = v2 ? SLOT - 100 : SLOT;
+    TokenMethod_t real = (TokenMethod_t)(v2 ? g_realVtbl2[idx] : g_realVtbl1[idx]);
+    tprintf("[wrap] %s[%d] CALL  a2=%p a3=%p a4=%p\n", v2 ? "vtbl2" : "vtbl1", idx, a2, a3, a4);
+    WrapPeek("a2 in ", a2);
+    __int64 ret = real(g_realObj, a2, a3, a4);   // forward to REAL method on REAL object
+    tprintf("[wrap] %s[%d] RET = 0x%llX\n", v2 ? "vtbl2" : "vtbl1", idx, (unsigned long long)ret);
+    WrapPeek("ret*  ", (void*)ret, 0x40);
+    WrapPeek("a2 out", a2);
+    WrapPeek("this  ", g_realObj, 0x48);
+    // Shadows' token slots (4/7/8) wrote a length/count to *a2 and returned a blob ptr; dump those
+    // as a starting heuristic. WDL's slot usage shows in the log -> adjust the special-cases after.
+    if (!v2 && (idx == 4 || idx == 7 || idx == 8))
+    {
+        unsigned long long len = 0;
+        if (a2 && (uintptr_t)a2 > 0x10000) len = *(unsigned int*)a2;
+        tprintf("[wrap]     out-param *a2 = %llu (0x%llX)\n", len, len);
+        size_t bytes = (idx == 8) ? (size_t)len * 4 : (size_t)len;
+        WrapPeekBig("ret-blob", (void*)ret, bytes < 0x80 ? bytes + 16 : 0x80);
+        DumpBlobToFile(idx, (void*)ret, bytes);
+    }
+    return ret;
+}
+
+static void* BuildWrapper(void* realObj)
+{
+    if (!realObj) return realObj;
+    g_realObj   = realObj;
+    g_realVtbl1 = *(void***)((char*)realObj + 0x00);
+    g_realVtbl2 = *(void***)((char*)realObj + 0x38);
+    memcpy(g_wrapObj, realObj, sizeof(g_wrapObj));   // copy the fields the engine reads directly
+    g_wrapVtbl1[0]=(void*)&WrapThunk<0>; g_wrapVtbl1[1]=(void*)&WrapThunk<1>;
+    g_wrapVtbl1[2]=(void*)&WrapThunk<2>; g_wrapVtbl1[3]=(void*)&WrapThunk<3>;
+    g_wrapVtbl1[4]=(void*)&WrapThunk<4>; g_wrapVtbl1[5]=(void*)&WrapThunk<5>;
+    g_wrapVtbl1[6]=(void*)&WrapThunk<6>; g_wrapVtbl1[7]=(void*)&WrapThunk<7>;
+    g_wrapVtbl1[8]=(void*)&WrapThunk<8>; g_wrapVtbl1[9]=(void*)&WrapThunk<9>;
+    g_wrapVtbl2[0]=(void*)&WrapThunk<100>; g_wrapVtbl2[1]=(void*)&WrapThunk<101>;
+    g_wrapVtbl2[2]=(void*)&WrapThunk<102>; g_wrapVtbl2[3]=(void*)&WrapThunk<103>;
+    g_wrapVtbl2[4]=(void*)&WrapThunk<104>; g_wrapVtbl2[5]=(void*)&WrapThunk<105>;
+    g_wrapObj[0] = (uint64_t)&g_wrapVtbl1[0];   // +0x00 our vtbl1
+    g_wrapObj[7] = (uint64_t)&g_wrapVtbl2[0];   // +0x38 our vtbl2
+    return g_wrapObj;
+}
+
+static void* getGameTokenInterface_Detour(void* arg0, unsigned __int64 arg1)
+{
+    void* ra = _ReturnAddress();
+    tprintf("[token] getGameTokenInterface(arg0=%p, arg1=0x%llX) called from %p (tid %lu)\n",
+        arg0, (unsigned long long)arg1, ra, GetCurrentThreadId());
+    void* result = g_getToken_orig(arg0, arg1);   // real: gate PASSES here (Connect-launched)
+    tprintf("[token] -> real IGameTokenInterface* %p\n", result);
+    DumpTokenObject(result);
+    void* wrap = BuildWrapper(result);
+    tprintf("[token] -> WRAPPED as %p (logging every method call)\n", wrap);
+    return wrap;
+}
+
+static void TryHookGameToken(LPCWSTR name, HMODULE mod)
+{
+    if (g_tokenHooked || !name || !mod) return;
+    wchar_t low[1024]; low[0] = 0;
+    wcsncpy_s(low, _countof(low), name, _TRUNCATE);
+    _wcslwr_s(low, _countof(low));
+    if (!wcsstr(low, L"dbdata")) return; // "dbdata" / "dbdata.dll", any path/case
+    void* tgt = (void*)GetProcAddress(mod, "?getGameTokenInterface@@YAPEAVIGameTokenInterface@@PEAX_K@Z");
+    if (!tgt) { tprintf("[token] getGameTokenInterface export not found in dbdata\n"); return; }
+    if (MH_CreateHook(tgt, &getGameTokenInterface_Detour, reinterpret_cast<LPVOID*>(&g_getToken_orig)) == MH_OK
+        && MH_EnableHook(tgt) == MH_OK)
+    {
+        g_tokenHooked = true;
+        tprintf("[token] hooked getGameTokenInterface @ %p (dbdata %p)\n", tgt, (void*)mod);
+    }
+    else tprintf("[token] FAILED to hook getGameTokenInterface @ %p\n", tgt);
+}
+
+// LoadLibrary hooks: dbdata is loaded during engine boot, AFTER Misc::Initialize runs, so catch its
+// load and hook getGameTokenInterface before the engine calls it.
+typedef HMODULE (WINAPI* LoadLibraryW_t)(LPCWSTR);
+typedef HMODULE (WINAPI* LoadLibraryExW_t)(LPCWSTR, HANDLE, DWORD);
+typedef HMODULE (WINAPI* LoadLibraryA_t)(LPCSTR);
+typedef HMODULE (WINAPI* LoadLibraryExA_t)(LPCSTR, HANDLE, DWORD);
+static LoadLibraryW_t   g_LL_W   = nullptr;
+static LoadLibraryExW_t g_LL_ExW = nullptr;
+static LoadLibraryA_t   g_LL_A   = nullptr;
+static LoadLibraryExA_t g_LL_ExA = nullptr;
+static const DWORD kDataOnly = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | LOAD_LIBRARY_AS_IMAGE_RESOURCE;
+static void AnsiToWide(LPCSTR a, wchar_t* out, int n) { out[0] = 0; if (a) MultiByteToWideChar(CP_ACP, 0, a, -1, out, n); }
+
+static HMODULE WINAPI LL_W_Detour(LPCWSTR n)                       { HMODULE m = g_LL_W(n);         if (m) TryHookGameToken(n, m); return m; }
+static HMODULE WINAPI LL_ExW_Detour(LPCWSTR n, HANDLE f, DWORD fl) { HMODULE m = g_LL_ExW(n, f, fl); if (m && !(fl & kDataOnly)) TryHookGameToken(n, m); return m; }
+static HMODULE WINAPI LL_A_Detour(LPCSTR n)                        { HMODULE m = g_LL_A(n);         if (m) { wchar_t w[1024]; AnsiToWide(n, w, 1024); TryHookGameToken(w, m); } return m; }
+static HMODULE WINAPI LL_ExA_Detour(LPCSTR n, HANDLE f, DWORD fl)  { HMODULE m = g_LL_ExA(n, f, fl); if (m && !(fl & kDataOnly)) { wchar_t w[1024]; AnsiToWide(n, w, 1024); TryHookGameToken(w, m); } return m; }
+
+static void HookApi(const wchar_t* mod, const char* name, LPVOID detour, LPVOID* orig)
+{
+    HMODULE m = GetModuleHandleW(mod);
+    if (!m) m = LoadLibraryW(mod);
+    if (!m) { tprintf("[token] %ls not loadable\n", mod); return; }
+    void* tgt = (void*)GetProcAddress(m, name);
+    if (!tgt) { tprintf("[token] %s not found in %ls\n", name, mod); return; }
+    if (MH_CreateHook(tgt, detour, orig) != MH_OK || MH_EnableHook(tgt) != MH_OK)
+        tprintf("[token] FAILED to hook %s\n", name);
+    else
+        tprintf("[token] hooked %s @ %p\n", name, tgt);
+}
+
+// ---- WaitForActivation watch (retail export ordinal 356, RVA 0x21497750) -----------------------
+// Nothing resolves it by NAME (the exe/uplay/dbdata have no "WaitForActivation" string), so it's
+// called by ORDINAL or internally. Hook GetProcAddress to catch who resolves it (ordinal 356 on the
+// game DLL, or by name) and log the caller -> module+offset -- WITHOUT inline-hooking the Denuvo-VM'd
+// function (which could trip an integrity check). If nothing shows, the Denuvo runtime resolves it
+// internally (manual export walk) and we'd need to escalate to a VEH/hardware-bp approach.
+typedef FARPROC (WINAPI* GetProcAddress_t)(HMODULE, LPCSTR);
+static GetProcAddress_t g_GetProcAddress_orig = nullptr;
+
+static void LogActivCaller(void* ra)
+{
+    HMODULE m = nullptr; char nm[MAX_PATH] = "?"; const char* b = nm; unsigned long long off = 0;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)ra, &m) && m)
+    {
+        GetModuleFileNameA(m, nm, MAX_PATH);
+        const char* s = strrchr(nm, '\\'); b = s ? s + 1 : nm;
+        off = (unsigned long long)((uintptr_t)ra - (uintptr_t)m);
+    }
+    tprintf("[activwatch]   caller %p = %s+0x%llX\n", ra, b, off);
+}
+
+static FARPROC WINAPI GetProcAddress_Detour(HMODULE mod, LPCSTR name)
+{
+    FARPROC r = g_GetProcAddress_orig(mod, name);
+    bool byOrd = ((uintptr_t)name >> 16) == 0;
+    unsigned ord = (unsigned)((uintptr_t)name & 0xFFFF);
+    bool nameTarget = !byOrd && name && _stricmp(name, "WaitForActivation") == 0;
+    bool ordTarget = false;
+    if (byOrd && ord == 356)
+    {
+        char mn[MAX_PATH] = ""; GetModuleFileNameA(mod, mn, MAX_PATH); _strlwr_s(mn);
+        ordTarget = (strstr(mn, "duniademo") != nullptr); // ordinals are module-specific -> confirm it's the game DLL
+    }
+    if (nameTarget || ordTarget)
+    {
+        void* ra = _ReturnAddress();
+        char mn[MAX_PATH] = "?"; GetModuleFileNameA(mod, mn, MAX_PATH);
+        tprintf("[activwatch] GetProcAddress(%s) on %s -> %p (tid %lu)\n",
+            byOrd ? "ordinal 356" : "\"WaitForActivation\"", mn, (void*)r, GetCurrentThreadId());
+        LogActivCaller(ra);
+        fflush(stdout);
+    }
+    return r;
+}
+
+static bool g_earlyHooksDone = false;
+
+static void InstallTokenCapture()
+{
+    HookApi(L"kernel32.dll", "LoadLibraryW",   &LL_W_Detour,   reinterpret_cast<LPVOID*>(&g_LL_W));
+    HookApi(L"kernel32.dll", "LoadLibraryExW", &LL_ExW_Detour, reinterpret_cast<LPVOID*>(&g_LL_ExW));
+    HookApi(L"kernel32.dll", "LoadLibraryA",   &LL_A_Detour,   reinterpret_cast<LPVOID*>(&g_LL_A));
+    HookApi(L"kernel32.dll", "LoadLibraryExA", &LL_ExA_Detour, reinterpret_cast<LPVOID*>(&g_LL_ExA));
+    HookApi(L"kernel32.dll", "GetProcAddress", &GetProcAddress_Detour, reinterpret_cast<LPVOID*>(&g_GetProcAddress_orig));
+    if (HMODULE m = GetModuleHandleW(L"dbdata.dll")) TryHookGameToken(L"dbdata.dll", m); // in case it's already up
+    tprintf("[token] token capture + activation watch installed (dbdata hooked=%d)\n", (int)g_tokenHooked);
+}
+
+// Called SYNCHRONOUSLY from dinput8's DllMain (Main::Initialize), BEFORE the CreateThread'd
+// MainThread -- so the LoadLibrary/GetProcAddress/getGameTokenInterface hooks are in place before
+// RunGame's early token+activation flow runs. A spawned thread can't do this: it's blocked until the
+// loader lock releases, by which point RunGame has already called getGameTokenInterface (missed).
+void Misc::InstallEarlyHooks()
+{
+    if (g_earlyHooksDone) return;
+    g_earlyHooksDone = true;
+    MH_Initialize();
+    InstallTokenCapture();
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -376,6 +680,9 @@ void Misc::Initialize()
     //readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones.txt");
     MH_Initialize();
     printf("MH initialized!\n");
+
+    // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
+    // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).
 
     //HookOffset3(0x788AC40 + 0xA00, &HandleBeta_Detour, reinterpret_cast<LPVOID*>(&HandleBeta));
     //HookOffset3(0x7868150 + 0xA00, &GetGameURL_Detour, reinterpret_cast<LPVOID*>(&GetGameURL));
