@@ -713,6 +713,18 @@ static int __cdecl initterm_e_Detour(PIFV* first, PIFV* last)
     return 0;
 }
 
+// atexit hook. atexit is a real module-local library function (retail RVA 0x9372F90): atexit(fn) -> onexit(fn)
+// -> crt_atexit / register_onexit_function. Hooking atexit itself (by RVA) logs every registered destructor
+// (fn) directly -- regardless of the onexit branch or Denuvo import thunking -- then forwards to the original.
+typedef int (__cdecl *atexit_t)(PVFV);
+static atexit_t g_atexit_orig = nullptr;
+static int g_atexitCount = 0;
+static int __cdecl atexit_Detour(PVFV func)
+{
+    LogInit("atexit", (void*)func, g_atexitCount++);
+    return g_atexit_orig ? g_atexit_orig(func) : 0;
+}
+
 static void InstallInitTermLogger()
 {
     HMODULE crt = GetModuleHandleW(L"ucrtbase.dll");
@@ -724,6 +736,14 @@ static void InstallInitTermLogger()
     if (void* p = (void*)GetProcAddress(crt, "_initterm_e"))
         if (MH_CreateHook(p, &initterm_e_Detour, reinterpret_cast<LPVOID*>(&g_initterm_e_orig)) == MH_OK && MH_EnableHook(p) == MH_OK)
             tprintf("[init] hooked _initterm_e @ %p\n", p);
+    if (uintptr_t base = (uintptr_t)GetModuleHandleW(L"DuniaDemo_clang_64_dx11.dll"))
+    {
+        void* ax = (void*)(base + 0x9372F90); // atexit (module-local library fn)
+        if (MH_CreateHook(ax, &atexit_Detour, reinterpret_cast<LPVOID*>(&g_atexit_orig)) == MH_OK && MH_EnableHook(ax) == MH_OK)
+            tprintf("[atexit] hooked atexit @ %p\n", ax);
+    }
+    else
+        tprintf("[atexit] DuniaDemo_clang_64_dx11.dll not resolvable yet -- atexit hook skipped\n");
     fflush(stdout);
 }
 
