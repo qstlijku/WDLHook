@@ -58,12 +58,12 @@ typedef int(__cdecl* RunGame_t)(HINSTANCE hInstance, const char* lpCmdLine, unsi
 // Kept OFF by default so it can never run against wrong offsets.
 // OFF for the offline-emu test: the emu is exercised only by the FULL engine boot (real RunGame calls
 // getGameTokenInterface). MyRunGame is just the parsers+splash experiment and never reaches the token.
-static const bool kUseCustomRunGame = false; // real RunGame (drives uplay/token); MyRunGame never reaches them
+static const bool kUseCustomRunGame = true;
 // Load mode. true = DONT_RESOLVE + hand-rolled ManualInitDll (the manual-load experiment; faults in the
 // Denuvo-walled ctors, never reaches RunGame/uplay). false = a NORMAL load (imports resolved, DllMain +
 // Denuvo bootstrap run) so RunGame drives the real uplay flow -- REQUIRED to exercise the uplay_r264
 // relaunch patch + token emu. Set false (and kUseCustomRunGame false) to test the offline path.
-static const bool kManualLoad = false;
+static const bool kManualLoad = true;
 
 static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
 {
@@ -292,7 +292,7 @@ static const bool kCaptureMode   = false;
 // crash). Built from the DE_Hook capture (wdl_token_slot4.bin + the object dump). This REPLACES the
 // uplay_aux patches, which crashed forcing the init path with no real token. Kept as its own flag so we
 // can fall back to patches if the emu is bypassed.
-static const bool kEmulateToken  = true;
+static const bool kEmulateToken  = false;
 static const bool kPatchUplayAux = false; // not needed in emu mode (we skip _orig, so the gate never runs)
 
 // ---- Relaunch catcher -------------------------------------------------------
