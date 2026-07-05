@@ -8,6 +8,9 @@ EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "dinput8", "dinput8\dinput8.vcxproj", "{699782B0-9067-4EAC-987F-B1710DF72E4F}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WDLLauncher", "WDLLauncher\WDLLauncher.vcxproj", "{C7D9E2F4-6B8A-4C1E-9D3F-4A5B6C7D8E9F}"
+	ProjectSection(ProjectDependencies) = postProject
+		{6CAA5D65-AF03-4033-8784-6E7E259AA8F5} = {6CAA5D65-AF03-4033-8784-6E7E259AA8F5}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
