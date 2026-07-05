@@ -58,7 +58,12 @@ typedef int(__cdecl* RunGame_t)(HINSTANCE hInstance, const char* lpCmdLine, unsi
 // Kept OFF by default so it can never run against wrong offsets.
 // OFF for the offline-emu test: the emu is exercised only by the FULL engine boot (real RunGame calls
 // getGameTokenInterface). MyRunGame is just the parsers+splash experiment and never reaches the token.
-static const bool kUseCustomRunGame = true;
+static const bool kUseCustomRunGame = false; // real RunGame (drives uplay/token); MyRunGame never reaches them
+// Load mode. true = DONT_RESOLVE + hand-rolled ManualInitDll (the manual-load experiment; faults in the
+// Denuvo-walled ctors, never reaches RunGame/uplay). false = a NORMAL load (imports resolved, DllMain +
+// Denuvo bootstrap run) so RunGame drives the real uplay flow -- REQUIRED to exercise the uplay_r264
+// relaunch patch + token emu. Set false (and kUseCustomRunGame false) to test the offline path.
+static const bool kManualLoad = false;
 
 static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
 {
@@ -281,13 +286,13 @@ static void InstallKillLogger()
 // we were in _orig, no object built). Capture now lives in WDLHook (the dinput8-injected DLL), which
 // runs inside the real Connect-launched game where the gate passes. So keep kCaptureMode=false here;
 // the launcher is the OFFLINE path (patches, and eventually the emu built from WDLHook's capture).
-static const bool kCaptureMode   = true;
+static const bool kCaptureMode   = false;
 // OFFLINE EMU: hook getGameTokenInterface and return OUR emulated IGameTokenInterface WITHOUT calling
 // _orig -- so the gate that lives inside _orig never runs (no relaunch, no terminate, no +0x20FD9
 // crash). Built from the DE_Hook capture (wdl_token_slot4.bin + the object dump). This REPLACES the
 // uplay_aux patches, which crashed forcing the init path with no real token. Kept as its own flag so we
 // can fall back to patches if the emu is bypassed.
-static const bool kEmulateToken  = false;
+static const bool kEmulateToken  = true;
 static const bool kPatchUplayAux = false; // not needed in emu mode (we skip _orig, so the gate never runs)
 
 // ---- Relaunch catcher -------------------------------------------------------
@@ -301,6 +306,18 @@ static const bool kBlockRelaunch = false;
 static const unsigned char kRelaunchSig[] = { 0x84,0xDB, 0x74,0x07, 0x32,0xDB, 0xE9,0x81,0x00,0x00,0x00 };
 static const size_t        kRelaunchJeOff = 2; // the `74 07` within the signature
 static const unsigned char kGateSig[]     = { 0x85,0xC0, 0x74,0x1E, 0x83,0xF8,0x02, 0x75,0x11, 0xFF,0x15 };
+
+// ---- uplay_r264.dll relaunch-gate patch (the Connect-launched check) ---------
+// uplay_r264!sub_18004C230 decides whether to relaunch through Ubisoft Connect: it tests bit 2 of its
+// r9 flags ("already launched by Connect / -upc_exe_path present"). Set -> `jne 0x4C532` SKIPS the
+// relaunch and proceeds in-process; clear -> it spawns UbisoftGameLauncher.exe -upc_exe_path=<us> (via
+// sub_4C000) and RunGame bails with 0x80000000. We force bit 2 by turning `test r9b,4` into `or r9b,4`
+// (same 4 bytes -> ZF=0 -> jne always taken; leaves the jump/rel32 intact). IN-MEMORY ONLY: uplay_r264
+// is Ubisoft-signed (VerifyEmbeddedSignature hard-kills a modified file on disk). Pair with kEmulateToken
+// for the downstream token gate. Patch site 0x4C28F: `41 F6 C1 04 0F 85 ..` -> `41 80 C9 04`.
+static const bool kPatchUplayR2Relaunch = true;
+static const unsigned char kR2RelaunchSig[]  = { 0x41,0xF6,0xC1,0x04, 0x0F,0x85 }; // test r9b,4 ; jne
+static const unsigned char kR2RelaunchRepl[] = { 0x41,0x80,0xC9,0x04 };            // or r9b,4
 
 static bool FindText(HMODULE mod, uint8_t** textBase, size_t* textSize)
 {
@@ -358,6 +375,19 @@ static void TryPatchUplayAux(LPCWSTR name, HMODULE mod)
     static const unsigned char xor2[] = { 0x31, 0xC0 };
     PatchAob(mod, kRelaunchSig, sizeof(kRelaunchSig), kRelaunchJeOff, nop2, 2, "relaunch-je");
     PatchAob(mod, kGateSig,     sizeof(kGateSig),     0,              xor2, 2, "gate");
+    fflush(stdout);
+}
+
+static void TryPatchUplayR2(LPCWSTR name, HMODULE mod)
+{
+    if (!name || !mod || !kPatchUplayR2Relaunch) return;
+    wchar_t low[1024]; low[0] = 0;
+    wcsncpy_s(low, _countof(low), name, _TRUNCATE);
+    _wcslwr_s(low, _countof(low));
+    if (!wcsstr(low, L"uplay_r264.dll")) return;
+    tprintf("[patch] uplay_r264.dll loaded (%ls) -> force skip-relaunch (test r9b,4 -> or r9b,4 @ 0x4C28F) (tid %lu)\n",
+            name, GetCurrentThreadId());
+    PatchAob(mod, kR2RelaunchSig, sizeof(kR2RelaunchSig), 0, kR2RelaunchRepl, sizeof(kR2RelaunchRepl), "r2-relaunch");
     fflush(stdout);
 }
 
@@ -661,7 +691,7 @@ static const DWORD kDataOnly = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFI
 
 static void AnsiToWide(LPCSTR a, wchar_t* out, int n) { out[0] = 0; if (a) MultiByteToWideChar(CP_ACP, 0, a, -1, out, n); }
 
-static void OnDllLoaded(LPCWSTR name, HMODULE m) { TryPatchUplayAux(name, m); TryHookGameToken(name, m); }
+static void OnDllLoaded(LPCWSTR name, HMODULE m) { TryPatchUplayAux(name, m); TryPatchUplayR2(name, m); TryHookGameToken(name, m); }
 
 static HMODULE WINAPI LL_W_Detour(LPCWSTR n)                       { HMODULE m = g_LL_W(n);         if (m) OnDllLoaded(n, m); return m; }
 static HMODULE WINAPI LL_ExW_Detour(LPCWSTR n, HANDLE f, DWORD fl) { HMODULE m = g_LL_ExW(n, f, fl); if (m && !(fl & kDataOnly)) OnDllLoaded(n, m); return m; }
@@ -733,8 +763,8 @@ static BOOL WINAPI ShellExecuteExW_Detour(SHELLEXECUTEINFOW* p)
 
 static void InstallUplayAuxDefense()
 {
-    // Needed in all modes: emu/capture hook dbdata's getGameTokenInterface on load; patch mode patches uplay_aux.
-    if (!kPatchUplayAux && !kCaptureMode && !kEmulateToken) return;
+    // Needed in all modes: emu/capture hook dbdata's getGameTokenInterface on load; patch mode patches uplay_aux/uplay_r264.
+    if (!kPatchUplayAux && !kCaptureMode && !kEmulateToken && !kPatchUplayR2Relaunch) return;
     MH_Initialize();
     HookApi(L"kernel32.dll", "LoadLibraryW",   &LL_W_Detour,   reinterpret_cast<LPVOID*>(&g_LL_W));
     HookApi(L"kernel32.dll", "LoadLibraryExW", &LL_ExW_Detour, reinterpret_cast<LPVOID*>(&g_LL_ExW));
@@ -744,6 +774,7 @@ static void InstallUplayAuxDefense()
     HookApi(L"shell32.dll",  "ShellExecuteExW", &ShellExecuteExW_Detour, reinterpret_cast<LPVOID*>(&g_ShellExecuteExW_orig));
     // In case they're already mapped (shouldn't be this early, but harmless).
     if (HMODULE m = GetModuleHandleW(L"uplay_aux_r164.dll")) TryPatchUplayAux(L"uplay_aux_r164.dll", m);
+    if (HMODULE m = GetModuleHandleW(L"uplay_r264.dll"))     TryPatchUplayR2(L"uplay_r264.dll", m);
     if (HMODULE m = GetModuleHandleW(L"dbdata.dll"))         TryHookGameToken(L"dbdata.dll", m);
     tprintf("[uplay] uplay_aux/token defense installed (emu=%d, capture=%d, patch=%d)\n", (int)kEmulateToken, (int)kCaptureMode, (int)kPatchUplayAux);
     fflush(stdout);
@@ -1079,8 +1110,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     PathRemoveFileSpecW(path);
     PathAppendW(path, kRendererDll);
-    //HMODULE dll = LoadLibraryW(path);
-    HMODULE dll = LoadLibraryExW(path, NULL, DONT_RESOLVE_DLL_REFERENCES);
+    HMODULE dll = kManualLoad ? LoadLibraryExW(path, NULL, DONT_RESOLVE_DLL_REFERENCES)
+                              : LoadLibraryW(path);
     if (!dll)
     {
         wchar_t msg[300];
@@ -1089,8 +1120,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
         return static_cast<int>(0x80000000);
     }
 
-    // DONT_RESOLVE mapped it dead -- do the init ourselves (ported from E3; retail = first attempt).
-    if (!ManualInitDll(dll))
+    // Manual-load path only: DONT_RESOLVE mapped it dead, so hand-roll the init ourselves. Normal load
+    // resolves imports + runs DllMain/Denuvo bootstrap on its own, so skip ManualInitDll there.
+    if (kManualLoad && !ManualInitDll(dll))
     {
         tprintf("[WDLLauncher] ManualInitDll FAILED -- aborting\n"); fflush(stdout);
         TerminateProcess(GetCurrentProcess(), 2); return 2;
