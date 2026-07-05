@@ -778,6 +778,14 @@ static const uintptr_t kRetailXiaRva = 0xA973168; // __xi_a
 static const uintptr_t kRetailXizRva = 0xA973178; // __xi_z
 static const uintptr_t kRetailXcaRva = 0xA968108; // __xc_a
 static const uintptr_t kRetailXczRva = 0xA973138; // __xc_z
+// The real __xi[0] (sub_189372834 = __scrt_initialize_thread_safe_statics) faults: its extern calls route
+// through inert Denuvo .trace thunks. kUseHandRolledTss replaces it with our own version (below) using the
+// launcher's OWN imports, writing straight into the game's Tss_* globals -- bypassing the import wall for
+// that step. kRetailRunOnexitInit runs the onexit-table init (now ALSO hand-rolled/Denuvo-free, see
+// initialize_onexit_tables) -- needed so the first ctor's atexit registration has a valid table; flip OFF
+// only to isolate how far the ctor pass gets without it.
+static const bool kUseHandRolledTss    = true;
+static const bool kRetailRunOnexitInit = true;
 
 static void* ML_FindLdrEntry(HMODULE mod)
 {
@@ -851,12 +859,109 @@ static bool ML_FindCtorArray(uintptr_t base, uintptr_t& xca, uintptr_t& xcz)
     xca = bA; xcz = bZ; return true;
 }
 
+// Inverse of the game's __crt_fast_decode_pointer: encode a raw pointer with the GAME DLL's _security_cookie
+// (read live, NOT the launcher's own cookie) so the engine's magic-static code decodes it back correctly.
+// enc = ROL(ptr, cookie & 0x3F) ^ cookie. Same as WDLE3Launcher's EncodeTssPtr / DE_Hook's DecodeTssPtr.
+static unsigned long long EncodeTssPtr(unsigned long long ptr, unsigned long long cookie)
+{
+    unsigned c = (unsigned)(cookie & 0x3F);
+    unsigned long long rol;
+    if (c == 0)
+        rol = ptr;
+    else
+        rol = (ptr << c) | (ptr >> (64 - c));
+    return rol ^ cookie;
+}
+
+// Hand-rolled retail _scrt_initialize_onexit_tables (sub_1893731B0). Startup takes the "encode empty tables"
+// branch: direct global writes, NO imports -> Denuvo-free (the game's version routes _initialize_onexit_table
+// through a .trace thunk, but only on the exception-unwind branch we never hit). Sentinel = ~_security_cookie.
+// Retail .code RVAs: guard 0xB5685A1, atexit table 0xB5685A8, at_quick_exit table 0xB5685C0; cookie 0xB24C678.
+static void initialize_onexit_tables(uintptr_t base)
+{
+    unsigned char* guard = (unsigned char*)(base + 0xB5685A1);
+    if (*guard)
+        return;
+    unsigned long long cookie = *(unsigned long long*)(base + 0xB24C678);
+    unsigned long long sentinel = ~cookie;
+    unsigned long long* atexit_table        = (unsigned long long*)(base + 0xB5685A8);
+    unsigned long long* at_quick_exit_table = (unsigned long long*)(base + 0xB5685C0);
+    atexit_table[0] = sentinel;        // _first
+    atexit_table[1] = sentinel;        // _last
+    atexit_table[2] = sentinel;        // _end
+    at_quick_exit_table[0] = sentinel; // _first
+    at_quick_exit_table[1] = sentinel; // _last
+    at_quick_exit_table[2] = sentinel; // _end
+    *guard = 1;
+}
+
+// Retail __scrt_initialize_thread_safe_statics (sub_189372834), hand-rolled with the LAUNCHER'S imports so
+// it dodges Denuvo's inert .trace import thunks. Writes the game's Tss_* globals (retail RVAs from the
+// disasm). See kUseHandRolledTss / kRetailRunOnexitInit above.
+static void initialize_thread_safe_statics()
+{
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    if (!base) { tprintf("[tss] renderer DLL not loaded\n"); return; }
+    unsigned long long game_cookie = *(unsigned long long*)(base + 0xB24C678);
+    tprintf("[tss] game _security_cookie = 0x%llX\n", game_cookie);
+    fflush(stdout);
+
+    LPCRITICAL_SECTION g_tss_mutex = (LPCRITICAL_SECTION)(base + 0xB568540);
+    CONDITION_VARIABLE* tss_cv = (CONDITION_VARIABLE*)(base + 0xB568568);
+    InitializeCriticalSectionAndSpinCount(g_tss_mutex, 4000);
+
+    HMODULE kernel_dll = GetModuleHandleW(L"api-ms-win-core-synch-l1-2-0.dll");
+    if (!kernel_dll)
+        kernel_dll = GetModuleHandleW(L"kernel32.dll");
+    if (!kernel_dll) { tprintf("[tss] ERROR: kernel_dll null\n"); return; }
+
+    auto initialize_condition_variable = (void (WINAPI*)(PCONDITION_VARIABLE))GetProcAddress(kernel_dll, "InitializeConditionVariable");
+    FARPROC sleep_condition_variable_cs = GetProcAddress(kernel_dll, "SleepConditionVariableCS");
+    FARPROC wake_all_condition_variable = GetProcAddress(kernel_dll, "WakeAllConditionVariable");
+
+    unsigned long long* encoded_sleep = (unsigned long long*)(base + 0xB568578);
+    unsigned long long* encoded_wake  = (unsigned long long*)(base + 0xB568580);
+
+    if (initialize_condition_variable && sleep_condition_variable_cs && wake_all_condition_variable)
+    {
+        *(HANDLE*)(base + 0xB568570) = NULL; // Tss_event = 0 (fast path)
+        initialize_condition_variable(tss_cv);
+        *encoded_sleep = EncodeTssPtr((unsigned long long)sleep_condition_variable_cs, game_cookie);
+        *encoded_wake  = EncodeTssPtr((unsigned long long)wake_all_condition_variable, game_cookie);
+        tprintf("[tss] condvar path: encoded sleep=0x%llX wake=0x%llX\n", *encoded_sleep, *encoded_wake);
+        fflush(stdout);
+    }
+    else
+    {
+        tprintf("[tss] ERROR: sleep/wake condvar null\n");
+        fflush(stdout);
+    }
+
+    // Onexit-table init -- now hand-rolled (initialize_onexit_tables below), so it's Denuvo-free like the
+    // rest of this function. The game's own sub_1893731B0 would route _initialize_onexit_table through a
+    // .trace thunk, but the startup path never calls it (encode-empty branch = direct writes only).
+    if (kRetailRunOnexitInit)
+    {
+        tprintf("[tss] initialize_onexit_tables (hand-rolled, Denuvo-free) ...\n");
+        fflush(stdout);
+        initialize_onexit_tables(base);
+        tprintf("[tss] onexit init done\n");
+        fflush(stdout);
+    }
+}
+
 static void ML_RunInitTerms(uintptr_t xca, uintptr_t xcz, uintptr_t xia, uintptr_t xiz)
 {
     HMODULE ucrt = GetModuleHandleW(L"ucrtbase.dll");
     auto p_e = ucrt ? (int  (__cdecl*)(void*, void*))GetProcAddress(ucrt, "_initterm_e") : nullptr;
     auto p_c = ucrt ? (void (__cdecl*)(void*, void*))GetProcAddress(ucrt, "_initterm")   : nullptr;
-    if (xia && xiz && p_e)
+    if (kUseHandRolledTss)
+    {
+        tprintf("[ml] __xi via hand-rolled initialize_thread_safe_statics (bypasses Denuvo import thunks) ...\n");
+        fflush(stdout);
+        initialize_thread_safe_statics();
+    }
+    else if (xia && xiz && p_e)
     {
         tprintf("[ml] _initterm_e(__xi) ...\n");
         fflush(stdout);
