@@ -817,6 +817,10 @@ static const uintptr_t kRetailXczRva = 0xA973138; // __xc_z
 // only to isolate how far the ctor pass gets without it.
 static const bool kUseHandRolledTss    = true;
 static const bool kRetailRunOnexitInit = true;
+// Spot-check: instead of the full __xc pass, bind the Denuvo private-import .trace slots (write the real
+// API addresses) and manually CALL just the g_cmdParams ctor (RVA 0x7173A0) under SEH -- proves whether
+// binding the thunks lets an engine ctor actually run under manual load (Denuvo dormant, free debugger).
+static const bool kSpotCheckCmdCtor = true;
 
 static void* ML_FindLdrEntry(HMODULE mod)
 {
@@ -1010,6 +1014,104 @@ static void ML_RunInitTerms(uintptr_t xca, uintptr_t xcz, uintptr_t xia, uintptr
     }
 }
 
+// ---- Denuvo private-import binder + single-ctor spot-check (manual-load only) ------------------------
+// Resolve a Windows API by name across the common exporting DLLs (the .trace hint-name records don't say
+// which DLL, so we try them in order).
+static FARPROC ResolveApi(const char* name)
+{
+    static const wchar_t* kDlls[] = {
+        L"kernel32.dll", L"kernelbase.dll", L"user32.dll", L"gdi32.dll", L"advapi32.dll",
+        L"ole32.dll", L"oleaut32.dll", L"shell32.dll", L"shlwapi.dll", L"ws2_32.dll",
+        L"dbghelp.dll", L"version.dll", L"psapi.dll", L"winmm.dll", L"ntdll.dll",
+        L"ucrtbase.dll", L"api-ms-win-crt-runtime-l1-1-0.dll",   // _crt_atexit etc.
+    };
+    for (auto d : kDlls)
+    {
+        HMODULE m = GetModuleHandleW(d);
+        if (!m) m = LoadLibraryW(d);
+        if (!m) continue;
+        FARPROC p = GetProcAddress(m, name);
+        if (p) return p;
+    }
+    return nullptr;
+}
+
+// Walk the Denuvo private-import table in .trace and BIND each unbound slot (a bare-RVA pointing to an
+// IMAGE_IMPORT_BY_NAME record in the 0xA97D000..0xA980000 cluster) to the real API address -- i.e. do what
+// Denuvo's bootstrap normally does, so `call qword [slot]` reaches the API instead of faulting.
+// A slot value must point (as an RVA) into .trace at a plausible IMAGE_IMPORT_BY_NAME (hint + C-ident name).
+static bool ValidImportName(const char* s, uintptr_t lo, uintptr_t hi)
+{
+    if ((uintptr_t)s < lo || (uintptr_t)s + 4 >= hi) return false;
+    char c = s[0];
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')) return false;
+    for (int i = 1; i < 80; ++i)
+    {
+        char d = s[i];
+        if (d == 0) return i >= 3;   // >= 4 chars
+        if (!((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z') || (d >= '0' && d <= '9') || d == '_')) return false;
+    }
+    return false;
+}
+static int BindDenuvoImports(uintptr_t base)
+{
+    auto nt = (PIMAGE_NT_HEADERS)(base + ((PIMAGE_DOS_HEADER)base)->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    uintptr_t trBeg = 0, trEnd = 0;
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+        if (memcmp(sec[i].Name, ".trace", 6) == 0)
+        { trBeg = base + sec[i].VirtualAddress; trEnd = trBeg + sec[i].Misc.VirtualSize; }
+    if (!trBeg) { tprintf("[spot] .trace not found\n"); return 0; }
+    uintptr_t rvaLo = trBeg - base, rvaHi = trEnd - base;
+    DWORD oldProt = 0;
+    VirtualProtect((LPVOID)trBeg, trEnd - trBeg, PAGE_EXECUTE_READWRITE, &oldProt);
+    int bound = 0, tried = 0;
+    for (uintptr_t p = trBeg; p + 8 <= trEnd; p += 8)
+    {
+        uintptr_t v = *(uintptr_t*)p;                       // slot value = bare RVA into .trace
+        if (v < rvaLo || v >= rvaHi) continue;
+        const char* name = (const char*)(base + v + 2);     // skip the 2-byte hint
+        if (!ValidImportName(name, trBeg, trEnd)) continue;
+        ++tried;
+        FARPROC api = ResolveApi(name);
+        if (api) { *(uintptr_t*)p = (uintptr_t)api; ++bound; }
+    }
+    VirtualProtect((LPVOID)trBeg, trEnd - trBeg, oldProt, &oldProt);
+    tprintf("[spot] Denuvo import slots: %d bound / %d candidates\n", bound, tried); fflush(stdout);
+    return bound;
+}
+
+// Manually invoke the g_cmdParams ctor (RVA 0x7173A0) under SEH and dump the resulting object.
+static void SpotCallCmdCtor(uintptr_t base)
+{
+    void (*ctor)() = (void(*)())(base + 0x7173A0);
+    tprintf("[spot] calling g_cmdParams ctor @ %p ...\n", (void*)ctor); fflush(stdout);
+    DWORD code = 0; void* addr = nullptr;
+    __try
+    {
+        ctor();
+        tprintf("[spot] ctor RETURNED cleanly (no fault)\n");
+    }
+    __except (code = GetExceptionCode(),
+              addr = GetExceptionInformation()->ExceptionRecord->ExceptionAddress,
+              EXCEPTION_EXECUTE_HANDLER)
+    {
+        uintptr_t a = (uintptr_t)addr;
+        if (a >= base && a - base < 0x30000000)
+            tprintf("[spot] ctor FAULTED: 0x%lX at DuniaDemo+0x%llX\n", code, (unsigned long long)(a - base));
+        else
+            tprintf("[spot] ctor FAULTED: 0x%lX at %p (low addr = still-unbound Denuvo thunk)\n", code, addr);
+    }
+    fflush(stdout);
+    // dump g_cmdParams: byte flag at 0xB3055F0, std::string at 0xB3055F8
+    unsigned char flag = *(unsigned char*)(base + 0xB3055F0);
+    unsigned char* str = (unsigned char*)(base + 0xB3055F8);
+    tprintf("[spot] g_cmdParams: byte[0xB3055F0]=%u  std::string@0xB3055F8 first 24 bytes: ", flag);
+    for (int i = 0; i < 24; ++i) tprintf("%02X ", str[i]);
+    tprintf("\n"); fflush(stdout);
+}
+// ------------------------------------------------------------------------------------------------------
+
 static bool ManualInitDll(HMODULE mod)
 {
     uintptr_t base = (uintptr_t)mod;
@@ -1075,7 +1177,16 @@ static bool ManualInitDll(HMODULE mod)
     }
     else
         tprintf("[ml] __xc array NOT found by scan\n");
-    ML_RunInitTerms(xca, xcz, xia, xiz);
+    if (kSpotCheckCmdCtor)
+    {
+        tprintf("[spot] === g_cmdParams ctor spot-check: __xi + bind .trace imports + call 0x7173A0 ===\n");
+        fflush(stdout);
+        initialize_thread_safe_statics();   // __xi (tss + onexit) so the ctor's magic-statics/atexit work
+        BindDenuvoImports(base);            // bind the private IAT so its imports resolve
+        SpotCallCmdCtor(base);              // manually call the ctor + dump the result
+    }
+    else
+        ML_RunInitTerms(xca, xcz, xia, xiz);
     tprintf("[ml] manual init complete\n"); fflush(stdout);
     return true;
 }

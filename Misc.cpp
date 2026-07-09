@@ -8,6 +8,8 @@
 #include <string>
 #include <list>
 #include <unordered_map>
+#include <utility>
+#include <cstdlib>
 
 using namespace std;
 
@@ -682,17 +684,31 @@ static void LogInit(const char* tag, void* fn, int idx)
     tprintf("[init] %s[%d] %p = %s+0x%llX\n", tag, idx, fn, b, off);
 }
 
+// Run a ctor under SEH so an access violation is caught + skipped instead of killing the whole pass.
+// Only AVs are swallowed; anything else (breakpoints, etc.) propagates.
+static bool CallGuarded(PVFV fn)
+{
+    __try { fn(); return true; }
+    __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return false; }
+}
+
 static void __cdecl initterm_Detour(PVFV* first, PVFV* last)
 {
     int batch = g_initBatch++;
     tprintf("[init] === _initterm (C++ .CRT$XC) batch %d: %lld entries ===\n", batch, (long long)(last - first));
-    int i = 0;
-    for (PVFV* p = first; p < last; ++p, ++i)
+    int i = 0, failed = 0;
+    for (PVFV* p = first + 2; p < last; ++p, ++i)
+    {
+        if (i >= 4857) continue;
         if (*p) {
             LogInit("XC", (void*)*p, i);
-            (*p)();
+            if (!CallGuarded(*p)) {
+                ++failed;
+                tprintf("[init] XC[%d] FAULTED (access violation) @ %p -- skipped\n", i, (void*)*p);
+            }
         }
-    tprintf("[init] === _initterm batch %d done ===\n", batch);
+    }
+    tprintf("[init] === _initterm batch %d done: %d faulted ===\n", batch, failed);
 }
 
 static int __cdecl initterm_e_Detour(PIFV* first, PIFV* last)
@@ -722,7 +738,8 @@ static int g_atexitCount = 0;
 static int __cdecl atexit_Detour(PVFV func)
 {
     LogInit("atexit", (void*)func, g_atexitCount++);
-    return g_atexit_orig ? g_atexit_orig(func) : 0;
+    return 0;
+    //return g_atexit_orig ? g_atexit_orig(func) : 0;
 }
 
 static void InstallInitTermLogger()
@@ -760,6 +777,108 @@ void Misc::InstallEarlyHooks()
     InstallInitTermLogger(); // ported from E3_Hook: brackets each ctor so a manual-load crash pinpoints it
 }
 
+// ===================================================================================================
+// Batch engine-function hooker (ported from E3_Hook). Install a generic "log-first-call + forward" hook
+// on a LIST of offsets (hooklist.txt, one hex file-offset per line, '#' comments ok) instead of
+// hand-writing a detour per function. Compile-time template-thunk pool: HookThunk<N> is a distinct
+// MinHook detour that logs then forwards through the Nth trampoline. Fixed signature (4 int/ptr args,
+// int/ptr return) -- correct for ctors + typical __fastcall(this, ...) engine funcs; float-arg /
+// >4-stack-arg / float-return functions forward WRONG. Retail uses the same file_offset + 0xA00
+// convention (the .rdata engine-code section has a 0xA00 RVA-file delta).
+static const int  kMaxBatchHooks = 1024;
+static const bool kBatchVerbose  = false;   // false = log each hook's FIRST call only; true = every call
+
+typedef __int64(__fastcall* BatchFn_t)(void*, void*, void*, void*);
+static BatchFn_t g_batchThunks[kMaxBatchHooks] = {};
+static BatchFn_t g_batchOrig[kMaxBatchHooks]   = {};   // MinHook trampolines (call these to forward)
+static unsigned  g_batchOff[kMaxBatchHooks]    = {};   // the file offset per hook (for logging)
+static unsigned  g_batchHits[kMaxBatchHooks]   = {};
+
+static void OnBatchHit(int id)
+{
+    unsigned n = ++g_batchHits[id];
+    if (!kBatchVerbose && n != 1)
+        return;
+    uintptr_t ra = (uintptr_t)_ReturnAddress();
+    if (Imagebase && ra > Imagebase && ra - Imagebase < 0x10000000)
+    {
+        tprintf("[bhook] #%d off=0x%X hit#%u  from off=0x%llX\n",
+                id, g_batchOff[id], n, (unsigned long long)(ra - Imagebase - 0xA00));
+    }
+    else
+    {
+        HMODULE m = nullptr;
+        char nm[MAX_PATH] = "?";
+        const char* b = nm;
+        unsigned long long off = 0;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)ra, &m) && m)
+        {
+            GetModuleFileNameA(m, nm, MAX_PATH);
+            const char* s = strrchr(nm, '\\');
+            b = s ? s + 1 : nm;
+            off = (unsigned long long)(ra - (uintptr_t)m);
+        }
+        tprintf("[bhook] #%d off=0x%X hit#%u  from %s+0x%llX\n", id, g_batchOff[id], n, b, off);
+    }
+    fflush(stdout);
+}
+
+template<int N>
+static __int64 __fastcall HookThunk(void* a, void* b, void* c, void* d)
+{
+    OnBatchHit(N);
+    return g_batchOrig[N] ? g_batchOrig[N](a, b, c, d) : 0;
+}
+
+template<size_t... Is>
+static void FillBatchThunks(std::index_sequence<Is...>)
+{
+    int dummy[] = { 0, (g_batchThunks[Is] = &HookThunk<(int)Is>, 0)... };
+    (void)dummy;
+}
+
+static void BatchHookFromFile(const char* path)
+{
+    if (!Imagebase)
+        Imagebase = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+    if (!Imagebase) { tprintf("[bhook] target DLL not loaded -- aborting\n"); return; }
+    FillBatchThunks(std::make_index_sequence<kMaxBatchHooks>{});
+
+    std::ifstream f(path);
+    if (!f) { tprintf("[bhook] could not open %s\n", path); return; }
+    std::string line;
+    int i = 0, ok = 0;
+    while (std::getline(f, line))
+    {
+        size_t h = line.find('#');
+        if (h != std::string::npos)
+            line.resize(h);
+        size_t a = line.find_first_not_of(" \t\r\n");
+        if (a == std::string::npos)
+            continue;
+        size_t e = line.find_last_not_of(" \t\r\n");
+        unsigned off = (unsigned)strtoul(line.substr(a, e - a + 1).c_str(), nullptr, 16);
+        if (!off)
+            continue;
+        if (i >= kMaxBatchHooks)
+        {
+            tprintf("[bhook] TRUNCATED: more than %d offsets in %s -- rest skipped\n", kMaxBatchHooks, path);
+            break;
+        }
+        void* target = (void*)(Imagebase + off + 0xA00);
+        g_batchOff[i] = off;
+        if (MH_CreateHook(target, (LPVOID)g_batchThunks[i], reinterpret_cast<LPVOID*>(&g_batchOrig[i])) == MH_OK
+            && MH_EnableHook(target) == MH_OK)
+            ++ok;
+        else
+            tprintf("[bhook] hook FAILED @ off 0x%X\n", off);
+        ++i;
+    }
+    tprintf("[bhook] installed %d/%d hooks from %s\n", ok, i, path);
+    fflush(stdout);
+}
+// ===================================================================================================
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -767,6 +886,10 @@ void Misc::Initialize()
     //readLines("C:\\Users\\qstli\\Downloads\\Gibbed.Disrupt-main\\DisruptEditor\\bin\\Debug\\res\\bones.txt");
     MH_Initialize();
     printf("MH initialized!\n");
+
+    // Batch-hook every offset listed in hooklist.txt (log-first-call + forward). Edit the file, no rebuild
+    // needed to change WHICH functions are traced. See BatchHookFromFile above for the format/limits.
+    BatchHookFromFile("C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\hooklist.txt");
 
     // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
     // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).
