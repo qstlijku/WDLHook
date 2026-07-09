@@ -1024,6 +1024,10 @@ static FARPROC ResolveApi(const char* name)
         L"ole32.dll", L"oleaut32.dll", L"shell32.dll", L"shlwapi.dll", L"ws2_32.dll",
         L"dbghelp.dll", L"version.dll", L"psapi.dll", L"winmm.dll", L"ntdll.dll",
         L"ucrtbase.dll", L"api-ms-win-crt-runtime-l1-1-0.dll",   // _crt_atexit etc.
+        L"msvcp140.dll", L"vcruntime140.dll",                    // STL (iostream/locale/codecvt) + C++ RT
+        L"bcrypt.dll", L"ncrypt.dll", L"crypt32.dll", L"wintrust.dll",   // crypto / cert / signature
+        L"iphlpapi.dll", L"rpcrt4.dll", L"imm32.dll", L"setupapi.dll",   // net / rpc / IME / device enum
+        L"d3d11.dll", L"dxgi.dll", L"d3dcompiler_47.dll", L"dinput8.dll", L"xinput1_4.dll",  // graphics / input
     };
     for (auto d : kDlls)
     {
@@ -1037,19 +1041,23 @@ static FARPROC ResolveApi(const char* name)
 }
 
 // Walk the Denuvo private-import table in .trace and BIND each unbound slot (a bare-RVA pointing to an
-// IMAGE_IMPORT_BY_NAME record in the 0xA97D000..0xA980000 cluster) to the real API address -- i.e. do what
-// Denuvo's bootstrap normally does, so `call qword [slot]` reaches the API instead of faulting.
-// A slot value must point (as an RVA) into .trace at a plausible IMAGE_IMPORT_BY_NAME (hint + C-ident name).
+// IMAGE_IMPORT_BY_NAME record anywhere in .trace) to the real API address -- i.e. do what Denuvo's
+// bootstrap normally does, so `call qword [slot]` reaches the API instead of faulting.
+// A slot value must point (as an RVA) into .trace at a plausible IMAGE_IMPORT_BY_NAME: hint + a name that
+// is either a C identifier or an MSVC-mangled C++ symbol (?...). ResolveApi probes the exporting DLLs.
 static bool ValidImportName(const char* s, uintptr_t lo, uintptr_t hi)
 {
-    if ((uintptr_t)s < lo || (uintptr_t)s + 4 >= hi) return false;
+    if ((uintptr_t)s < lo || (uintptr_t)s + 3 >= hi) return false;
     char c = s[0];
-    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')) return false;
-    for (int i = 1; i < 80; ++i)
+    bool mangled = (c == '?');                          // MSVC-decorated C++ name (msvcp140 STL etc.)
+    if (!mangled && !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')) return false;
+    for (int i = 1; i < 512 && (uintptr_t)(s + i) < hi; ++i)
     {
         char d = s[i];
-        if (d == 0) return i >= 3;   // >= 4 chars
-        if (!((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z') || (d >= '0' && d <= '9') || d == '_')) return false;
+        if (d == 0) return i >= 2;   // >= 3 chars (cos/sin/exp)
+        bool ok = (d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z') || (d >= '0' && d <= '9') || d == '_';
+        if (mangled) ok = ok || d == '?' || d == '@' || d == '$';   // decorated-name charset
+        if (!ok) return false;
     }
     return false;
 }
