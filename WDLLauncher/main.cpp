@@ -63,7 +63,7 @@ static const bool kUseCustomRunGame = true;
 // Denuvo-walled ctors, never reaches RunGame/uplay). false = a NORMAL load (imports resolved, DllMain +
 // Denuvo bootstrap run) so RunGame drives the real uplay flow -- REQUIRED to exercise the uplay_r264
 // relaunch patch + token emu. Set false (and kUseCustomRunGame false) to test the offline path.
-static const bool kManualLoad = true;
+static const bool kManualLoad = false;   // false = NORMAL load (Denuvo bootstraps) -- for language capture
 
 static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
 {
@@ -1320,6 +1320,52 @@ static bool ManualInitDll(HMODULE mod)
     return true;
 }
 // ===================================================================================================
+// Language-resolution CAPTURE (for a NORMAL start, kManualLoad=false). Logs what the engine resolves as
+// the install language + the registry read, so we can replicate it under manual load (where it currently
+// bails with "Unable to find language files"). Retail RVAs (from the reg-path string refs):
+//   LoadLanguageFromRegistry = sub_18937C0A0  -- reads SOFTWARE\[Wow6432Node\]Ubisoft\Launcher
+//   GetGameInstallLanguage   = sub_188BB2140  -- registry -> English fallback, returns an ndStringBase
+// ndStringBase<char>*: +0x08 = Data*, then Data+0x0C = the null-terminated char[].
+static const bool kCaptureLanguage = true;
+
+typedef char  (__fastcall* LLFR_t)(void* hive, void* outLang);
+typedef void* (__fastcall* GGIL_t)(void* result, void* a2);
+static LLFR_t g_llfrOrig = nullptr;
+static GGIL_t g_ggilOrig = nullptr;
+
+static const char* NdStrC(void* s)
+{
+    if (!s) return "(null)";
+    void* d = *(void**)((char*)s + 0x08);
+    return d ? (const char*)d + 0x0C : "(empty)";
+}
+static char __fastcall LoadLanguageFromRegistry_Detour(void* hive, void* outLang)
+{
+    char r = g_llfrOrig ? g_llfrOrig(hive, outLang) : 0;
+    tprintf("[cap] LoadLanguageFromRegistry(hive=%p) -> %d  lang=\"%s\"\n",
+            hive, (int)r, r ? NdStrC(outLang) : "-"); fflush(stdout);
+    return r;
+}
+static void* __fastcall GetGameInstallLanguage_Detour(void* result, void* a2)
+{
+    void* r = g_ggilOrig ? g_ggilOrig(result, a2) : nullptr;
+    tprintf("[cap] GetGameInstallLanguage -> \"%s\"\n", NdStrC(result)); fflush(stdout);
+    return r;
+}
+static void InstallLanguageCapture(uintptr_t base)
+{
+    if (!kCaptureLanguage) return;
+    MH_Initialize();   // idempotent if InstallUplayAuxDefense already did it
+    void* llfr = (void*)(base + 0x937C0A0);
+    void* ggil = (void*)(base + 0x8BB2140);
+    if (MH_CreateHook(llfr, &LoadLanguageFromRegistry_Detour, (LPVOID*)&g_llfrOrig) == MH_OK)
+        MH_EnableHook(llfr);
+    if (MH_CreateHook(ggil, &GetGameInstallLanguage_Detour, (LPVOID*)&g_ggilOrig) == MH_OK)
+        MH_EnableHook(ggil);
+    tprintf("[cap] language capture hooks installed (LoadLanguageFromRegistry +0x937C0A0, GetGameInstallLanguage +0x8BB2140)\n");
+    fflush(stdout);
+}
+// ===================================================================================================
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmdLine, int /*nShowCmd*/)
 {
@@ -1367,6 +1413,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
         tprintf("[WDLLauncher] ManualInitDll FAILED -- aborting\n"); fflush(stdout);
         TerminateProcess(GetCurrentProcess(), 2); return 2;
     }
+
+    // Capture the engine's language resolution (normal load: the DLL is fully bound, so these engine
+    // functions run for real). Installed AFTER load, BEFORE RunGame drives them.
+    InstallLanguageCapture((uintptr_t)dll);
 
     int rc;
     if (kUseCustomRunGame)
