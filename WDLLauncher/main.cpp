@@ -96,6 +96,25 @@ static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
     DriverCmdLineInit(g_driverParams, lpCmdLine);
     tprintf("[MyRunGame] <- DriverCmdLineInit returned\n"); fflush(stdout);
 
+    // --- Retail engine boot (mirrors RunGame after the parsers) ---
+    // Init: sub_180002750 builds the game object (NMalloc 0x28, vtable off_189DBE560, +0x10=hInstance,
+    // +0x08=arg4, stores g_gameObj 0xB286DA0) then tail-calls sub_180004980(gameObj, cmdline, arg3) =
+    // InitDuniaEngine. Args (hInstance, cmdline, 1, 0) reproduce RunGame's inline construction exactly.
+    // Run: sub_180002800 = RunDuniaEngine(&relaunch). Commented out until Init is confirmed.
+    typedef int (__fastcall* Init_t)(HINSTANCE hInst, const char* cmd, int a3, int a4);
+    typedef int (__fastcall* Run_t)(void* relaunchOut);
+    auto InitDuniaEngine = (Init_t)(base + 0x2750); // sub_180002750 -> sub_180004980
+    auto RunDuniaEngine  = (Run_t) (base + 0x2800); // sub_180002800
+
+    tprintf("[MyRunGame] -> InitDuniaEngine(hInst, cmd, 1, 0)\n"); fflush(stdout);
+    int initRet = InitDuniaEngine(hInstance, lpCmdLine, 1, 0);
+    tprintf("[MyRunGame] <- InitDuniaEngine returned %d\n", initRet); fflush(stdout);
+
+    //char relaunch = 0;
+    //tprintf("[MyRunGame] -> RunDuniaEngine(&relaunch)\n"); fflush(stdout);
+    //int runRet = RunDuniaEngine(&relaunch);
+    //tprintf("[MyRunGame] <- RunDuniaEngine returned %d (relaunch=%d)\n", runRet, (int)relaunch); fflush(stdout);
+
     std::this_thread::sleep_for(std::chrono::milliseconds(5000));
 
     // Start the splash on its own thread (exactly as RunGame does). It pumps its own message loop,
@@ -1017,7 +1036,7 @@ static void ML_RunInitTerms(uintptr_t xca, uintptr_t xcz, uintptr_t xia, uintptr
 // ---- Denuvo private-import binder + single-ctor spot-check (manual-load only) ------------------------
 // Resolve a Windows API by name across the common exporting DLLs (the .trace hint-name records don't say
 // which DLL, so we try them in order).
-static FARPROC ResolveApi(const char* name)
+static FARPROC ResolveApi(const char* name, HMODULE* outMod = nullptr)
 {
     static const wchar_t* kDlls[] = {
         L"kernel32.dll", L"kernelbase.dll", L"user32.dll", L"gdi32.dll", L"advapi32.dll",
@@ -1035,7 +1054,7 @@ static FARPROC ResolveApi(const char* name)
         if (!m) m = LoadLibraryW(d);
         if (!m) continue;
         FARPROC p = GetProcAddress(m, name);
-        if (p) return p;
+        if (p) { if (outMod) *outMod = m; return p; }
     }
     return nullptr;
 }
@@ -1061,6 +1080,32 @@ static bool ValidImportName(const char* s, uintptr_t lo, uintptr_t hi)
     }
     return false;
 }
+// Pure-ordinal IAT blocks have no named import to anchor their DLL. Map such a block (keyed by the RVA of
+// its first slot) to the DLL, confirmed by inspecting the call sites in IDA. Needed because identical low
+// ordinals live in different DLLs (ws2_32 vs oleaut32 both export at 2/6/9/...) -- only the block grouping
+// disambiguates, and a block with no named neighbor can't be anchored automatically.
+struct OrdinalOverride { uintptr_t blockRva; const wchar_t* dll; };
+static const OrdinalOverride kOrdinalOverrides[] = {
+    { 0xA97CA50, L"oleaut32.dll" },   // COM block wedged between ole32 & shell32: SysAllocString(2)/SysFreeString(6)/...
+};
+static HMODULE OrdinalOverrideDll(uintptr_t blockRva)
+{
+    for (auto& o : kOrdinalOverrides)
+        if (o.blockRva == blockRva)
+        {
+            HMODULE m = GetModuleHandleW(o.dll);
+            if (!m) m = LoadLibraryW(o.dll);
+            return m;
+        }
+    return nullptr;
+}
+
+// Walk the Denuvo private IAT in .trace and bind each unbound slot to the real API. Two slot kinds:
+//   - by NAME:    slot = bare RVA into .trace -> IMAGE_IMPORT_BY_NAME (hint + name). ResolveApi picks the DLL.
+//   - by ORDINAL: slot = IMAGE_ORDINAL_FLAG64 | ordinal (no name). The ordinal alone can't name the DLL, so
+//     WALK-AND-ANCHOR: the IAT is grouped into null-terminated per-DLL blocks, so an ordinal inherits the DLL
+//     of the named imports in its block (curMod). Leading ordinals (before the block's first name) are held
+//     in `pend` and bound once the name reveals the DLL; a nameless block falls back to kOrdinalOverrides.
 static int BindDenuvoImports(uintptr_t base)
 {
     auto nt = (PIMAGE_NT_HEADERS)(base + ((PIMAGE_DOS_HEADER)base)->e_lfanew);
@@ -1073,20 +1118,86 @@ static int BindDenuvoImports(uintptr_t base)
     uintptr_t rvaLo = trBeg - base, rvaHi = trEnd - base;
     DWORD oldProt = 0;
     VirtualProtect((LPVOID)trBeg, trEnd - trBeg, PAGE_EXECUTE_READWRITE, &oldProt);
-    int bound = 0, tried = 0;
+
+    int nameBound = 0, nameTried = 0, ordBound = 0, ordUnres = 0;
+    HMODULE curMod = nullptr;        // DLL anchoring the current null-delimited IAT block
+    uintptr_t blockRva = 0;          // RVA of the block's first slot (override-table key)
+    bool inBlock = false;
+    static const int kMaxPend = 512;
+    uintptr_t* pendSlot[kMaxPend];   // ordinals seen before the block's first named import
+    WORD       pendOrd[kMaxPend];
+    int nPend = 0;
+
     for (uintptr_t p = trBeg; p + 8 <= trEnd; p += 8)
     {
-        uintptr_t v = *(uintptr_t*)p;                       // slot value = bare RVA into .trace
-        if (v < rvaLo || v >= rvaHi) continue;
-        const char* name = (const char*)(base + v + 2);     // skip the 2-byte hint
-        if (!ValidImportName(name, trBeg, trEnd)) continue;
-        ++tried;
-        FARPROC api = ResolveApi(name);
-        if (api) { *(uintptr_t*)p = (uintptr_t)api; ++bound; }
+        uintptr_t v = *(uintptr_t*)p;
+
+        if (v == 0)   // null terminator = end of an IAT block
+        {
+            if (nPend)   // leftover leading ordinals, no named anchor -> try the override table
+            {
+                HMODULE ov = OrdinalOverrideDll(blockRva);
+                for (int i = 0; i < nPend; ++i)
+                {
+                    FARPROC pr = ov ? GetProcAddress(ov, (LPCSTR)(uintptr_t)pendOrd[i]) : nullptr;
+                    if (pr) { *pendSlot[i] = (uintptr_t)pr; ++ordBound; }
+                    else    { ++ordUnres; }
+                }
+                nPend = 0;
+            }
+            curMod = nullptr; inBlock = false;
+            continue;
+        }
+
+        // A clean by-ordinal thunk = IMAGE_ORDINAL_FLAG64 set and only the low 16 bits used.
+        bool isOrd  = (v & 0x8000000000000000ull) && ((v & 0x7FFFFFFFFFFF0000ull) == 0);
+        bool isName = (v >= rvaLo && v < rvaHi) && ValidImportName((const char*)(base + v + 2), trBeg, trEnd);
+        if (!isOrd && !isName) continue;                    // neutral value -- not part of the IAT structure
+
+        if (!inBlock) { inBlock = true; blockRva = p - base; }
+
+        if (isName)
+        {
+            ++nameTried;
+            HMODULE mod = nullptr;
+            FARPROC api = ResolveApi((const char*)(base + v + 2), &mod);
+            if (api) { *(uintptr_t*)p = (uintptr_t)api; ++nameBound; curMod = mod; }
+            if (curMod && nPend)   // block's DLL now known -> flush the leading ordinals against it
+            {
+                for (int i = 0; i < nPend; ++i)
+                {
+                    FARPROC pr = GetProcAddress(curMod, (LPCSTR)(uintptr_t)pendOrd[i]);
+                    if (pr) { *pendSlot[i] = (uintptr_t)pr; ++ordBound; }
+                    else    { ++ordUnres; }
+                }
+                nPend = 0;
+            }
+            continue;
+        }
+
+        // isOrd
+        WORD ord = (WORD)(v & 0xFFFF);
+        if (curMod)
+        {
+            FARPROC pr = GetProcAddress(curMod, (LPCSTR)(uintptr_t)ord);
+            if (pr) { *(uintptr_t*)p = (uintptr_t)pr; ++ordBound; }
+            else    { ++ordUnres; }
+        }
+        else if (nPend < kMaxPend) { pendSlot[nPend] = (uintptr_t*)p; pendOrd[nPend] = ord; ++nPend; }
+    }
+    if (nPend)   // trailing leading-ordinals at section end
+    {
+        HMODULE ov = OrdinalOverrideDll(blockRva);
+        for (int i = 0; i < nPend; ++i)
+        {
+            FARPROC pr = ov ? GetProcAddress(ov, (LPCSTR)(uintptr_t)pendOrd[i]) : nullptr;
+            if (pr) { *pendSlot[i] = (uintptr_t)pr; ++ordBound; } else ++ordUnres;
+        }
     }
     VirtualProtect((LPVOID)trBeg, trEnd - trBeg, oldProt, &oldProt);
-    tprintf("[spot] Denuvo import slots: %d bound / %d candidates\n", bound, tried); fflush(stdout);
-    return bound;
+    tprintf("[spot] .trace bind: names %d/%d, ordinals %d bound / %d unresolved\n",
+            nameBound, nameTried, ordBound, ordUnres); fflush(stdout);
+    return nameBound + ordBound;
 }
 
 // Manually invoke the g_cmdParams ctor (RVA 0x7173A0) under SEH and dump the resulting object.
