@@ -97,41 +97,37 @@ static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
     tprintf("[MyRunGame] <- DriverCmdLineInit returned\n"); fflush(stdout);
 
     // --- Retail engine boot (mirrors RunGame after the parsers) ---
-    // Init: sub_180002750 builds the game object (NMalloc 0x28, vtable off_189DBE560, +0x10=hInstance,
-    // +0x08=arg4, stores g_gameObj 0xB286DA0) then tail-calls sub_180004980(gameObj, cmdline, arg3) =
-    // InitDuniaEngine. Args (hInstance, cmdline, 1, 0) reproduce RunGame's inline construction exactly.
-    // Run: sub_180002800 = RunDuniaEngine(&relaunch). Commented out until Init is confirmed.
+    // Order matches RunGame: START the splash thread, THEN InitDuniaEngine (it pumps/synchronizes while
+    // the splash is up), THEN close the splash. Init: sub_180002750 builds the game object (NMalloc 0x28,
+    // vtable off_189DBE560, +0x10=hInstance, +0x08=arg4, stores g_gameObj 0xB286DA0) then tail-calls
+    // sub_180004980(gameObj, cmdline, arg3). Run: sub_180002800 = RunDuniaEngine(&relaunch), still off.
     typedef int (__fastcall* Init_t)(HINSTANCE hInst, const char* cmd, int a3, int a4);
     typedef int (__fastcall* Run_t)(void* relaunchOut);
     auto InitDuniaEngine = (Init_t)(base + 0x2750); // sub_180002750 -> sub_180004980
     auto RunDuniaEngine  = (Run_t) (base + 0x2800); // sub_180002800
 
+    // 1) splash up FIRST (the thread creates its event/HWND globals shortly after start).
+    tprintf("[MyRunGame] -> CreateThread(splash sub_180004610)\n"); fflush(stdout);
+    HANDLE splashThread = CreateThread(nullptr, 0, SplashThreadProc, nullptr, 0, nullptr);
+    Sleep(200);   // give the splash thread a moment to create its window + event
+    tprintf("[MyRunGame] <- splash thread = %p, HWND = %p, event = %p\n",
+            splashThread, *g_splashHwnd, *g_splashEvent); fflush(stdout);
+
+    // 2) engine init WHILE the splash is showing.
     tprintf("[MyRunGame] -> InitDuniaEngine(hInst, cmd, 1, 0)\n"); fflush(stdout);
     int initRet = InitDuniaEngine(hInstance, lpCmdLine, 1, 0);
     tprintf("[MyRunGame] <- InitDuniaEngine returned %d\n", initRet); fflush(stdout);
+
+    // 3) close the splash (SetEvent on the event it created, then join).
+    tprintf("[MyRunGame] -> SetEvent(splash) + join\n"); fflush(stdout);
+    if (*g_splashEvent) SetEvent(*g_splashEvent);
+    if (splashThread) { WaitForSingleObject(splashThread, 3000); CloseHandle(splashThread); }
+    tprintf("[MyRunGame] <- splash closed\n"); fflush(stdout);
 
     //char relaunch = 0;
     //tprintf("[MyRunGame] -> RunDuniaEngine(&relaunch)\n"); fflush(stdout);
     //int runRet = RunDuniaEngine(&relaunch);
     //tprintf("[MyRunGame] <- RunDuniaEngine returned %d (relaunch=%d)\n", runRet, (int)relaunch); fflush(stdout);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-
-    // Start the splash on its own thread (exactly as RunGame does). It pumps its own message loop,
-    // so we don't run one here.
-    tprintf("[MyRunGame] -> CreateThread(splash sub_180004610)\n"); fflush(stdout);
-    HANDLE splashThread = CreateThread(nullptr, 0, SplashThreadProc, nullptr, 0, nullptr);
-    tprintf("[MyRunGame] <- splash thread = %p\n", splashThread); fflush(stdout);
-
-    // Let it come up and show for ~10s (the thread creates the event/HWND globals shortly after start).
-    Sleep(10000);
-    tprintf("[MyRunGame] splash HWND = %p, event = %p\n", *g_splashHwnd, *g_splashEvent); fflush(stdout);
-
-    // Signal the splash to close (SetEvent on the event it created), then wait for the thread to exit.
-    tprintf("[MyRunGame] -> SetEvent(splash) + join\n"); fflush(stdout);
-    if (*g_splashEvent) SetEvent(*g_splashEvent);
-    if (splashThread) { WaitForSingleObject(splashThread, 3000); CloseHandle(splashThread); }
-    tprintf("[MyRunGame] <- splash closed\n"); fflush(stdout);
 
     tprintf("[MyRunGame] done - exiting\n"); fflush(stdout);
     return 0;
