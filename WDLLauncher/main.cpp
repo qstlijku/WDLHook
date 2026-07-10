@@ -838,7 +838,7 @@ static const bool kRetailRunOnexitInit = true;
 static const bool kSpotCheckCmdCtor = true;
 // Route the engine's UPC_* (Ubisoft Connect) .trace slots to in-process emu stubs (upc_emu.h) instead of
 // leaving them unbound -- so engine init gets past UPC_ContextCreate. Only meaningful under manual load.
-static const bool kEmulateUpc = false;
+static const bool kEmulateUpc = true;
 
 static void* ML_FindLdrEntry(HMODULE mod)
 {
