@@ -892,33 +892,49 @@ typedef void*   (__fastcall* GGIL_t)(void* result, void* a2);
 static LLFR_t g_llfr_orig = nullptr;
 static GGIL_t GetGameInstallLanguage = nullptr;
 
-// LoadLanguageFromRegistry's outLang is ndStringBase<char>; GetGameInstallLanguage's result is
-// ndStringBase<wchar_t> (it converts the char registry/fallback string to wide). Both share the layout:
-// +0x08 = Data*, then Data+0x0C = the string (char[] vs wchar_t[]).
-static const char* NdStrC(void* s)
+// GetGameInstallLanguage's result is an RVO RETURN -- its Data* may live at +0x00 (like GetGameURL's return)
+// rather than +0x08 (where a PASSED ndString like `name` keeps it), and its element type is ambiguous
+// (char vs wchar_t). So dump the object bytes and SEH-safely try Data* at BOTH +0x00 and +0x08, printing
+// char + wide + hex -- all length-BOUNDED so nothing over-runs. Byte offsets use char* casts (a wchar_t*
+// cast would double the offset -- that arithmetic bug is what made %ls walk into the D3D11 log earlier).
+static void TryDumpData(int off, unsigned char* d)
 {
-    if (!s) return "(null)";
-    void* d = *(void**)((char*)s + 0x08);
-    return d ? (const char*)d + 0x0C : "(empty)";
+    if (!d) { printf("[cap]     +0x%02X: Data*=null\n", off); return; }
+    __try
+    {
+        unsigned int size = *(unsigned int*)d;                 // Data+0x00 = char/wchar count
+        const unsigned char* p = d + 0x0C;                     // Data+0x0C = the string
+        unsigned int nb = size * 2 + 2; if (nb > 24) nb = 24;  // bounded byte count
+        printf("[cap]     +0x%02X: Data*=%p size=%u  char=\"%.20s\"  wide=\"%.10ls\"  hex:",
+               off, d, size, (const char*)p, (const wchar_t*)p);
+        for (unsigned int i = 0; i < nb; ++i) printf(" %02X", p[i]);
+        printf("\n");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        printf("[cap]     +0x%02X: Data*=%p (bad deref)\n", off, d);
+    }
 }
-static const wchar_t* NdStrW(void* s)
+static void DumpNd(const char* tag, void* s)
 {
-    if (!s) return L"(null)";
-    void* d = *(void**)((wchar_t*)s + 0x08);
-    return d ? ((const wchar_t*)d + 0x0C) : L"(empty)";
+    if (!s) { printf("[cap] %s (null obj)\n", tag); return; }
+    printf("[cap] %s obj@%p:", tag, s);
+    for (int i = 0; i < 0x18; ++i) printf(" %02X", ((unsigned char*)s)[i]);
+    printf("\n");
+    TryDumpData(0x00, *(unsigned char**)((char*)s + 0x00));
+    TryDumpData(0x08, *(unsigned char**)((char*)s + 0x08));
 }
 __int64 __fastcall LoadLanguageFromRegistry_Detour(void* hive, void* outLang)
 {
     __int64 r = g_llfr_orig ? g_llfr_orig(hive, outLang) : 0;   // real returns __int64 w/ meaningful upper bits
-    printf("[cap] LoadLanguageFromRegistry(hive=%p) -> %lld  lang=\"%s\"\n", hive, (long long)r, (r & 0xFF) ? NdStrC(outLang) : "-");
+    printf("[cap] LoadLanguageFromRegistry(hive=%p) -> %lld\n", hive, (long long)r);
+    DumpNd("  outLang", outLang);
     return r;   // forward verbatim so GetGameInstallLanguage's branch isn't corrupted
 }
 void* __fastcall GetGameInstallLanguage_Detour(void* result, void* a2)
 {
     void* ret = GetGameInstallLanguage(result, a2);
-    // result type is ambiguous (PDB signature says wchar_t; retail builds a1 from a char* fallback) -- log
-    // both and keep whichever is meaningful (char="en-US" wide="e" => char ; char="e" wide="en-US" => wide)
-    printf("[cap] GetGameInstallLanguage -> %ls\n", NdStrW(result));
+    DumpNd("GetGameInstallLanguage result", result);
     return ret;
 }
 
