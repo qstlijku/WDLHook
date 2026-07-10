@@ -840,6 +840,9 @@ static const bool kRetailRunOnexitInit = true;
 // API addresses) and manually CALL just the g_cmdParams ctor (RVA 0x7173A0) under SEH -- proves whether
 // binding the thunks lets an engine ctor actually run under manual load (Denuvo dormant, free debugger).
 static const bool kSpotCheckCmdCtor = true;
+// Route the engine's UPC_* (Ubisoft Connect) .trace slots to in-process emu stubs (upc_emu.h) instead of
+// leaving them unbound -- so engine init gets past UPC_ContextCreate. Only meaningful under manual load.
+static const bool kEmulateUpc = true;
 
 static void* ML_FindLdrEntry(HMODULE mod)
 {
@@ -1033,6 +1036,10 @@ static void ML_RunInitTerms(uintptr_t xca, uintptr_t xcz, uintptr_t xia, uintptr
     }
 }
 
+// In-process UPC_* (Ubisoft Connect) emulator stubs + name->fn table (UpcEmuLookup). Textually included
+// here so the table is defined before BindDenuvoImports routes UPC_* slots to it. Uses tprintf (above).
+#include "upc_emu.h"
+
 // ---- Denuvo private-import binder + single-ctor spot-check (manual-load only) ------------------------
 // Resolve a Windows API by name across the common exporting DLLs (the .trace hint-name records don't say
 // which DLL, so we try them in order).
@@ -1119,7 +1126,7 @@ static int BindDenuvoImports(uintptr_t base)
     DWORD oldProt = 0;
     VirtualProtect((LPVOID)trBeg, trEnd - trBeg, PAGE_EXECUTE_READWRITE, &oldProt);
 
-    int nameBound = 0, nameTried = 0, ordBound = 0, ordUnres = 0;
+    int nameBound = 0, nameTried = 0, ordBound = 0, ordUnres = 0, upcBound = 0;
     HMODULE curMod = nullptr;        // DLL anchoring the current null-delimited IAT block
     uintptr_t blockRva = 0;          // RVA of the block's first slot (override-table key)
     bool inBlock = false;
@@ -1158,9 +1165,16 @@ static int BindDenuvoImports(uintptr_t base)
 
         if (isName)
         {
+            const char* nm = (const char*)(base + v + 2);
+            if (kEmulateUpc && strncmp(nm, "UPC_", 4) == 0)   // route Ubisoft Connect calls to our emu
+            {
+                void* fn = UpcEmuLookup(nm);
+                if (fn) { *(uintptr_t*)p = (uintptr_t)fn; ++upcBound; continue; }
+                tprintf("[spot] UPC_ emu MISSING for %s\n", nm);   // fall through -> ResolveApi (will fail)
+            }
             ++nameTried;
             HMODULE mod = nullptr;
-            FARPROC api = ResolveApi((const char*)(base + v + 2), &mod);
+            FARPROC api = ResolveApi(nm, &mod);
             if (api) { *(uintptr_t*)p = (uintptr_t)api; ++nameBound; curMod = mod; }
             if (curMod && nPend)   // block's DLL now known -> flush the leading ordinals against it
             {
@@ -1195,8 +1209,8 @@ static int BindDenuvoImports(uintptr_t base)
         }
     }
     VirtualProtect((LPVOID)trBeg, trEnd - trBeg, oldProt, &oldProt);
-    tprintf("[spot] .trace bind: names %d/%d, ordinals %d bound / %d unresolved\n",
-            nameBound, nameTried, ordBound, ordUnres); fflush(stdout);
+    tprintf("[spot] .trace bind: names %d/%d, ordinals %d bound / %d unresolved, upc %d emulated\n",
+            nameBound, nameTried, ordBound, ordUnres, upcBound); fflush(stdout);
     return nameBound + ordBound;
 }
 
