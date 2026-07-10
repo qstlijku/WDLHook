@@ -330,7 +330,7 @@ static const unsigned char kGateSig[]     = { 0x85,0xC0, 0x74,0x1E, 0x83,0xF8,0x
 // (same 4 bytes -> ZF=0 -> jne always taken; leaves the jump/rel32 intact). IN-MEMORY ONLY: uplay_r264
 // is Ubisoft-signed (VerifyEmbeddedSignature hard-kills a modified file on disk). Pair with kEmulateToken
 // for the downstream token gate. Patch site 0x4C28F: `41 F6 C1 04 0F 85 ..` -> `41 80 C9 04`.
-static const bool kPatchUplayR2Relaunch = true;
+static const bool kPatchUplayR2Relaunch = false;
 static const unsigned char kR2RelaunchSig[]  = { 0x41,0xF6,0xC1,0x04, 0x0F,0x85 }; // test r9b,4 ; jne
 static const unsigned char kR2RelaunchRepl[] = { 0x41,0x80,0xC9,0x04 };            // or r9b,4
 
@@ -838,7 +838,7 @@ static const bool kRetailRunOnexitInit = true;
 static const bool kSpotCheckCmdCtor = true;
 // Route the engine's UPC_* (Ubisoft Connect) .trace slots to in-process emu stubs (upc_emu.h) instead of
 // leaving them unbound -- so engine init gets past UPC_ContextCreate. Only meaningful under manual load.
-static const bool kEmulateUpc = true;
+static const bool kEmulateUpc = false;
 
 static void* ML_FindLdrEntry(HMODULE mod)
 {

@@ -697,9 +697,9 @@ static void __cdecl initterm_Detour(PVFV* first, PVFV* last)
     int batch = g_initBatch++;
     tprintf("[init] === _initterm (C++ .CRT$XC) batch %d: %lld entries ===\n", batch, (long long)(last - first));
     int i = 0, failed = 0;
-    for (PVFV* p = first + 2; p < last; ++p, ++i)
+    for (PVFV* p = first; p < last; ++p, ++i)
     {
-        if (i >= 4857) continue;
+        //if (i >= 4857) continue;
         if (*p) {
             LogInit("XC", (void*)*p, i);
             if (!CallGuarded(*p)) {
@@ -773,8 +773,8 @@ void Misc::InstallEarlyHooks()
     if (g_earlyHooksDone) return;
     g_earlyHooksDone = true;
     MH_Initialize();
-    InstallTokenCapture();
-    InstallInitTermLogger(); // ported from E3_Hook: brackets each ctor so a manual-load crash pinpoints it
+    //InstallTokenCapture();
+    //InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
 }
 
 // ===================================================================================================
@@ -879,6 +879,49 @@ static void BatchHookFromFile(const char* path)
 }
 // ===================================================================================================
 
+// ---- language-resolution capture (DE_Hook, real Connect start) -------------------------------------
+// Log what the engine resolves as the install language + the registry read, so we can replicate it under
+// manual load (where it bails with "Unable to find language files"). Retail RVAs (verified against the PDB):
+//   GetGameInstallLanguage   = sub_1868EBE10 (RVA 0x68EBE10): LoadLanguageFromRegistry(HKCU) then (HKLM),
+//                              else GetLanguageNameFromEnum(Lang_English). Returns the ndStringBase (a1).
+//   LoadLanguageFromRegistry = sub_1868EBB40 (RVA 0x68EBB40): reads HKCU/HKLM Software\Ubisoft\WatchDogsLegion
+//                              value "L" (RegOpenKeyExW + RegQueryValueExA), returns true if found.
+// ndStringBase<char>*: +0x08 = Data*, then Data+0x0C = the null-terminated char[].
+typedef __int64 (__fastcall* LLFR_t)(void* hive, void* outLang);
+typedef void*   (__fastcall* GGIL_t)(void* result, void* a2);
+static LLFR_t g_llfr_orig = nullptr;
+static GGIL_t GetGameInstallLanguage = nullptr;
+
+// LoadLanguageFromRegistry's outLang is ndStringBase<char>; GetGameInstallLanguage's result is
+// ndStringBase<wchar_t> (it converts the char registry/fallback string to wide). Both share the layout:
+// +0x08 = Data*, then Data+0x0C = the string (char[] vs wchar_t[]).
+static const char* NdStrC(void* s)
+{
+    if (!s) return "(null)";
+    void* d = *(void**)((char*)s + 0x08);
+    return d ? (const char*)d + 0x0C : "(empty)";
+}
+static const wchar_t* NdStrW(void* s)
+{
+    if (!s) return L"(null)";
+    void* d = *(void**)((wchar_t*)s + 0x08);
+    return d ? ((const wchar_t*)d + 0x0C) : L"(empty)";
+}
+__int64 __fastcall LoadLanguageFromRegistry_Detour(void* hive, void* outLang)
+{
+    __int64 r = g_llfr_orig ? g_llfr_orig(hive, outLang) : 0;   // real returns __int64 w/ meaningful upper bits
+    printf("[cap] LoadLanguageFromRegistry(hive=%p) -> %lld  lang=\"%s\"\n", hive, (long long)r, (r & 0xFF) ? NdStrC(outLang) : "-");
+    return r;   // forward verbatim so GetGameInstallLanguage's branch isn't corrupted
+}
+void* __fastcall GetGameInstallLanguage_Detour(void* result, void* a2)
+{
+    void* ret = GetGameInstallLanguage(result, a2);
+    // result type is ambiguous (PDB signature says wchar_t; retail builds a1 from a char* fallback) -- log
+    // both and keep whichever is meaningful (char="en-US" wide="e" => char ; char="e" wide="en-US" => wide)
+    printf("[cap] GetGameInstallLanguage -> %ls\n", NdStrW(result));
+    return ret;
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -889,7 +932,11 @@ void Misc::Initialize()
 
     // Batch-hook every offset listed in hooklist.txt (log-first-call + forward). Edit the file, no rebuild
     // needed to change WHICH functions are traced. See BatchHookFromFile above for the format/limits.
-    BatchHookFromFile("C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\hooklist.txt");
+    //BatchHookFromFile("C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\hooklist.txt"); // DISABLED -- batch thunk hooker
+
+    // Language-resolution capture: log the resolved install language + the registry read (offsets = RVA - 0xA00).
+    //HookOffset3(0x68EB140 + 0xA00, &LoadLanguageFromRegistry_Detour, reinterpret_cast<LPVOID*>(&g_llfr_orig)); // sub_1868EBB40
+    HookOffset3(0x68EB410 + 0xA00, &GetGameInstallLanguage_Detour,   reinterpret_cast<LPVOID*>(&GetGameInstallLanguage)); // sub_1868EBE10
 
     // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
     // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).
@@ -897,7 +944,7 @@ void Misc::Initialize()
     //HookOffset3(0x788AC40 + 0xA00, &HandleBeta_Detour, reinterpret_cast<LPVOID*>(&HandleBeta));
     //HookOffset3(0x7868150 + 0xA00, &GetGameURL_Detour, reinterpret_cast<LPVOID*>(&GetGameURL));
 
-    ChunkReader::Initialize();
+    //ChunkReader::Initialize();
 
     //HookOffset3(0x5C14B20 + 0xA00, &GameUIHandleInput_Detour, reinterpret_cast<LPVOID*>(&GameUIHandleInput));
 
