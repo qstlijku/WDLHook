@@ -938,6 +938,67 @@ void* __fastcall GetGameInstallLanguage_Detour(void* result, void* a2)
     return ret;
 }
 
+// ---- SKU / install-language capture: what a NORMAL run returns, to diff against the UPC emu ---------
+// This is the UPC-driven SKU language path (distinct from the registry GetGameInstallLanguage above):
+//   GetInstalledLanguage (sub_187ADF490) = UPC_InstallLanguageGet (thunk sub_189DBA150) -> wrap ->
+//   str2enum (sub_1805A5730) -> EngineLanguage enum, which feeds CSkuConfig::LoadSkuConfigPC
+//   (sub_1867C3590, sku="uplay"). str2enum's INPUT string is the effective UPC language string (the
+//   ndString built from UPC_InstallLanguageGet), so it's what we compare to the emu's kUpcLang ("en-US").
+//   NOTE: do NOT hook the UPC thunks (sub_189DBA*) -- thunk hooks crashed earlier; hook engine fns only.
+typedef __int64 (__fastcall* GIL_t)(void* a1);
+typedef __int64 (__fastcall* S2E_t)(void* str);
+typedef __int64 (__fastcall* LSC_t)(void* inst, int lang, void* sku);
+static GIL_t  g_gil_orig  = nullptr;
+static S2E_t  g_s2e_orig  = nullptr;
+static LSC_t  g_lsc_orig  = nullptr;
+static int    g_s2e_logs  = 0;
+
+static const char* SafeCStr(const void* p)
+{
+    static char buf[128];
+    if (!p) return "(null)";
+    __try
+    {
+        const char* s = (const char*)p;
+        int i = 0;
+        for (; i < 127 && s[i]; ++i) buf[i] = s[i];
+        buf[i] = 0;
+        return buf;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return "(bad)"; }
+}
+static const char* SafeNdPassed(void* s)   // sku ndString: m_string at +0x00 (+0x08 read empty), Data+0x0C = char[]
+{
+    if (!s) return "(null)";
+    __try
+    {
+        void* d = *(void**)((char*)s + 0x00);
+        if (!d) return "(empty)";
+        return SafeCStr((const char*)d + 0x0C);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return "(bad-nd)"; }
+}
+
+__int64 __fastcall GetInstalledLanguage_Detour(void* a1)
+{
+    __int64 r = g_gil_orig ? g_gil_orig(a1) : 0;
+    printf("[sku] GetInstalledLanguage -> enum %d\n", (int)r);
+    return r;
+}
+__int64 __fastcall Str2Enum_Detour(void* str)
+{
+    __int64 r = g_s2e_orig ? g_s2e_orig(str) : 0;
+    if (g_s2e_logs++ < 24)
+        printf("[sku] str2enum(\"%s\") -> %d\n", SafeCStr(str), (int)r);
+    return r;
+}
+__int64 __fastcall LoadSkuConfigPC_Detour(void* inst, int lang, void* sku)
+{
+    __int64 r = g_lsc_orig ? g_lsc_orig(inst, lang, sku) : 0;
+    printf("[sku] LoadSkuConfigPC(lang=%d, sku=\"%s\") -> %lld\n", lang, SafeNdPassed(sku), (long long)r);
+    return r;
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -952,7 +1013,12 @@ void Misc::Initialize()
 
     // Language-resolution capture: log the resolved install language + the registry read (offsets = RVA - 0xA00).
     //HookOffset3(0x68EB140 + 0xA00, &LoadLanguageFromRegistry_Detour, reinterpret_cast<LPVOID*>(&g_llfr_orig)); // sub_1868EBB40
-    HookOffset3(0x68EB410 + 0xA00, &GetGameInstallLanguage_Detour,   reinterpret_cast<LPVOID*>(&GetGameInstallLanguage)); // sub_1868EBE10
+    //HookOffset3(0x68EB410 + 0xA00, &GetGameInstallLanguage_Detour,   reinterpret_cast<LPVOID*>(&GetGameInstallLanguage)); // sub_1868EBE10
+
+    // SKU / install-language capture (normal run) to diff against the UPC emu (offsets = RVA - 0xA00):
+    //HookOffset3(0x7ADEA90 + 0xA00, &GetInstalledLanguage_Detour,   reinterpret_cast<LPVOID*>(&g_gil_orig));   // sub_187ADF490
+    HookOffset3(0x5A4D30  + 0xA00, &Str2Enum_Detour,               reinterpret_cast<LPVOID*>(&g_s2e_orig));   // sub_1805A5730
+    HookOffset3(0x67C2B90 + 0xA00, &LoadSkuConfigPC_Detour,        reinterpret_cast<LPVOID*>(&g_lsc_orig));    // sub_1867C3590
 
     // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
     // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).

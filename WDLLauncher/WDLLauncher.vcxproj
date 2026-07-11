@@ -143,6 +143,9 @@
     <ClCompile Include="..\ext\minhook\hde\hde32.c" />
     <ClCompile Include="..\ext\minhook\hde\hde64.c" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="upc_emu.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

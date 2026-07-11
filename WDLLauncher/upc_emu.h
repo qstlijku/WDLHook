@@ -20,7 +20,7 @@
 static int         g_upcCtx       = 0;                 // non-null fake context object
 static const char  kUpcUserId[]   = "1000000000000001";
 static const char  kUpcUserName[] = "OfflinePlayer";
-static const char  kUpcLang[]     = "en-US";
+static const char  kUpcLang[]     = "english";
 static const char  kUpcEmpty[]    = "";
 
 // First-call-only logging (keeps the high-frequency pumps quiet). Uses pointer identity of the passed

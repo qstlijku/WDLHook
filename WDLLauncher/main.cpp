@@ -1369,6 +1369,156 @@ static void InstallLanguageCapture(uintptr_t base)
     fflush(stdout);
 }
 // ===================================================================================================
+// SKU / language-load runtime TRACE (manual load bails with "Unable to find language files").
+// The engine loads the SKU/language config in CDuniaEngineInitBase::LoadSkuConfigPC:
+//   GetInstalledLanguage (sub_187ADF490) = UPC_InstallLanguageGet -> sub_1805C48C0 -> sub_1805A5730 (str->enum)
+//   then CSkuConfig::LoadSkuConfigPC (sub_1867C3590, sku="uplay").
+// The error string lives in the Denuvo .trace section (RVA 0xA46EA00) with NO static xref, so we
+// instrument at runtime: the resolved language enum, the SKU load result, which data file the engine
+// fails to open (+ the CWD), and the runtime caller of the MessageBox (the Denuvo-hidden box-shower).
+// ENABLED for the manual-load diff vs the DE_Hook normal-run capture (which showed str2enum("english")->3,
+// LoadSkuConfigPC(lang=3, sku="uplay")->1). Under manual load the emu drives UPC_InstallLanguageGet, so this
+// shows what str2enum/LoadSkuConfigPC actually get here + which data file CreateFileW can't find + the box-shower.
+static const bool kTraceSku = true;
+
+static uintptr_t g_traceBase   = 0;
+static int       g_str2enumLogs = 0;
+
+// SEH-safe reads (POD only -> no C++ object unwinding, so __try is legal in these helpers).
+static const char* SafeStr(const void* p)
+{
+    static char buf[256];
+    if (!p) return "(null)";
+    __try {
+        const char* s = (const char*)p;
+        int i = 0;
+        for (; i < 255 && s[i]; ++i) buf[i] = s[i];
+        buf[i] = 0;
+        return buf;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return "(bad-ptr)"; }
+}
+static const char* NdStrPassed(void* s)   // sku ndString: m_string at +0x00 (+0x08 read empty), then Data+0x0C = char[]
+{
+    static char buf[256];
+    if (!s) return "(null)";
+    __try {
+        void* d = *(void**)((char*)s + 0x00);
+        if (!d) return "(empty)";
+        const char* c = (const char*)d + 0x0C;
+        int i = 0;
+        for (; i < 255 && c[i]; ++i) buf[i] = c[i];
+        buf[i] = 0;
+        return buf;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return "(bad-nd)"; }
+}
+static uintptr_t TraceRva(void* ret)   // caller return address -> in-module RVA (0 if outside the DLL)
+{
+    uintptr_t a = (uintptr_t)ret;
+    if (g_traceBase && a > g_traceBase && (a - g_traceBase) < 0x10000000) return a - g_traceBase;
+    return 0;
+}
+
+// --- engine functions on the SKU/language path (RVA off retail base 0x180000000) ---
+typedef __int64 (__fastcall* GIL_t)(void* a1);                        // GetInstalledLanguage
+typedef __int64 (__fastcall* S2E_t)(void* str);                       // sub_1805A5730 (str -> EngineLanguage)
+typedef __int64 (__fastcall* LSC_t)(void* inst, int lang, void* sku); // CSkuConfig::LoadSkuConfigPC
+static GIL_t g_gilOrig = nullptr;
+static S2E_t g_s2eOrig = nullptr;
+static LSC_t g_lscOrig = nullptr;
+
+static __int64 __fastcall GetInstalledLanguage_Detour(void* a1)
+{
+    __int64 r = g_gilOrig ? g_gilOrig(a1) : 0;
+    tprintf("[sku] GetInstalledLanguage -> enum %d\n", (int)r); fflush(stdout);
+    return r;
+}
+static __int64 __fastcall Str2Enum_Detour(void* str)
+{
+    __int64 r = g_s2eOrig ? g_s2eOrig(str) : 0;
+    if (g_str2enumLogs++ < 24)
+        tprintf("[sku] str2enum(\"%s\") -> %d\n", SafeStr(str), (int)r);
+    fflush(stdout);
+    return r;
+}
+static __int64 __fastcall LoadSkuConfigPC_Detour(void* inst, int lang, void* sku)
+{
+    void* ret = _ReturnAddress();
+    __int64 r = g_lscOrig ? g_lscOrig(inst, lang, sku) : 0;
+    tprintf("[sku] LoadSkuConfigPC(lang=%d, sku=\"%s\") -> %lld  (caller +0x%llX)\n",
+            lang, NdStrPassed(sku), (long long)r, (unsigned long long)TraceRva(ret)); fflush(stdout);
+    return r;
+}
+
+// --- Win32 seams: which data file is missing (+ from where), and who shows the box ---
+static bool TraceFileMatch(LPCWSTR name)
+{
+    const wchar_t* keys[] = { L".dat", L".fat", L".forge", L".wlu", L"sound", L"language", L"sku", L"english", L"london" };
+    for (auto k : keys) if (StrStrIW(name, k)) return true;
+    return false;
+}
+typedef HANDLE (WINAPI* CreateFileW_t)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+typedef int    (WINAPI* MessageBoxW_t)(HWND, LPCWSTR, LPCWSTR, UINT);
+static CreateFileW_t g_createFileWOrig = nullptr;
+static MessageBoxW_t g_msgBoxWOrig     = nullptr;
+
+static HANDLE WINAPI CreateFileW_Detour(LPCWSTR name, DWORD access, DWORD share,
+        LPSECURITY_ATTRIBUTES sa, DWORD disp, DWORD flags, HANDLE tmpl)
+{
+    HANDLE h = g_createFileWOrig(name, access, share, sa, disp, flags, tmpl);
+    DWORD err = GetLastError();
+    if (name && TraceFileMatch(name))
+    {
+        tprintf("[file] CreateFileW(\"%ls\") = %s (err %lu)\n",
+                name, (h == INVALID_HANDLE_VALUE) ? "INVALID" : "ok", err); fflush(stdout);
+    }
+    SetLastError(err);
+    return h;
+}
+static int WINAPI MessageBoxW_Detour(HWND hwnd, LPCWSTR text, LPCWSTR caption, UINT type)
+{
+    void* ret = _ReturnAddress();
+    tprintf("[msgbox] caption=\"%ls\" text=\"%ls\"  box-shower +0x%llX (ret=%p)\n",
+            caption ? caption : L"(null)", text ? text : L"(null)",
+            (unsigned long long)TraceRva(ret), ret); fflush(stdout);
+    return g_msgBoxWOrig(hwnd, text, caption, type);
+}
+
+static void InstallSkuTrace(uintptr_t base)
+{
+    if (!kTraceSku) return;
+    g_traceBase = base;
+    MH_Initialize();   // idempotent
+
+    struct { void* addr; void* det; LPVOID* orig; const char* nm; } E[] = {
+        { (void*)(base + 0x7ADF490), (void*)&GetInstalledLanguage_Detour, (LPVOID*)&g_gilOrig, "GetInstalledLanguage(sub_187ADF490)" },
+        { (void*)(base + 0x5A5730),  (void*)&Str2Enum_Detour,             (LPVOID*)&g_s2eOrig, "str2enum(sub_1805A5730)" },
+        { (void*)(base + 0x67C3590), (void*)&LoadSkuConfigPC_Detour,      (LPVOID*)&g_lscOrig, "LoadSkuConfigPC(sub_1867C3590)" },
+    };
+    for (auto& e : E)
+    {
+        if (MH_CreateHook(e.addr, e.det, e.orig) == MH_OK && MH_EnableHook(e.addr) == MH_OK)
+            tprintf("[sku] hooked %s @ %p\n", e.nm, e.addr);
+        else
+            tprintf("[sku] FAILED to hook %s @ %p\n", e.nm, e.addr);
+    }
+
+    // Win32 seams: resolve the real export addresses, then MinHook them.
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    HMODULE u32 = GetModuleHandleW(L"user32.dll");
+    void* pCFW = k32 ? (void*)GetProcAddress(k32, "CreateFileW") : nullptr;
+    void* pMBW = u32 ? (void*)GetProcAddress(u32, "MessageBoxW") : nullptr;
+    if (pCFW && MH_CreateHook(pCFW, &CreateFileW_Detour, (LPVOID*)&g_createFileWOrig) == MH_OK)
+        MH_EnableHook(pCFW);
+    if (pMBW && MH_CreateHook(pMBW, &MessageBoxW_Detour, (LPVOID*)&g_msgBoxWOrig) == MH_OK)
+        MH_EnableHook(pMBW);
+
+    wchar_t cwd[MAX_PATH] = { 0 };
+    GetCurrentDirectoryW(MAX_PATH, cwd);
+    tprintf("[file] CWD = %ls\n", cwd);
+    tprintf("[sku] SKU/language trace installed (base %p, CreateFileW=%p, MessageBoxW=%p)\n",
+            (void*)base, pCFW, pMBW); fflush(stdout);
+}
+// ===================================================================================================
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmdLine, int /*nShowCmd*/)
 {
@@ -1420,6 +1570,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
     // Capture the engine's language resolution (normal load: the DLL is fully bound, so these engine
     // functions run for real). Installed AFTER load, BEFORE RunGame drives them.
     InstallLanguageCapture((uintptr_t)dll);
+
+    // Trace the SKU/language load path (manual-load "Unable to find language files"): the language enum,
+    // the SKU load result, which data file the engine fails to open, and who shows the box.
+    InstallSkuTrace((uintptr_t)dll);
 
     int rc;
     if (kUseCustomRunGame)
