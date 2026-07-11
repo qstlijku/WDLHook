@@ -1763,6 +1763,33 @@ static void* g_chkThunks[] = {
     (void*)&ChkThunk<24>, (void*)&ChkThunk<25>, (void*)&ChkThunk<26>, (void*)&ChkThunk<27>,
     (void*)&ChkThunk<28>, (void*)&ChkThunk<29>, (void*)&ChkThunk<30>,
 };
+// ===================================================================================================
+// Denuvo-VM stub: G4::Platform::RetrieveClassicalCPUCacheDetails (sub_188C10530).
+// Retail's copy is virtualized -- its entry jmp's into the VM, which under manual load was never
+// bootstrapped, so the call faults (VM computes base+RVA with base==0 -> 0xC0000005 at 0x21B2B9F4).
+// It's a self-contained cpuid leaf-2 cache-size parser (verified against the E3 build's clean copy):
+// fills three fields off `this` and returns 1. We replace it natively -- write plausible L1/L2/L3
+// sizes (offsets validated in E3) and return success, never entering the VM. Original is NOT called.
+typedef char(__fastcall* CacheDetails_t)(void* self);
+static CacheDetails_t g_cacheOrig = nullptr;   // trampoline unused -- retail original is the VM
+static char __fastcall CacheDetails_Detour(void* self)
+{
+    *(int*)((char*)self + 0x0C) = 32 * 1024;        // m_L1CacheSize
+    *(int*)((char*)self + 0x10) = 256 * 1024;       // m_L2CacheSize
+    *(int*)((char*)self + 0x14) = 8 * 1024 * 1024;  // m_L3CacheSize
+    tprintf("[cache] stubbed sub_188C10530 -> L1=32768 L2=262144 L3=8388608, ret 1\n"); fflush(stdout);
+    return 1;
+}
+static void InstallVmStubs(uintptr_t base)
+{
+    MH_Initialize();   // idempotent
+    void* cache = (void*)(base + 0x8C10530);
+    if (MH_CreateHook(cache, &CacheDetails_Detour, (LPVOID*)&g_cacheOrig) == MH_OK && MH_EnableHook(cache) == MH_OK)
+        tprintf("[cache] hooked RetrieveClassicalCPUCacheDetails (sub_188C10530) @ %p\n", cache);
+    else
+        tprintf("[cache] FAILED to hook sub_188C10530 @ %p\n", cache);
+    fflush(stdout);
+}
 static void InstallCheckpoints(uintptr_t base)
 {
     if (!kCheckpoints) return;
@@ -1833,6 +1860,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
     // Trace the SKU/language load path (manual-load "Unable to find language files"): the language enum,
     // the SKU load result, which data file the engine fails to open, and who shows the box.
     InstallSkuTrace((uintptr_t)dll);
+    InstallVmStubs((uintptr_t)dll);       // replace virtualized sub_188C10530 (cache detail) -- VM not bootstrapped
     InstallCheckpoints((uintptr_t)dll);   // bracket every call between InitializeCore and Initialize
 
     int rc;
