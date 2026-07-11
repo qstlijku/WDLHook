@@ -1564,6 +1564,8 @@ typedef __int64 (__fastcall* ESI_t)(void* self, void* params);
 static ESI_t  g_esiOrig  = nullptr;   // CEngineServices::Initialize (sub_1867C0300)
 typedef __int64 (__fastcall* CLC_t)(void* self, const char* path);
 static CLC_t  g_clcOrig  = nullptr;   // CConfig::LoadConfig (sub_1867BCA70)
+typedef __int64 (__fastcall* SSI_t)(void* self);
+static SSI_t  g_ssiOrig  = nullptr;   // CScriptSystem::Init (sub_1868CAC10) -- Lua VM init; f_luaopen crash inside
 
 static __int64 __fastcall InitializeCore_Detour(void* eng, void* params, double a, double b)
 {
@@ -1591,6 +1593,13 @@ static __int64 __fastcall LoadConfig_Detour(void* self, const char* path)
     tprintf("[eng] CConfig::LoadConfig (sub_1867BCA70) ENTER  this=%p path=%s\n", self, path ? path : "(null)"); fflush(stdout);
     __int64 r = g_clcOrig(self, path);
     tprintf("[eng] CConfig::LoadConfig RETURNED\n"); fflush(stdout);
+    return r;
+}
+static __int64 __fastcall ScriptSystemInit_Detour(void* self)
+{
+    tprintf("[eng] CScriptSystem::Init (sub_1868CAC10) ENTER  this=%p\n", self); fflush(stdout);
+    __int64 r = g_ssiOrig(self);
+    tprintf("[eng] CScriptSystem::Init RETURNED\n"); fflush(stdout);
     return r;
 }
 static __int64 __fastcall CreateGamerProfileMgr_Detour(void* a, void* b, void* c, void* d)
@@ -1684,6 +1693,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked CConfig::LoadConfig (sub_1867BCA70) @ %p\n", clc);
     else
         tprintf("[eng] FAILED to hook CConfig::LoadConfig @ %p\n", clc);
+    void* ssi = (void*)(base + 0x68CAC10);   // sub_1868CAC10 = CScriptSystem::Init (Lua VM; f_luaopen crash is inside)
+    if (MH_CreateHook(ssi, &ScriptSystemInit_Detour, (LPVOID*)&g_ssiOrig) == MH_OK && MH_EnableHook(ssi) == MH_OK)
+        tprintf("[eng] hooked CScriptSystem::Init (sub_1868CAC10) @ %p\n", ssi);
+    else
+        tprintf("[eng] FAILED to hook CScriptSystem::Init @ %p\n", ssi);
     if (MH_CreateHook(gpm, &CreateGamerProfileMgr_Detour, (LPVOID*)&g_s440Orig) == MH_OK && MH_EnableHook(gpm) == MH_OK)
         tprintf("[eng] hooked CDriverGame::CreateAndInitGamerProfileManager (sub_181240440) @ %p\n", gpm);
     else
@@ -1761,10 +1775,10 @@ static const uintptr_t kChkRvas[] = {
     0x67BF650, // sub_1867BF650 = CEngineServices init (CMemMng::NMalloc(288), 1st call)
     0x67BF8D0, // sub_1867BF8D0
     0x68D2270, // sub_1868D2270
-    0x68CAC10, // sub_1868CAC10
-    0x690A800, // sub_18690A800
-    0x68CABD0, // sub_1868CABD0  (callback target)
-    0x6900870, // sub_186900870 = CallGuarded -- crash is in its `call rdx` (the virtualized fn)
+    // 0x68CAC10 = CScriptSystem::Init -- promoted to a named [eng] hook (ScriptSystemInit_Detour)
+    0x690A800, // sub_18690A800  = lua_newstate
+    0x68CABD0, // sub_1868CABD0  = CScriptSystem::LuaAlloc (lua_Alloc)
+    0x6900870, // sub_186900870 = CallGuarded -- runs f_luaopen (sub_18690AA40, VIRTUALIZED) -> crash
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
