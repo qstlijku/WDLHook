@@ -1843,14 +1843,83 @@ static char __fastcall CacheDetails_Detour(void* self)
     tprintf("[cache] stubbed sub_188C10530 -> L1=32768 L2=262144 L3=8388608, ret 1\n"); fflush(stdout);
     return 1;
 }
+// ---------------------------------------------------------------------------------------------------
+// Denuvo-VM stub #2: f_luaopen (sub_18690AA40) -- Lua's protected state initializer, run via
+// luaD_rawrunprotected inside lua_newstate (CScriptSystem::Init). Retail's copy is virtualized
+// (entry jmp 0x211AB5D0 -> VM), so lua_newstate faults during CScriptSystem::Init. It's stock Lua 5.1:
+// build the stack, globals table, registry, string table, tag methods, lexer. We reimplement it natively,
+// calling this build's real (native) Lua internals. Struct offsets from DuniaDemo.h (verified vs retail).
+// Original trampoline is NOT called (it's the VM).
+//
+// TODO: fill the 5 callee RVAs below from the retail idb (idb_names.txt) and confirm each entry is native
+// (a real prologue, NOT `E9 .. jmp` into .rsrc). Fill all 5 before building -- a 0 RVA makes the detour
+// call base+0 and crash.
+static const uintptr_t kRva_stack_init   = 0;          // TODO  stack_init(lua_State*, lua_State*)
+static const uintptr_t kRva_luaH_new     = 0;          // TODO  luaH_new(lua_State*, int narray, int nhash) -> Table*
+static const uintptr_t kRva_luaS_resize  = 0;          // TODO  luaS_resize(lua_State*, int newsize)
+static const uintptr_t kRva_luaT_init    = 0;          // TODO  luaT_init(lua_State*)
+static const uintptr_t kRva_luaX_init    = 0;          // TODO  luaX_init(lua_State*)
+static const uintptr_t kRva_luaS_newlstr = 0x6915E90;  // sub_186915E90 (already identified) luaS_newlstr(L,const char*,size_t)->TString*
+
+typedef void  (__fastcall* pfnStackInit)  (void* L1, void* L);
+typedef void* (__fastcall* pfnLuaHNew)    (void* L, int narray, int nhash);
+typedef void  (__fastcall* pfnLuaSResize) (void* L, int newsize);
+typedef void  (__fastcall* pfnLuaTInit)   (void* L);
+typedef void  (__fastcall* pfnLuaXInit)   (void* L);
+typedef void* (__fastcall* pfnLuaSNewlstr)(void* L, const char* s, size_t len);
+
+typedef void (__fastcall* FLuaOpen_t)(void* L, void* ud);
+static FLuaOpen_t g_fluaopenOrig = nullptr;   // trampoline unused -- retail original is the VM
+static uintptr_t  g_vmBase = 0;               // module base, set in InstallVmStubs
+
+// void f_luaopen(lua_State* L, void* ud)  -- stock Lua 5.1 body, reimplemented against this build's internals.
+static void __fastcall f_luaopen_Detour(void* L, void* /*ud*/)
+{
+    tprintf("f_luaopen detour called\n");
+    uintptr_t b = g_vmBase;
+    pfnStackInit   stack_init   = (pfnStackInit)  (b + kRva_stack_init);
+    pfnLuaHNew     luaH_new     = (pfnLuaHNew)    (b + kRva_luaH_new);
+    pfnLuaSResize  luaS_resize  = (pfnLuaSResize) (b + kRva_luaS_resize);
+    pfnLuaTInit    luaT_init    = (pfnLuaTInit)   (b + kRva_luaT_init);
+    pfnLuaXInit    luaX_init    = (pfnLuaXInit)   (b + kRva_luaX_init);
+    pfnLuaSNewlstr luaS_newlstr = (pfnLuaSNewlstr)(b + kRva_luaS_newlstr);
+
+    char* Lb = (char*)L;
+    char* g  = *(char**)(Lb + 0x20);                    // L->l_G  (global_State*)
+
+    stack_init(L, L);                                   // init stack
+
+    *(void**)(Lb + 0x78) = luaH_new(L, 0, 2);           // L->l_gt.value.gc = new table
+    *(int*)  (Lb + 0x80) = 5;                            // L->l_gt.tt = LUA_TTABLE
+
+    *(void**)(g + 0xA0)  = luaH_new(L, 0, 2);            // g->l_registry.value.gc = new table
+    *(int*)  (g + 0xA8)  = 5;                            // g->l_registry.tt = LUA_TTABLE
+
+    luaS_resize(L, 32);                                 // MINSTRTABSIZE
+    luaT_init(L);                                       // tag methods
+    luaX_init(L);                                       // lexer
+
+    void* memerr = luaS_newlstr(L, "not enough memory", 17);   // luaS_newliteral(MEMERRMSG)
+    *((unsigned char*)memerr + 9) |= 0x20;              // luaS_fix: GCheader.marked |= FIXEDBIT (0x20)
+
+    *(unsigned long long*)(g + 0x70) = 4 * *(unsigned long long*)(g + 0x78);   // GCthreshold = 4*totalbytes
+    tprintf("[lua] f_luaopen reimpl ran -- Lua state initialized natively\n"); fflush(stdout);
+}
 static void InstallVmStubs(uintptr_t base)
 {
     MH_Initialize();   // idempotent
+    g_vmBase = base;
     void* cache = (void*)(base + 0x8C10530);
     if (MH_CreateHook(cache, &CacheDetails_Detour, (LPVOID*)&g_cacheOrig) == MH_OK && MH_EnableHook(cache) == MH_OK)
         tprintf("[cache] hooked RetrieveClassicalCPUCacheDetails (sub_188C10530) @ %p\n", cache);
     else
         tprintf("[cache] FAILED to hook sub_188C10530 @ %p\n", cache);
+
+    void* flua = (void*)(base + 0x690AA40);   // sub_18690AA40 = f_luaopen (Denuvo-virtualized)
+    if (MH_CreateHook(flua, &f_luaopen_Detour, (LPVOID*)&g_fluaopenOrig) == MH_OK && MH_EnableHook(flua) == MH_OK)
+        tprintf("[lua] hooked f_luaopen (sub_18690AA40) @ %p\n", flua);
+    else
+        tprintf("[lua] FAILED to hook f_luaopen @ %p\n", flua);
     fflush(stdout);
 }
 static void InstallCheckpoints(uintptr_t base)
