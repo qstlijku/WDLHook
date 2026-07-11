@@ -1717,9 +1717,15 @@ static ChkFn_t g_chkOrig[32];
 
 template<int N> static __int64 __fastcall ChkThunk(void* a, void* b, void* c, void* d)
 {
+    if (N == 29)
+    {
+        tprintf("CPU detection started\n");
+    }
     tprintf("[chk] sub_%llX ENTER\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
     __int64 r = g_chkOrig[N](a, b, c, d);
     tprintf("[chk] sub_%llX RETURNED\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
+    if (N == 17)
+        tprintf("InitializeEngineServices (anon): DetectDesktopMonitorResolution returned\n");
     return r;
 }
 static void* g_chkThunks[] = {
