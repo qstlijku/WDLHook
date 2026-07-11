@@ -234,9 +234,76 @@ static void LogBacktrace(const char* tag)
     fflush(stdout);
 }
 
+// Full stack unwind from an exception CONTEXT (proper x64 walk via RtlVirtualUnwind + RtlLookupFunctionEntry,
+// with a leaf fallback for frames that have no .pdata -- e.g. the bad-RVA crash IP or Denuvo-VM code). This
+// prints the whole crash chain in one shot (module+RVA per frame), instead of bracketing down by hand.
+static void LogCrashBacktrace(EXCEPTION_POINTERS* ep)
+{
+    CONTEXT ctx = *ep->ContextRecord;   // copy; RtlVirtualUnwind mutates it
+    char name[MAX_PATH];
+    tprintf("[veh]   --- backtrace (unwound from crash context) ---\n");
+    for (int frame = 0; frame < 40 && ctx.Rip; ++frame)
+    {
+        void* rip = (void*)ctx.Rip;
+        HMODULE m = nullptr; const char* b = "?"; unsigned long long off = 0;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)rip, &m) && m)
+        {
+            GetModuleFileNameA(m, name, MAX_PATH);
+            const char* s = strrchr(name, '\\'); b = s ? s + 1 : name;
+            off = (unsigned long long)((uintptr_t)rip - (uintptr_t)m);
+        }
+        tprintf("[veh]   #%-2d %p  %s+0x%llX\n", frame, rip, b, off);
+        bool ok = false;
+        __try
+        {
+            DWORD64 imageBase = 0;
+            PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(ctx.Rip, &imageBase, nullptr);
+            if (rf)
+            {
+                PVOID handlerData = nullptr; DWORD64 establisher = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, rf, &ctx, &handlerData, &establisher, nullptr);
+                ok = true;
+            }
+            else if (ctx.Rsp && frame == 0)   // leaf fallback ONLY for the faulting frame (crash IP has no
+            {                                 // .pdata); past the Denuvo-VM frame it loops into garbage, so
+                ctx.Rip = *(DWORD64*)ctx.Rsp; // stop after #1 and let the stack scan below take over.
+                ctx.Rsp += 8;
+                ok = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        if (!ok) break;
+    }
+    // The proper unwinder stalls at Denuvo-VM frames (.rsrc has no .pdata). Fall back to a raw stack scan:
+    // log every stack QWORD that points into DuniaDemo's code (mislabeled ".rdata", RVA < 0x9DBDE00) -- these
+    // are the engine return addresses, so the real call chain (sub_188C0FD70 <- sub_1867936F0 <- ...) shows up.
+    tprintf("[veh]   --- stack scan for DuniaDemo code pointers ---\n");
+    if (HMODULE game = GetModuleHandleW(kRendererDll))
+    {
+        uintptr_t gbase = (uintptr_t)game;
+        uintptr_t codeEnd = gbase + 0x9DBDE00;   // .rdata end (engine code lives in the mislabeled .rdata)
+        DWORD64* sp = (DWORD64*)ep->ContextRecord->Rsp;
+        uintptr_t stackTop = (uintptr_t)((NT_TIB*)NtCurrentTeb())->StackBase;   // bound reads to the real stack
+        int shown = 0;
+        for (int i = 0; i < 16384 && shown < 64; ++i)
+        {
+            if ((uintptr_t)&sp[i] + 8 > stackTop) break;   // don't read past the committed stack (no AV)
+            uintptr_t v = (uintptr_t)sp[i];
+            if (v > gbase + 0x1000 && v < codeEnd)
+            {
+                tprintf("[veh]   [sp+0x%05X] DuniaDemo+0x%llX\n", i * 8, (unsigned long long)(v - gbase));
+                ++shown;
+            }
+        }
+    }
+    fflush(stdout);
+}
+
 // VEH: log severe exceptions (module+offset) to catch a crash that bypasses the exit APIs.
 static LONG CALLBACK VehLogger(EXCEPTION_POINTERS* ep)
 {
+    static LONG depth = 0;
+    if (InterlockedIncrement(&depth) != 1) { InterlockedDecrement(&depth); return EXCEPTION_CONTINUE_SEARCH; } // no re-entry
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     if (code == 0xC0000005 || code == 0xC000001D || code == 0xC0000096 || code == 0xC00000FD || code == 0xC0000094)
     {
@@ -249,8 +316,10 @@ static LONG CALLBACK VehLogger(EXCEPTION_POINTERS* ep)
                 GetModuleFileNameA(m, nm, MAX_PATH);
             tprintf("[veh] exception %#lx at %p  module=%s +0x%llX\n", code, addr, nm,
                 m ? (unsigned long long)((uintptr_t)addr - (uintptr_t)m) : 0ULL);
+            LogCrashBacktrace(ep);   // full unwound chain (module+RVA per frame)
         }
     }
+    InterlockedDecrement(&depth);
     return EXCEPTION_CONTINUE_SEARCH; // observe only
 }
 
@@ -1312,6 +1381,19 @@ static bool ManualInitDll(HMODULE mod)
         fflush(stdout);
         initialize_thread_safe_statics();   // __xi (tss + onexit) so the ctor's magic-statics/atexit work
         BindDenuvoImports(base);            // bind the private IAT so its imports resolve
+        {   // VERIFY the crashing GetSystemInfo slot (0xA97C580) is actually bound; CreateFileW (0xA97C328,
+            // known-working, same kernel32 block) is the control. match=0 means the binder didn't bind it.
+            HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+            uintptr_t giVal  = *(uintptr_t*)(base + 0xA97C580);
+            uintptr_t cfwVal = *(uintptr_t*)(base + 0xA97C328);
+            void* realGI  = (void*)GetProcAddress(k32, "GetSystemInfo");
+            void* realCFW = (void*)GetProcAddress(k32, "CreateFileW");
+            tprintf("[verify] GetSystemInfo slot 0xA97C580 = %p ; real kernel32 = %p ; match=%d\n",
+                    (void*)giVal, realGI, (int)(giVal == (uintptr_t)realGI));
+            tprintf("[verify] CreateFileW   slot 0xA97C328 = %p ; real kernel32 = %p ; match=%d\n",
+                    (void*)cfwVal, realCFW, (int)(cfwVal == (uintptr_t)realCFW));
+            fflush(stdout);
+        }
         SpotCallCmdCtor(base);              // manually call the ctor + dump the result
     }
     else
@@ -1617,6 +1699,17 @@ static const uintptr_t kChkRvas[] = {
     0x7AD1E90, // sub_187AD1E90
     0x7AD6AC0, // sub_187AD6AC0 (returns bool -> branches)
     0x7AD2110, // sub_187AD2110 (last direct before the indirect vtable calls)
+    0x3270,    // sub_180003270 -- runs at +0x38 (right after sub_1876F89C0, which the crash follows)
+    // --- deeper: sub_180003270's distinctive (non-container-helper) direct calls, in exec order ---
+    0x67936F0, // sub_1867936F0 (1st call, takes CEngine::ms_instance)
+    0x6751EF0, // sub_186751EF0
+    0x7EA0D20, // sub_187EA0D20
+    0x686EFE0, // sub_18686EFE0
+    0x9EE0,    // sub_180009EE0
+    0xA890,    // sub_18000A890
+    0x9372994, // sub_189372994
+    0x8C0FD70, // sub_188C0FD70
+    0x9372A2C, // sub_189372A2C
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
@@ -1635,7 +1728,9 @@ static void* g_chkThunks[] = {
     (void*)&ChkThunk<8>,  (void*)&ChkThunk<9>,  (void*)&ChkThunk<10>, (void*)&ChkThunk<11>,
     (void*)&ChkThunk<12>, (void*)&ChkThunk<13>, (void*)&ChkThunk<14>, (void*)&ChkThunk<15>,
     (void*)&ChkThunk<16>, (void*)&ChkThunk<17>, (void*)&ChkThunk<18>, (void*)&ChkThunk<19>,
-    (void*)&ChkThunk<20>,
+    (void*)&ChkThunk<20>, (void*)&ChkThunk<21>, (void*)&ChkThunk<22>, (void*)&ChkThunk<23>,
+    (void*)&ChkThunk<24>, (void*)&ChkThunk<25>, (void*)&ChkThunk<26>, (void*)&ChkThunk<27>,
+    (void*)&ChkThunk<28>, (void*)&ChkThunk<29>, (void*)&ChkThunk<30>,
 };
 static void InstallCheckpoints(uintptr_t base)
 {
