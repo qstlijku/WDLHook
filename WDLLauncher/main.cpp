@@ -1119,6 +1119,15 @@ static FARPROC ResolveApi(const char* name, HMODULE* outMod = nullptr)
         L"bcrypt.dll", L"ncrypt.dll", L"crypt32.dll", L"wintrust.dll",   // crypto / cert / signature
         L"iphlpapi.dll", L"rpcrt4.dll", L"imm32.dll", L"setupapi.dll",   // net / rpc / IME / device enum
         L"d3d11.dll", L"dxgi.dll", L"d3dcompiler_47.dll", L"dinput8.dll", L"xinput1_4.dll",  // graphics / input
+        // Game middleware -- ship in the game bin next to WDLLauncher.exe, so LoadLibraryW-by-name finds
+        // them via the app dir. Manual load never pulled these in as dependencies, so their .trace private
+        // imports were left unbound (calling one faults, cf. GetApi @ 0xA97DF14). UPC_* stays on the emu.
+        L"amd_ags_x64.dll",                 // ags*   (AMD GPU extensions)
+        L"bink2w64.dll",                    // Bink*  (RAD video / intro playback)
+        L"tobii_gameintegration_x64.dll",   // GetApi (Tobii eye-tracking entry point)
+        L"tobii_g2om.dll",                  // g2om_* (Tobii gaze-to-object mapping)
+        L"GFSDK_SSAO.win64.dll",            // GFSDK_SSAO_CreateContext_D3D11 (NVIDIA HBAO+)
+        L"libScePad.dll",                   // scePad* (pad input; may be absent on PC -> simply skipped)
     };
     for (auto d : kDlls)
     {
@@ -1714,9 +1723,9 @@ static const uintptr_t kChkRvas[] = {
     0x686EFE0, // sub_18686EFE0
     0x9EE0,    // sub_180009EE0
     0xA890,    // sub_18000A890
-    0x9372994, // sub_189372994
+    //0x9372994, // sub_189372994
     0x8C0FD70, // sub_188C0FD70
-    0x9372A2C, // sub_189372A2C
+    //0x9372A2C, // sub_189372A2C
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
@@ -1724,7 +1733,7 @@ static ChkFn_t g_chkOrig[32];
 
 template<int N> static __int64 __fastcall ChkThunk(void* a, void* b, void* c, void* d)
 {
-    if (N == 29)   // sub_188C0FD70 = G4::Platform::Platform -- overwrite-vs-code-mutation test at entry
+    if (N == 28)   // sub_188C0FD70 = G4::Platform::Platform -- overwrite-vs-code-mutation test at entry
     {
         tprintf("CPU detection started\n");
         uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
@@ -1815,7 +1824,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
 
     // Per-PID log file (the console dies with the process when the relaunch kills us; the file survives).
     char logpath[MAX_PATH];
-    sprintf_s(logpath, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\wdllauncher_log_%lu.txt", GetCurrentProcessId());
+    sprintf_s(logpath, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\logs\\wdllauncher_log_%lu.txt", GetCurrentProcessId());
     fopen_s(&g_logFile, logpath, "w");
     tprintf("WDLLauncher: WinMain executing (pid %lu)\n", GetCurrentProcessId());
 
