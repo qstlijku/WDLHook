@@ -1560,6 +1560,10 @@ static EIC_t  g_ceiOrig  = nullptr;   // CEngine::Initialize (same sig as Initia
 static SREI_t g_sreiOrig = nullptr;
 typedef __int64 (__fastcall* S440_t)(void* a, void* b, void* c, void* d);
 static S440_t g_s440Orig = nullptr;   // CDriverGame::CreateAndInitGamerProfileManager (sub_181240440)
+typedef __int64 (__fastcall* ESI_t)(void* self, void* params);
+static ESI_t  g_esiOrig  = nullptr;   // CEngineServices::Initialize (sub_1867C0300)
+typedef __int64 (__fastcall* CLC_t)(void* self, const char* path);
+static CLC_t  g_clcOrig  = nullptr;   // CConfig::LoadConfig (sub_1867BCA70)
 
 static __int64 __fastcall InitializeCore_Detour(void* eng, void* params, double a, double b)
 {
@@ -1573,6 +1577,20 @@ static __int64 __fastcall Initialize_Detour(void* eng, void* params, double a, d
     tprintf("[eng] CEngine::Initialize (sub_186799B80) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
     __int64 r = g_ceiOrig(eng, params, a, b);
     tprintf("[eng] CEngine::Initialize RETURNED\n"); fflush(stdout);
+    return r;
+}
+static __int64 __fastcall EngineServicesInit_Detour(void* self, void* params)
+{
+    tprintf("[eng] CEngineServices::Initialize (sub_1867C0300) ENTER  this=%p params=%p\n", self, params); fflush(stdout);
+    __int64 r = g_esiOrig(self, params);
+    tprintf("[eng] CEngineServices::Initialize RETURNED\n"); fflush(stdout);
+    return r;
+}
+static __int64 __fastcall LoadConfig_Detour(void* self, const char* path)
+{
+    tprintf("[eng] CConfig::LoadConfig (sub_1867BCA70) ENTER  this=%p path=%s\n", self, path ? path : "(null)"); fflush(stdout);
+    __int64 r = g_clcOrig(self, path);
+    tprintf("[eng] CConfig::LoadConfig RETURNED\n"); fflush(stdout);
     return r;
 }
 static __int64 __fastcall CreateGamerProfileMgr_Detour(void* a, void* b, void* c, void* d)
@@ -1656,6 +1674,16 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked CEngine::Initialize (sub_186799B80) @ %p\n", cei);
     else
         tprintf("[eng] FAILED to hook CEngine::Initialize @ %p\n", cei);
+    void* esi = (void*)(base + 0x67C0300);   // sub_1867C0300 = CEngineServices::Initialize (wraps the virtualized-fn crash path)
+    if (MH_CreateHook(esi, &EngineServicesInit_Detour, (LPVOID*)&g_esiOrig) == MH_OK && MH_EnableHook(esi) == MH_OK)
+        tprintf("[eng] hooked CEngineServices::Initialize (sub_1867C0300) @ %p\n", esi);
+    else
+        tprintf("[eng] FAILED to hook CEngineServices::Initialize @ %p\n", esi);
+    void* clc = (void*)(base + 0x67BCA70);   // sub_1867BCA70 = CConfig::LoadConfig
+    if (MH_CreateHook(clc, &LoadConfig_Detour, (LPVOID*)&g_clcOrig) == MH_OK && MH_EnableHook(clc) == MH_OK)
+        tprintf("[eng] hooked CConfig::LoadConfig (sub_1867BCA70) @ %p\n", clc);
+    else
+        tprintf("[eng] FAILED to hook CConfig::LoadConfig @ %p\n", clc);
     if (MH_CreateHook(gpm, &CreateGamerProfileMgr_Detour, (LPVOID*)&g_s440Orig) == MH_OK && MH_EnableHook(gpm) == MH_OK)
         tprintf("[eng] hooked CDriverGame::CreateAndInitGamerProfileManager (sub_181240440) @ %p\n", gpm);
     else
@@ -1690,7 +1718,10 @@ static void InstallSkuTrace(uintptr_t base)
 // both are bracketed by neighbors anyway). Already-hooked (InitializeCore/CreateAndInitGamerProfileManager/
 // Initialize) are omitted here to avoid double-hooking.
 static const bool kCheckpoints = true;
-static const uintptr_t kChkRvas[] = {
+// OLD broad bracket (InitializeCore..Initialize) -- too noisy now (sub_189372994/A2C container loops etc.).
+// Commented out; kept for reference. Swap the two kChkRvas definitions to restore.
+/*
+static const uintptr_t kChkRvasOld[] = {
     0x54F0,    // sub_1800054F0 = vtbl+120 -- FIRST call after InitializeCore (CreateEngineWindow)
     0x6D7B20,  // sub_1806D7B20 (-profile_game_init check)
     0x1217660, // sub_181217660 (game_init; only if -profile_game_init set -- may not fire)
@@ -1708,24 +1739,32 @@ static const uintptr_t kChkRvas[] = {
     0x4E20,    // sub_180004E20 = vtbl+96
     0x76337A0, // sub_1876337A0
     0x6FC1920, // sub_186FC1920 -- last before CEngine::Initialize
-    // --- deeper bracket: InitializeEngineServices (sub_1800056A0, vtbl+136) internal non-CRT calls, since
-    //     the crash is INSIDE it. After these 3 platform calls come indirect vtable calls (call [rax+0x88/
-    //     0xd8/0x68/0xe0]) -- one of those is the bare-RVA jump to 0x21B2B9F4 (un-bootstrapped Denuvo vtable).
     0x76F89C0, // sub_1876F89C0 (1st call in InitializeEngineServices)
     0x7AD1E90, // sub_187AD1E90
     0x7AD6AC0, // sub_187AD6AC0 (returns bool -> branches)
     0x7AD2110, // sub_187AD2110 (last direct before the indirect vtable calls)
-    0x3270,    // sub_180003270 -- runs at +0x38 (right after sub_1876F89C0, which the crash follows)
-    // --- deeper: sub_180003270's distinctive (non-container-helper) direct calls, in exec order ---
+    0x3270,    // sub_180003270 -- runs at +0x38
     0x67936F0, // sub_1867936F0 (1st call, takes CEngine::ms_instance)
     0x6751EF0, // sub_186751EF0
     0x7EA0D20, // sub_187EA0D20
     0x686EFE0, // sub_18686EFE0
     0x9EE0,    // sub_180009EE0
     0xA890,    // sub_18000A890
-    //0x9372994, // sub_189372994
     0x8C0FD70, // sub_188C0FD70
-    //0x9372A2C, // sub_189372A2C
+};
+*/
+// TARGETED: just the critical path through CEngine::InitializeEngineServices (sub_1867936F0) down to the
+// current virtualized-fn crash -- CallGuarded (sub_186900870) -> `call rdx`. Reconstructed from the VEH
+// stack scan; the last ENTER without a matching RETURN is the frame that jumps into the un-bootstrapped VM.
+static const uintptr_t kChkRvas[] = {
+    0x67936F0, // sub_1867936F0 = CEngine::InitializeEngineServices  (parent)
+    0x67BF650, // sub_1867BF650 = CEngineServices init (CMemMng::NMalloc(288), 1st call)
+    0x67BF8D0, // sub_1867BF8D0
+    0x68D2270, // sub_1868D2270
+    0x68CAC10, // sub_1868CAC10
+    0x690A800, // sub_18690A800
+    0x68CABD0, // sub_1868CABD0  (callback target)
+    0x6900870, // sub_186900870 = CallGuarded -- crash is in its `call rdx` (the virtualized fn)
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
