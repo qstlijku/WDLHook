@@ -1779,6 +1779,7 @@ static const uintptr_t kChkRvas[] = {
     0x690A800, // sub_18690A800  = lua_newstate
     0x68CABD0, // sub_1868CABD0  = CScriptSystem::LuaAlloc (lua_Alloc)
     0x6900870, // sub_186900870 = CallGuarded -- runs f_luaopen (sub_18690AA40, VIRTUALIZED) -> crash
+    0x690AA40, // f_luaopen = sub_18690AA40
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
