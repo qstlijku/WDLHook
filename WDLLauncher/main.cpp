@@ -1449,6 +1449,32 @@ static __int64 __fastcall LoadSkuConfigPC_Detour(void* inst, int lang, void* sku
     return r;
 }
 
+// --- engine-init pass-through checkpoints (log ENTER/RETURN to see how far init actually gets) ---
+// CEngine::InitializeCore = sub_186793540 (RVA 0x6793540): called with rcx=CEngine::ms_instance,
+//   rdx=&parameters, between CRenderCaps::FetchCaps and CreateEngineWindow.
+// SceneRendererFacade::EndInit = sub_187398370 (RVA 0x7398370): first call inside the PostEngineInit-success
+//   block (pre-"Initializing Game"). If this ENTERs, init got past all the SKU/language work -- so the
+//   language thing isn't the blocker.
+typedef __int64 (__fastcall* EIC_t) (void* eng, void* params, double a, double b);
+typedef __int64 (__fastcall* SREI_t)(void* a, void* b, double c, double d);
+static EIC_t  g_eicOrig  = nullptr;
+static SREI_t g_sreiOrig = nullptr;
+
+static __int64 __fastcall InitializeCore_Detour(void* eng, void* params, double a, double b)
+{
+    tprintf("[eng] CEngine::InitializeCore (sub_186793540) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
+    __int64 r = g_eicOrig ? g_eicOrig(eng, params, a, b) : 0;
+    tprintf("[eng] CEngine::InitializeCore RETURNED\n"); fflush(stdout);
+    return r;
+}
+static __int64 __fastcall SceneRendererEndInit_Detour(void* a, void* b, double c, double d)
+{
+    tprintf("[eng] SceneRendererFacade::EndInit (sub_187398370) ENTER (PostEngineInit ok -- pre-\"Initializing Game\")\n"); fflush(stdout);
+    __int64 r = g_sreiOrig ? g_sreiOrig(a, b, c, d) : 0;
+    tprintf("[eng] SceneRendererFacade::EndInit RETURNED\n"); fflush(stdout);
+    return r;
+}
+
 // --- Win32 seams: which data file is missing (+ from where), and who shows the box ---
 static bool TraceFileMatch(LPCWSTR name)
 {
@@ -1501,6 +1527,18 @@ static void InstallSkuTrace(uintptr_t base)
         else
             tprintf("[sku] FAILED to hook %s @ %p\n", e.nm, e.addr);
     }
+
+    // Engine-init pass-through checkpoints (how far does init get?).
+    void* eic = (void*)(base + 0x6793540);   // sub_186793540 = CEngine::InitializeCore
+    void* pgi = (void*)(base + 0x7398370);   // sub_187398370 = SceneRendererFacade::EndInit (1st call in PostEngineInit block)
+    if (MH_CreateHook(eic, &InitializeCore_Detour, (LPVOID*)&g_eicOrig) == MH_OK && MH_EnableHook(eic) == MH_OK)
+        tprintf("[eng] hooked CEngine::InitializeCore (sub_186793540) @ %p\n", eic);
+    else
+        tprintf("[eng] FAILED to hook CEngine::InitializeCore @ %p\n", eic);
+    if (MH_CreateHook(pgi, &SceneRendererEndInit_Detour, (LPVOID*)&g_sreiOrig) == MH_OK && MH_EnableHook(pgi) == MH_OK)
+        tprintf("[eng] hooked SceneRendererFacade::EndInit (sub_187398370) @ %p\n", pgi);
+    else
+        tprintf("[eng] FAILED to hook SceneRendererFacade::EndInit @ %p\n", pgi);
 
     // Win32 seams: resolve the real export addresses, then MinHook them.
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");

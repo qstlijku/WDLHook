@@ -574,6 +574,63 @@ static void TryHookGameToken(LPCWSTR name, HMODULE mod)
     else tprintf("[token] FAILED to hook getGameTokenInterface @ %p\n", tgt);
 }
 
+// ---- UPC_ProductListGet capture (normal retail run): dump the real owned-product list -------------
+// The manual-load emu returns an EMPTY product list, so CUplayPCClientManager::Initialize bails with the
+// "Unable to find language files" box (a mislabeled ownership failure). Capturing a real run (owning the
+// game + all DLC) gives the authoritative product ids/ownership to replicate in upc_emu.h. Hook the REAL
+// export in uplay_r2_loader64.dll (not a game thunk) via the LoadLibrary catch, before UPC init calls it.
+// Sig (ACMHook proxy + UplayWrapper): int UPC_ProductListGet(ctx, userId, filter, outList, cb, cbData);
+// out: *outList = UPC_ProductList*. Enums: ownership Owned=1; type Game=1/Addon=2; state Playable=3.
+struct UPC_ProductList { unsigned int count; void* list; };
+struct UPC_Product { unsigned int id, type, ownership, state, balance, activation; };
+static bool g_upcProductHooked = false;
+static const char* OwnStr(unsigned int o) { return o==1?"Owned":o==2?"Preordered":o==3?"Suspended":o==4?"NotOwned":o==5?"Locked":"?"; }
+static const char* TypeStr(unsigned int t){ return t==1?"Game":t==2?"Addon":t==3?"Package":t==4?"Consumable":t==5?"ConsumablePack":t==6?"Bundle":"?"; }
+typedef int (__fastcall* UPCPLG_t)(void* ctx, const char* userId, unsigned int filter, void* outList, void* cb, void* cbData);
+static UPCPLG_t g_upcplg_orig = nullptr;
+
+static int __fastcall UPC_ProductListGet_Detour(void* ctx, const char* userId, unsigned int filter, void* outList, void* cb, void* cbData)
+{
+    int r = g_upcplg_orig(ctx, userId, filter, outList, cb, cbData);
+    tprintf("[prod] UPC_ProductListGet(userId=%s, filter=%u, cb=%p) -> %d\n", userId ? userId : "(null)", filter, cb, r);
+    __try
+    {
+        UPC_ProductList* pl = outList ? *(UPC_ProductList**)outList : nullptr;
+        if (!pl)
+            tprintf("[prod]   outList empty at return (async -- delivered via cb/event; would need a cb hook)\n");
+        else
+        {
+            tprintf("[prod]   count=%u list=%p\n", pl->count, pl->list);
+            UPC_Product* arr = (UPC_Product*)pl->list;
+            unsigned int n = pl->count; if (n > 128) n = 128;
+            for (unsigned int i = 0; i < n; ++i)
+                tprintf("[prod]   [%u] id=%u type=%u(%s) ownership=%u(%s) state=%u balance=%u activation=%u\n",
+                    i, arr[i].id, arr[i].type, TypeStr(arr[i].type), arr[i].ownership, OwnStr(arr[i].ownership),
+                    arr[i].state, arr[i].balance, arr[i].activation);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[prod]   (bad outList deref)\n"); }
+    fflush(stdout);
+    return r;
+}
+static void TryHookUpcProduct(LPCWSTR name, HMODULE mod)
+{
+    if (g_upcProductHooked || !name || !mod) return;
+    wchar_t low[1024]; low[0] = 0;
+    wcsncpy_s(low, _countof(low), name, _TRUNCATE);
+    _wcslwr_s(low, _countof(low));
+    if (!wcsstr(low, L"uplay_r2_loader64")) return; // "uplay_r2_loader64" / ".dll", any path/case
+    void* tgt = (void*)GetProcAddress(mod, "UPC_ProductListGet");
+    if (!tgt) { tprintf("[prod] UPC_ProductListGet export not found in %ls\n", name); return; }
+    if (MH_CreateHook(tgt, &UPC_ProductListGet_Detour, reinterpret_cast<LPVOID*>(&g_upcplg_orig)) == MH_OK
+        && MH_EnableHook(tgt) == MH_OK)
+    {
+        g_upcProductHooked = true;
+        tprintf("[prod] hooked uplay_r2_loader64!UPC_ProductListGet @ %p\n", tgt);
+    }
+    else tprintf("[prod] FAILED to hook UPC_ProductListGet @ %p\n", tgt);
+}
+
 // LoadLibrary hooks: dbdata is loaded during engine boot, AFTER Misc::Initialize runs, so catch its
 // load and hook getGameTokenInterface before the engine calls it.
 typedef HMODULE (WINAPI* LoadLibraryW_t)(LPCWSTR);
@@ -587,10 +644,10 @@ static LoadLibraryExA_t g_LL_ExA = nullptr;
 static const DWORD kDataOnly = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | LOAD_LIBRARY_AS_IMAGE_RESOURCE;
 static void AnsiToWide(LPCSTR a, wchar_t* out, int n) { out[0] = 0; if (a) MultiByteToWideChar(CP_ACP, 0, a, -1, out, n); }
 
-static HMODULE WINAPI LL_W_Detour(LPCWSTR n)                       { HMODULE m = g_LL_W(n);         if (m) TryHookGameToken(n, m); return m; }
-static HMODULE WINAPI LL_ExW_Detour(LPCWSTR n, HANDLE f, DWORD fl) { HMODULE m = g_LL_ExW(n, f, fl); if (m && !(fl & kDataOnly)) TryHookGameToken(n, m); return m; }
-static HMODULE WINAPI LL_A_Detour(LPCSTR n)                        { HMODULE m = g_LL_A(n);         if (m) { wchar_t w[1024]; AnsiToWide(n, w, 1024); TryHookGameToken(w, m); } return m; }
-static HMODULE WINAPI LL_ExA_Detour(LPCSTR n, HANDLE f, DWORD fl)  { HMODULE m = g_LL_ExA(n, f, fl); if (m && !(fl & kDataOnly)) { wchar_t w[1024]; AnsiToWide(n, w, 1024); TryHookGameToken(w, m); } return m; }
+static HMODULE WINAPI LL_W_Detour(LPCWSTR n)                       { HMODULE m = g_LL_W(n);         if (m) { TryHookGameToken(n, m); TryHookUpcProduct(n, m); } return m; }
+static HMODULE WINAPI LL_ExW_Detour(LPCWSTR n, HANDLE f, DWORD fl) { HMODULE m = g_LL_ExW(n, f, fl); if (m && !(fl & kDataOnly)) { TryHookGameToken(n, m); TryHookUpcProduct(n, m); } return m; }
+static HMODULE WINAPI LL_A_Detour(LPCSTR n)                        { HMODULE m = g_LL_A(n);         if (m) { wchar_t w[1024]; AnsiToWide(n, w, 1024); TryHookGameToken(w, m); TryHookUpcProduct(w, m); } return m; }
+static HMODULE WINAPI LL_ExA_Detour(LPCSTR n, HANDLE f, DWORD fl)  { HMODULE m = g_LL_ExA(n, f, fl); if (m && !(fl & kDataOnly)) { wchar_t w[1024]; AnsiToWide(n, w, 1024); TryHookGameToken(w, m); TryHookUpcProduct(w, m); } return m; }
 
 static void HookApi(const wchar_t* mod, const char* name, LPVOID detour, LPVOID* orig)
 {
@@ -652,15 +709,28 @@ static FARPROC WINAPI GetProcAddress_Detour(HMODULE mod, LPCSTR name)
 
 static bool g_earlyHooksDone = false;
 
-static void InstallTokenCapture()
+static bool g_llHooksInstalled = false;
+static void InstallLoadLibraryHooks()   // shared by token + UPC-product capture; idempotent (can't double-hook LoadLibrary*)
 {
+    if (g_llHooksInstalled) return;
+    g_llHooksInstalled = true;
     HookApi(L"kernel32.dll", "LoadLibraryW",   &LL_W_Detour,   reinterpret_cast<LPVOID*>(&g_LL_W));
     HookApi(L"kernel32.dll", "LoadLibraryExW", &LL_ExW_Detour, reinterpret_cast<LPVOID*>(&g_LL_ExW));
     HookApi(L"kernel32.dll", "LoadLibraryA",   &LL_A_Detour,   reinterpret_cast<LPVOID*>(&g_LL_A));
     HookApi(L"kernel32.dll", "LoadLibraryExA", &LL_ExA_Detour, reinterpret_cast<LPVOID*>(&g_LL_ExA));
+}
+static void InstallTokenCapture()
+{
+    InstallLoadLibraryHooks();
     HookApi(L"kernel32.dll", "GetProcAddress", &GetProcAddress_Detour, reinterpret_cast<LPVOID*>(&g_GetProcAddress_orig));
     if (HMODULE m = GetModuleHandleW(L"dbdata.dll")) TryHookGameToken(L"dbdata.dll", m); // in case it's already up
     tprintf("[token] token capture + activation watch installed (dbdata hooked=%d)\n", (int)g_tokenHooked);
+}
+static void InstallUpcProductCapture()   // capture the real owned-product list on a normal run
+{
+    InstallLoadLibraryHooks();
+    if (HMODULE m = GetModuleHandleW(L"uplay_r2_loader64.dll")) TryHookUpcProduct(L"uplay_r2_loader64.dll", m); // in case it's already up
+    tprintf("[prod] UPC_ProductListGet capture armed (already-hooked=%d)\n", (int)g_upcProductHooked);
 }
 
 // ---- _initterm logger (ported from E3_Hook) ------------------------------------------------------
@@ -774,6 +844,7 @@ void Misc::InstallEarlyHooks()
     g_earlyHooksDone = true;
     MH_Initialize();
     //InstallTokenCapture();
+    InstallUpcProductCapture();   // arm the real-run UPC_ProductListGet capture (via the LoadLibrary catch, before UPC init)
     //InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
 }
 
