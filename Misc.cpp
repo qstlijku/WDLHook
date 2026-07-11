@@ -589,28 +589,56 @@ static const char* TypeStr(unsigned int t){ return t==1?"Game":t==2?"Addon":t==3
 typedef int (__fastcall* UPCPLG_t)(void* ctx, const char* userId, unsigned int filter, void* outList, void* cb, void* cbData);
 static UPCPLG_t g_upcplg_orig = nullptr;
 
-static int __fastcall UPC_ProductListGet_Detour(void* ctx, const char* userId, unsigned int filter, void* outList, void* cb, void* cbData)
+static void DumpProductList(void* outListSlot, const char* tag)   // *outListSlot = UPC_ProductList*
 {
-    int r = g_upcplg_orig(ctx, userId, filter, outList, cb, cbData);
-    tprintf("[prod] UPC_ProductListGet(userId=%s, filter=%u, cb=%p) -> %d\n", userId ? userId : "(null)", filter, cb, r);
     __try
     {
-        UPC_ProductList* pl = outList ? *(UPC_ProductList**)outList : nullptr;
-        if (!pl)
-            tprintf("[prod]   outList empty at return (async -- delivered via cb/event; would need a cb hook)\n");
-        else
-        {
-            tprintf("[prod]   count=%u list=%p\n", pl->count, pl->list);
-            UPC_Product* arr = (UPC_Product*)pl->list;
-            unsigned int n = pl->count; if (n > 128) n = 128;
-            for (unsigned int i = 0; i < n; ++i)
-                tprintf("[prod]   [%u] id=%u type=%u(%s) ownership=%u(%s) state=%u balance=%u activation=%u\n",
-                    i, arr[i].id, arr[i].type, TypeStr(arr[i].type), arr[i].ownership, OwnStr(arr[i].ownership),
-                    arr[i].state, arr[i].balance, arr[i].activation);
-        }
+        UPC_ProductList* pl = outListSlot ? *(UPC_ProductList**)outListSlot : nullptr;
+        if (!pl) { tprintf("[prod]   %s: outList empty\n", tag); return; }
+        tprintf("[prod]   %s: count=%u list=%p\n", tag, pl->count, pl->list);
+        UPC_Product* arr = (UPC_Product*)pl->list;
+        unsigned int n = pl->count; if (n > 128) n = 128;
+        for (unsigned int i = 0; i < n; ++i)
+            tprintf("[prod]   [%u] id=%u type=%u(%s) ownership=%u(%s) state=%u balance=%u activation=%u\n",
+                i, arr[i].id, arr[i].type, TypeStr(arr[i].type), arr[i].ownership, OwnStr(arr[i].ownership),
+                arr[i].state, arr[i].balance, arr[i].activation);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[prod]   (bad outList deref)\n"); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[prod]   %s: (bad outList deref)\n", tag); }
     fflush(stdout);
+}
+
+// UPC_ProductListGet is ASYNC: outList is empty at return, populated + signaled later via
+// cb(int result, void* cbData). So wrap the callback -- pass ours, keep the game's, dump the list when
+// it fires, then forward. Callback sig from UplayWrapper UplayImpl.cs: void UPC_Callback(int, void*).
+typedef void (__fastcall* UpcCb_t)(int result, void* data);
+struct UpcPendingReq { void* gameCb; void* gameCbData; void* outList; };
+
+static void __fastcall UpcProductCb_Wrapper(int result, void* data)
+{
+    UpcPendingReq* pr = (UpcPendingReq*)data;
+    tprintf("[prod] UPC_ProductListGet CALLBACK fired (result=%d)\n", result);
+    DumpProductList(pr ? pr->outList : nullptr, "cb");
+    void* gameCb = pr ? pr->gameCb : nullptr;
+    void* gameCbData = pr ? pr->gameCbData : nullptr;
+    free(pr);
+    if (gameCb) ((UpcCb_t)gameCb)(result, gameCbData);   // forward to the game's real callback
+}
+
+static int __fastcall UPC_ProductListGet_Detour(void* ctx, const char* userId, unsigned int filter, void* outList, void* cb, void* cbData)
+{
+    if (cb)   // async path: substitute our wrapper so we see the list when it's delivered
+    {
+        UpcPendingReq* pr = (UpcPendingReq*)malloc(sizeof(UpcPendingReq));
+        pr->gameCb = cb; pr->gameCbData = cbData; pr->outList = outList;
+        int r = g_upcplg_orig(ctx, userId, filter, outList, (void*)&UpcProductCb_Wrapper, pr);
+        tprintf("[prod] UPC_ProductListGet(userId=%s, filter=%u, cb=%p) -> %d [async, cb wrapped]\n",
+            userId ? userId : "(null)", filter, cb, r);
+        fflush(stdout);
+        return r;
+    }
+    int r = g_upcplg_orig(ctx, userId, filter, outList, cb, cbData);   // no cb: try the sync read
+    tprintf("[prod] UPC_ProductListGet(userId=%s, filter=%u, cb=null) -> %d\n", userId ? userId : "(null)", filter, r);
+    DumpProductList(outList, "sync");
     return r;
 }
 static void TryHookUpcProduct(LPCWSTR name, HMODULE mod)

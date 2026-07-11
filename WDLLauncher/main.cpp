@@ -1458,13 +1458,30 @@ static __int64 __fastcall LoadSkuConfigPC_Detour(void* inst, int lang, void* sku
 typedef __int64 (__fastcall* EIC_t) (void* eng, void* params, double a, double b);
 typedef __int64 (__fastcall* SREI_t)(void* a, void* b, double c, double d);
 static EIC_t  g_eicOrig  = nullptr;
+static EIC_t  g_ceiOrig  = nullptr;   // CEngine::Initialize (same sig as InitializeCore)
 static SREI_t g_sreiOrig = nullptr;
+typedef __int64 (__fastcall* S440_t)(void* a, void* b, void* c, void* d);
+static S440_t g_s440Orig = nullptr;   // CDriverGame::CreateAndInitGamerProfileManager (sub_181240440)
 
 static __int64 __fastcall InitializeCore_Detour(void* eng, void* params, double a, double b)
 {
     tprintf("[eng] CEngine::InitializeCore (sub_186793540) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
     __int64 r = g_eicOrig ? g_eicOrig(eng, params, a, b) : 0;
     tprintf("[eng] CEngine::InitializeCore RETURNED\n"); fflush(stdout);
+    return r;
+}
+static __int64 __fastcall Initialize_Detour(void* eng, void* params, double a, double b)
+{
+    tprintf("[eng] CEngine::Initialize (sub_186799B80) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
+    __int64 r = g_ceiOrig(eng, params, a, b);
+    tprintf("[eng] CEngine::Initialize RETURNED\n"); fflush(stdout);
+    return r;
+}
+static __int64 __fastcall CreateGamerProfileMgr_Detour(void* a, void* b, void* c, void* d)
+{
+    tprintf("[eng] CDriverGame::CreateAndInitGamerProfileManager (sub_181240440) ENTER  this=%p\n", a); fflush(stdout);
+    __int64 r = g_s440Orig(a, b, c, d);
+    tprintf("[eng] CDriverGame::CreateAndInitGamerProfileManager RETURNED\n"); fflush(stdout);
     return r;
 }
 static __int64 __fastcall SceneRendererEndInit_Detour(void* a, void* b, double c, double d)
@@ -1530,11 +1547,21 @@ static void InstallSkuTrace(uintptr_t base)
 
     // Engine-init pass-through checkpoints (how far does init get?).
     void* eic = (void*)(base + 0x6793540);   // sub_186793540 = CEngine::InitializeCore
+    void* gpm = (void*)(base + 0x1240440);   // sub_181240440 = CDriverGame::CreateAndInitGamerProfileManager
+    void* cei = (void*)(base + 0x6799B80);   // sub_186799B80 = CEngine::Initialize (later, after cmdline parser + gamer profile)
     void* pgi = (void*)(base + 0x7398370);   // sub_187398370 = SceneRendererFacade::EndInit (1st call in PostEngineInit block)
     if (MH_CreateHook(eic, &InitializeCore_Detour, (LPVOID*)&g_eicOrig) == MH_OK && MH_EnableHook(eic) == MH_OK)
         tprintf("[eng] hooked CEngine::InitializeCore (sub_186793540) @ %p\n", eic);
     else
         tprintf("[eng] FAILED to hook CEngine::InitializeCore @ %p\n", eic);
+    if (MH_CreateHook(cei, &Initialize_Detour, (LPVOID*)&g_ceiOrig) == MH_OK && MH_EnableHook(cei) == MH_OK)
+        tprintf("[eng] hooked CEngine::Initialize (sub_186799B80) @ %p\n", cei);
+    else
+        tprintf("[eng] FAILED to hook CEngine::Initialize @ %p\n", cei);
+    if (MH_CreateHook(gpm, &CreateGamerProfileMgr_Detour, (LPVOID*)&g_s440Orig) == MH_OK && MH_EnableHook(gpm) == MH_OK)
+        tprintf("[eng] hooked CDriverGame::CreateAndInitGamerProfileManager (sub_181240440) @ %p\n", gpm);
+    else
+        tprintf("[eng] FAILED to hook CDriverGame::CreateAndInitGamerProfileManager @ %p\n", gpm);
     if (MH_CreateHook(pgi, &SceneRendererEndInit_Detour, (LPVOID*)&g_sreiOrig) == MH_OK && MH_EnableHook(pgi) == MH_OK)
         tprintf("[eng] hooked SceneRendererFacade::EndInit (sub_187398370) @ %p\n", pgi);
     else

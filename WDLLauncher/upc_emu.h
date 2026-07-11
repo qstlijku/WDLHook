@@ -23,6 +23,54 @@ static const char  kUpcUserName[] = "OfflinePlayer";
 static const char  kUpcLang[]     = "english";
 static const char  kUpcEmpty[]    = "";
 
+// ---- owned-product list (captured from a real Connect run: base WD:Legion id 3353 + 19 owned DLC) ----
+// Real UPC_ProductListGet is ASYNC: it fills *outList then signals via cb(int result, void* cbData) on a
+// later UPC_Update pump (the game spins UPC_Update waiting for it). We fill *outList synchronously AND
+// queue the cb for UPC_Update, so both the sync-read and async-wait game paths complete.
+struct UPC_ProductList { unsigned int count; void* list; };
+struct UPC_Product { unsigned int id, type, ownership, state, balance, activation; };
+// type: Game=1, Addon=2 ; ownership: Owned=1 ; state: Playable=3 ; activation: Purchased=1
+static UPC_Product g_ownedProducts[] = {
+    { 3353, 1, 1, 3, 0, 1 },                                                        // Watch Dogs Legion (base game)
+    { 5187, 2, 1, 3, 0, 1 }, { 5188, 2, 1, 3, 0, 1 }, { 5189, 2, 1, 3, 0, 1 },      // owned DLC / add-ons
+    { 5190, 2, 1, 3, 0, 1 }, { 5191, 2, 1, 3, 0, 1 }, { 5192, 2, 1, 3, 0, 1 },
+    { 5193, 2, 1, 3, 0, 1 }, { 5194, 2, 1, 3, 0, 1 }, { 5195, 2, 1, 3, 0, 1 },
+    { 5196, 2, 1, 3, 0, 1 },
+    { 10789, 2, 1, 3, 0, 1 }, { 10790, 2, 1, 3, 0, 1 }, { 10791, 2, 1, 3, 0, 1 },
+    { 10792, 2, 1, 3, 0, 1 }, { 10793, 2, 1, 3, 0, 1 },
+    { 11228, 2, 1, 3, 0, 1 },
+    { 17791, 2, 1, 3, 0, 1 }, { 17888, 2, 1, 3, 0, 1 }, { 17956, 2, 1, 3, 0, 1 },
+};
+static const unsigned int kOwnedCount = (unsigned int)(sizeof(g_ownedProducts) / sizeof(g_ownedProducts[0]));
+
+// The engine reads UPC_ProductList.list as an ARRAY OF POINTERS -- sub_187AE65A0 does
+// r15 = list[rdi] (8-byte stride) then derefs *r15 as a 24-byte UPC_Product. So list must point to
+// product POINTERS, not inline structs (inline gave a bad pointer -> 0xC0000005 at +0x7AE6766).
+static UPC_Product* g_ownedProductPtrs[64];
+static UPC_ProductList g_ownedProductList = { 0, nullptr };   // count/list filled on first use
+static void UpcEnsureProductList()
+{
+    if (g_ownedProductList.list) return;
+    for (unsigned int i = 0; i < kOwnedCount; ++i) g_ownedProductPtrs[i] = &g_ownedProducts[i];
+    g_ownedProductList.count = kOwnedCount;
+    g_ownedProductList.list  = g_ownedProductPtrs;
+}
+
+// Pending async callbacks, fired on UPC_Update. Sig from UplayWrapper UplayImpl.cs: void cb(int, void*).
+typedef void (__fastcall* UpcCb_t)(int result, void* data);
+struct UpcPendingCb { UpcCb_t cb; void* data; int result; };
+static UpcPendingCb g_upcCbQueue[32];
+static int  g_upcCbCount  = 0;
+static bool g_upcInUpdate = false;
+static void UpcQueueCb(void* cb, void* data, int result)
+{
+    if (!cb || g_upcCbCount >= 32) return;
+    g_upcCbQueue[g_upcCbCount].cb = (UpcCb_t)cb;
+    g_upcCbQueue[g_upcCbCount].data = data;
+    g_upcCbQueue[g_upcCbCount].result = result;
+    ++g_upcCbCount;
+}
+
 // First-call-only logging (keeps the high-frequency pumps quiet). Uses pointer identity of the passed
 // string literal, which is stable per call site.
 static void UpcLogOnce(const char* name)
@@ -45,13 +93,34 @@ extern "C" void* emu_UPC_ContextCreate(unsigned int ver, void* settings)
     UpcLogOnce("UPC_ContextCreate"); return (void*)&g_upcCtx;      // non-null fake ctx
 }
 extern "C" int  emu_UPC_ContextFree(void* ctx) { UpcLogOnce("UPC_ContextFree"); return 0; }
-extern "C" int  emu_UPC_Update(void* ctx) { return 0; }           // pump: silent, no per-call log
+extern "C" int  emu_UPC_Update(void* ctx)                          // pump: fire any queued async callbacks
+{
+    if (g_upcInUpdate) return 0;                                  // guard against reentrant draining
+    g_upcInUpdate = true;
+    while (g_upcCbCount > 0)
+    {
+        UpcPendingCb p = g_upcCbQueue[0];
+        for (int i = 1; i < g_upcCbCount; ++i) g_upcCbQueue[i - 1] = g_upcCbQueue[i];
+        --g_upcCbCount;
+        tprintf("[upc] UPC_Update: firing queued cb=%p (result=%d, data=%p)\n", (void*)p.cb, p.result, p.data); fflush(stdout);
+        if (p.cb) p.cb(p.result, p.data);
+        tprintf("[upc] UPC_Update: cb returned\n"); fflush(stdout);
+    }
+    g_upcInUpdate = false;
+    return 0;
+}
 extern "C" int  emu_UPC_EventNextPoll(void* ctx, void* out) { return -6; }   // empty queue
 extern "C" int  emu_UPC_EventNextPeek(void* ctx, void* out) { return -6; }
 extern "C" int  emu_UPC_ProductListGet(void* ctx, const char* uid, unsigned int filter,
                                        long long* outList, void* cb, void* cbData)
 {
-    UpcLogOnce("UPC_ProductListGet"); if (outList) *outList = 0; return 0;   // TODO owned list + event
+    UpcLogOnce("UPC_ProductListGet");
+    UpcEnsureProductList();
+    if (outList) *outList = (long long)(void*)&g_ownedProductList;   // fill synchronously
+    UpcQueueCb(cb, cbData, 0);                                       // + deliver on the next UPC_Update pump
+    tprintf("[upc] UPC_ProductListGet: filled owned list (count=%u), queued cb=%p data=%p\n",
+            g_ownedProductList.count, cb, cbData); fflush(stdout);
+    return 0;
 }
 extern "C" int  emu_UPC_InstallChunkListGet(void* ctx, void** out)
 {
