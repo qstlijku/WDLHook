@@ -1584,6 +1584,74 @@ static void InstallSkuTrace(uintptr_t base)
             (void*)base, pCFW, pMBW); fflush(stdout);
 }
 // ===================================================================================================
+// Crash-bracket checkpoints: pass-through ENTER/RETURN log on every direct + virtual call between
+// CEngine::InitializeCore and CEngine::Initialize in CDuniaEngineInitBase::Init (sub_1800037A0), so the
+// post-InitializeCore Denuvo-VM crash localizes to "last ENTER without a RETURN" -- no debugger stepping.
+// Generic 4-ptr __fastcall thunk (correct for these int/ptr-arg fns). The 3 virtuals are a1's vtable
+// (off_189DBE560) resolved: +0x60/+0x78/+0x88. Excludes CMemMng::NMalloc + CGame::GetInstance (hot noise;
+// both are bracketed by neighbors anyway). Already-hooked (InitializeCore/CreateAndInitGamerProfileManager/
+// Initialize) are omitted here to avoid double-hooking.
+static const bool kCheckpoints = true;
+static const uintptr_t kChkRvas[] = {
+    0x54F0,    // sub_1800054F0 = vtbl+120 -- FIRST call after InitializeCore (CreateEngineWindow)
+    0x6D7B20,  // sub_1806D7B20 (-profile_game_init check)
+    0x1217660, // sub_181217660 (game_init; only if -profile_game_init set -- may not fire)
+    0x56A0,    // sub_1800056A0 = vtbl+136
+    0x7EA95D0, // sub_187EA95D0
+    0x1202D60, // sub_181202D60
+    0x6BD4020, // sub_186BD4020
+    0x1DFE3E0, // sub_181DFE3E0
+    0x6BD4070, // sub_186BD4070
+    0x6980590, // sub_186980590
+    0x687F3C0, // sub_18687F3C0
+    0x6024B10, // sub_186024B10
+    0x1217BB0, // sub_181217BB0
+    0x1217CA0, // sub_181217CA0 = CDriverGameCmdLineParser::Init (also called by MyRunGame)
+    0x4E20,    // sub_180004E20 = vtbl+96
+    0x76337A0, // sub_1876337A0
+    0x6FC1920, // sub_186FC1920 -- last before CEngine::Initialize
+    // --- deeper bracket: InitializeEngineServices (sub_1800056A0, vtbl+136) internal non-CRT calls, since
+    //     the crash is INSIDE it. After these 3 platform calls come indirect vtable calls (call [rax+0x88/
+    //     0xd8/0x68/0xe0]) -- one of those is the bare-RVA jump to 0x21B2B9F4 (un-bootstrapped Denuvo vtable).
+    0x76F89C0, // sub_1876F89C0 (1st call in InitializeEngineServices)
+    0x7AD1E90, // sub_187AD1E90
+    0x7AD6AC0, // sub_187AD6AC0 (returns bool -> branches)
+    0x7AD2110, // sub_187AD2110 (last direct before the indirect vtable calls)
+};
+static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
+typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
+static ChkFn_t g_chkOrig[32];
+
+template<int N> static __int64 __fastcall ChkThunk(void* a, void* b, void* c, void* d)
+{
+    tprintf("[chk] sub_%llX ENTER\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
+    __int64 r = g_chkOrig[N](a, b, c, d);
+    tprintf("[chk] sub_%llX RETURNED\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
+    return r;
+}
+static void* g_chkThunks[] = {
+    (void*)&ChkThunk<0>,  (void*)&ChkThunk<1>,  (void*)&ChkThunk<2>,  (void*)&ChkThunk<3>,
+    (void*)&ChkThunk<4>,  (void*)&ChkThunk<5>,  (void*)&ChkThunk<6>,  (void*)&ChkThunk<7>,
+    (void*)&ChkThunk<8>,  (void*)&ChkThunk<9>,  (void*)&ChkThunk<10>, (void*)&ChkThunk<11>,
+    (void*)&ChkThunk<12>, (void*)&ChkThunk<13>, (void*)&ChkThunk<14>, (void*)&ChkThunk<15>,
+    (void*)&ChkThunk<16>, (void*)&ChkThunk<17>, (void*)&ChkThunk<18>, (void*)&ChkThunk<19>,
+    (void*)&ChkThunk<20>,
+};
+static void InstallCheckpoints(uintptr_t base)
+{
+    if (!kCheckpoints) return;
+    MH_Initialize();
+    for (int i = 0; i < kNumChk; ++i)
+    {
+        void* tgt = (void*)(base + kChkRvas[i]);
+        if (MH_CreateHook(tgt, g_chkThunks[i], (LPVOID*)&g_chkOrig[i]) == MH_OK && MH_EnableHook(tgt) == MH_OK)
+            tprintf("[chk] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvas[i]), tgt);
+        else
+            tprintf("[chk] FAILED sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvas[i]), tgt);
+    }
+    tprintf("[chk] %d checkpoint hooks installed\n", kNumChk); fflush(stdout);
+}
+// ===================================================================================================
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmdLine, int /*nShowCmd*/)
 {
@@ -1639,6 +1707,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
     // Trace the SKU/language load path (manual-load "Unable to find language files"): the language enum,
     // the SKU load result, which data file the engine fails to open, and who shows the box.
     InstallSkuTrace((uintptr_t)dll);
+    InstallCheckpoints((uintptr_t)dll);   // bracket every call between InitializeCore and Initialize
 
     int rc;
     if (kUseCustomRunGame)
