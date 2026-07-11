@@ -1381,17 +1381,24 @@ static bool ManualInitDll(HMODULE mod)
         fflush(stdout);
         initialize_thread_safe_statics();   // __xi (tss + onexit) so the ctor's magic-statics/atexit work
         BindDenuvoImports(base);            // bind the private IAT so its imports resolve
-        {   // VERIFY the crashing GetSystemInfo slot (0xA97C580) is actually bound; CreateFileW (0xA97C328,
-            // known-working, same kernel32 block) is the control. match=0 means the binder didn't bind it.
+        {   // VERIFY post-bind: .trace has TWO identical kernel32 blocks (copy A ~0xA97A, copy B ~0xA97C).
+            // G4::Platform::Platform calls the copy-B slots and crashed, so check BOTH copies of each import
+            // vs the real export. If copyA match=1 but copyB match=0, the binder bound one block not the other.
             HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
-            uintptr_t giVal  = *(uintptr_t*)(base + 0xA97C580);
-            uintptr_t cfwVal = *(uintptr_t*)(base + 0xA97C328);
-            void* realGI  = (void*)GetProcAddress(k32, "GetSystemInfo");
-            void* realCFW = (void*)GetProcAddress(k32, "CreateFileW");
-            tprintf("[verify] GetSystemInfo slot 0xA97C580 = %p ; real kernel32 = %p ; match=%d\n",
-                    (void*)giVal, realGI, (int)(giVal == (uintptr_t)realGI));
-            tprintf("[verify] CreateFileW   slot 0xA97C328 = %p ; real kernel32 = %p ; match=%d\n",
-                    (void*)cfwVal, realCFW, (int)(cfwVal == (uintptr_t)realCFW));
+            struct { const char* nm; uintptr_t a, b; } chk[] = {
+                { "GetSystemInfo",           0xA97A4B8, 0xA97C580 },
+                { "GlobalMemoryStatusEx",    0xA97A558, 0xA97C620 },
+                { "GetLogicalDriveStringsA", 0xA97A418, 0xA97C4E0 },
+            };
+            for (auto& c : chk)
+            {
+                void* real = (void*)GetProcAddress(k32, c.nm);
+                uintptr_t va = *(uintptr_t*)(base + c.a);
+                uintptr_t vb = *(uintptr_t*)(base + c.b);
+                tprintf("[verify] %-24s copyA 0x%llX=%p match=%d | copyB 0x%llX=%p match=%d | real=%p\n",
+                        c.nm, (unsigned long long)c.a, (void*)va, (int)(va == (uintptr_t)real),
+                        (unsigned long long)c.b, (void*)vb, (int)(vb == (uintptr_t)real), real);
+            }
             fflush(stdout);
         }
         SpotCallCmdCtor(base);              // manually call the ctor + dump the result
@@ -1717,9 +1724,27 @@ static ChkFn_t g_chkOrig[32];
 
 template<int N> static __int64 __fastcall ChkThunk(void* a, void* b, void* c, void* d)
 {
-    if (N == 29)
+    if (N == 29)   // sub_188C0FD70 = G4::Platform::Platform -- overwrite-vs-code-mutation test at entry
     {
         tprintf("CPU detection started\n");
+        uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+        HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+        struct { const char* nm; uintptr_t slot; } s[] = {
+            { "GetSystemInfo",           0xA97C580 },   // called at +0x49
+            { "GlobalMemoryStatusEx",    0xA97C620 },
+            { "GetLogicalDriveStringsA", 0xA97C4E0 },
+        };
+        for (auto& e : s)
+        {
+            uintptr_t v = *(uintptr_t*)(base + e.slot);
+            void* real = (void*)GetProcAddress(k32, e.nm);
+            tprintf("[g4] slot 0x%llX %-24s = %p (real=%p match=%d)\n",
+                    (unsigned long long)e.slot, e.nm, (void*)v, real, (int)(v == (uintptr_t)real));
+        }
+        unsigned char* call = (unsigned char*)(base + 0x8C0FDB9);   // the GetSystemInfo `call [rip+..]` at +0x49
+        tprintf("[g4] call@+0x49 bytes:");
+        for (int i = 0; i < 8; ++i) tprintf(" %02X", call[i]);      // FF 15 C1 C7 D6 01 = call [rip+0x1d6c7c1] if unmutated
+        tprintf("\n"); fflush(stdout);
     }
     tprintf("[chk] sub_%llX ENTER\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
     __int64 r = g_chkOrig[N](a, b, c, d);
