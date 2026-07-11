@@ -1854,14 +1854,14 @@ static char __fastcall CacheDetails_Detour(void* self)
 // TODO: fill the 5 callee RVAs below from the retail idb (idb_names.txt) and confirm each entry is native
 // (a real prologue, NOT `E9 .. jmp` into .rsrc). Fill all 5 before building -- a 0 RVA makes the detour
 // call base+0 and crash.
-static const uintptr_t kRva_stack_init   = 0;          // TODO  stack_init(lua_State*, lua_State*)
-static const uintptr_t kRva_luaH_new     = 0;          // TODO  luaH_new(lua_State*, int narray, int nhash) -> Table*
-static const uintptr_t kRva_luaS_resize  = 0;          // TODO  luaS_resize(lua_State*, int newsize)
-static const uintptr_t kRva_luaT_init    = 0;          // TODO  luaT_init(lua_State*)
-static const uintptr_t kRva_luaX_init    = 0;          // TODO  luaX_init(lua_State*)
-static const uintptr_t kRva_luaS_newlstr = 0x6915E90;  // sub_186915E90 (already identified) luaS_newlstr(L,const char*,size_t)->TString*
+static const uintptr_t kRva_luaM_realloc = 0x6915D20;  // sub_186915D20  luaM_realloc_(L,block,osize,nsize) -- retail INLINES stack_init into lua_newthread, so we rebuild it from this
+static const uintptr_t kRva_luaH_new     = 0x6903910;  // sub_186903910  luaH_new(lua_State*, int narray, int nhash) -> Table*
+static const uintptr_t kRva_luaS_resize  = 0x6915D90;  // sub_186915D90  luaS_resize(lua_State*, int newsize)
+static const uintptr_t kRva_luaT_init    = 0x69214A0;  // sub_1869214A0  luaT_init(lua_State*)  (17 metamethods)
+static const uintptr_t kRva_luaX_init    = 0x69117F0;  // sub_1869117F0  luaX_init(lua_State*)  (21 keywords)
+static const uintptr_t kRva_luaS_newlstr = 0x6915E90;  // sub_186915E90  luaS_newlstr(L,const char*,size_t)->TString*
 
-typedef void  (__fastcall* pfnStackInit)  (void* L1, void* L);
+typedef void* (__fastcall* pfnLuaMRealloc)(void* L, void* block, size_t osize, size_t nsize);
 typedef void* (__fastcall* pfnLuaHNew)    (void* L, int narray, int nhash);
 typedef void  (__fastcall* pfnLuaSResize) (void* L, int newsize);
 typedef void  (__fastcall* pfnLuaTInit)   (void* L);
@@ -1877,7 +1877,7 @@ static void __fastcall f_luaopen_Detour(void* L, void* /*ud*/)
 {
     tprintf("f_luaopen detour called\n");
     uintptr_t b = g_vmBase;
-    pfnStackInit   stack_init   = (pfnStackInit)  (b + kRva_stack_init);
+    pfnLuaMRealloc luaM_realloc_ = (pfnLuaMRealloc)(b + kRva_luaM_realloc);
     pfnLuaHNew     luaH_new     = (pfnLuaHNew)    (b + kRva_luaH_new);
     pfnLuaSResize  luaS_resize  = (pfnLuaSResize) (b + kRva_luaS_resize);
     pfnLuaTInit    luaT_init    = (pfnLuaTInit)   (b + kRva_luaT_init);
@@ -1886,8 +1886,33 @@ static void __fastcall f_luaopen_Detour(void* L, void* /*ud*/)
 
     char* Lb = (char*)L;
     char* g  = *(char**)(Lb + 0x20);                    // L->l_G  (global_State*)
+    tprintf("[luaDBG] entry: L=%p g=%p  top(pre)=%p stack(pre)=%p\n",
+            L, g, *(void**)(Lb + 0x10), *(void**)(Lb + 0x40)); fflush(stdout);
 
-    stack_init(L, L);                                   // init stack
+    // stack_init(L) -- inlined (retail has no standalone copy; it's fused into lua_newthread).
+    {
+        char* base_ci = (char*)luaM_realloc_(L, 0, 0, 0x140);   // 8 CallInfo (0x28 each)
+        *(void**)(Lb + 0x50) = base_ci;                          // L->base_ci
+        *(void**)(Lb + 0x28) = base_ci;                          // L->ci
+        *(int*)  (Lb + 0x5C) = 8;                                // L->size_ci
+        *(void**)(Lb + 0x48) = base_ci + 0x118;                  // L->end_ci = base_ci + 7*0x28
+
+        char* stk = (char*)luaM_realloc_(L, 0, 0, 0x2D0);        // 45 TValue (0x10 each)
+        *(void**)(Lb + 0x40) = stk;                              // L->stack
+        *(int*)  (Lb + 0x58) = 45;                               // L->stacksize
+        *(void**)(Lb + 0x38) = stk + 0x270;                      // L->stack_last = stack + 39 TValue
+
+        char* top1 = stk + 0x10;                                 // stack + 1 TValue
+        *(void**)(base_ci + 0x08) = stk;                         // ci->func = stack
+        *(int*)  (stk + 0x08)     = 0;                           // stack[0].tt = 0 (nil)
+        *(void**)(Lb + 0x10) = top1;                             // L->top = stack + 1
+        *(void**)(base_ci + 0x00) = top1;                        // ci->base = top1
+        *(void**)(Lb + 0x18) = top1;                             // L->base = top1
+        *(void**)(base_ci + 0x10) = stk + 0x150;                 // ci->top = stack + 21 TValue (base + 20)
+    }
+    tprintf("[luaDBG] post stack_init: top=%p stack=%p stack_last=%p base=%p stacksize=%d size_ci=%d\n",
+            *(void**)(Lb + 0x10), *(void**)(Lb + 0x40), *(void**)(Lb + 0x38), *(void**)(Lb + 0x18),
+            *(int*)(Lb + 0x58), *(int*)(Lb + 0x5C)); fflush(stdout);
 
     *(void**)(Lb + 0x78) = luaH_new(L, 0, 2);           // L->l_gt.value.gc = new table
     *(int*)  (Lb + 0x80) = 5;                            // L->l_gt.tt = LUA_TTABLE
