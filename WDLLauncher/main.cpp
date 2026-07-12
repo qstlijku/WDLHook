@@ -904,7 +904,7 @@ static const bool kRetailRunOnexitInit = true;
 // Spot-check: instead of the full __xc pass, bind the Denuvo private-import .trace slots (write the real
 // API addresses) and manually CALL just the g_cmdParams ctor (RVA 0x7173A0) under SEH -- proves whether
 // binding the thunks lets an engine ctor actually run under manual load (Denuvo dormant, free debugger).
-static const bool kSpotCheckCmdCtor = true;
+static const bool kSpotCheckCmdCtor = false;
 // Route the engine's UPC_* (Ubisoft Connect) .trace slots to in-process emu stubs (upc_emu.h) instead of
 // leaving them unbound -- so engine init gets past UPC_ContextCreate. Only meaningful under manual load.
 static const bool kEmulateUpc = true;
@@ -1791,7 +1791,7 @@ static const uintptr_t kChkRvas[] = {
     0x68CB600, // sub_1868CB600 = CScriptMarshal::PushData(L, this)
     0x690EE30, // sub_18690EE30 = lua_newtag
     0x690D1B0, // sub_18690D1B0
-    0x690F9C0, // sub_18690F9C0 = lua_settagmethod (VIRTUALIZED -> will fault if reached)
+  //0x690F9C0, // sub_18690F9C0 = lua_settagmethod -- now has its own dedicated warn-before-crash hook (InstallVmStubs)
     0x690E510, // sub_18690E510 = lua_gc
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
@@ -1943,6 +1943,28 @@ static void __fastcall f_luaopen_Detour(void* L, void* /*ud*/)
     *(unsigned long long*)(g + 0x70) = 4 * *(unsigned long long*)(g + 0x78);   // GCthreshold = 4*totalbytes
     tprintf("[lua] f_luaopen reimpl ran -- Lua state initialized natively\n"); fflush(stdout);
 }
+// Denuvo-VM WARNING hook: lua_settagmethod (sub_18690F9C0) is virtualized (entry jmp 0x211B1180 -> VM).
+// CScriptSystem::Init calls it (sets the "gc" tag method) after the s_holderInfos registration -- once that
+// crash is fixed, this fires. Not yet reimplemented: this hook prints a LOUD banner right before the
+// trampoline (= the VM entry) crashes, so the log unmistakably flags lua_settagmethod as the next blocker.
+// (We have its PDB body -- the customized tag-compat shim -- so it's a cheap reimpl when we're ready.)
+typedef __int64 (__fastcall* LSTM_t)(void* L, int tag, const char* event);
+static LSTM_t g_lstmOrig = nullptr;
+static __int64 __fastcall LuaSetTagMethod_Detour(void* L, int tag, const char* event)
+{
+    tprintf("\n");
+    tprintf("################################################################################\n");
+    tprintf("##                                                                            ##\n");
+    tprintf("##   !!!!!  LUA_SETTAGMETHOD (sub_18690F9C0) REACHED  !!!!!                    ##\n");
+    tprintf("##   !!!!!  THIS FUNCTION IS DENUVO-VIRTUALIZED (jmp -> VM @ 0x211B1180)       ##\n");
+    tprintf("##   !!!!!  CALLING THE ORIGINAL WILL CRASH -- VM IS NOT BOOTSTRAPPED  !!!!!    ##\n");
+    tprintf("##   !!!!!  >>>>>>>>>>>>>>>>>  CRASH IMMINENT  <<<<<<<<<<<<<<<<<  !!!!!          ##\n");
+    tprintf("##         L=%p  tag=%d  event=%s\n", L, tag, event ? event : "(null)");
+    tprintf("##                                                                            ##\n");
+    tprintf("################################################################################\n");
+    tprintf("\n"); fflush(stdout);
+    return g_lstmOrig(L, tag, event);   // trampoline = the virtualized entry -> VM -> CRASH
+}
 static void InstallVmStubs(uintptr_t base)
 {
     MH_Initialize();   // idempotent
@@ -1958,6 +1980,12 @@ static void InstallVmStubs(uintptr_t base)
         tprintf("[lua] hooked f_luaopen (sub_18690AA40) @ %p\n", flua);
     else
         tprintf("[lua] FAILED to hook f_luaopen @ %p\n", flua);
+
+    void* lstm = (void*)(base + 0x690F9C0);   // sub_18690F9C0 = lua_settagmethod (VIRTUALIZED -- warn-before-crash)
+    if (MH_CreateHook(lstm, &LuaSetTagMethod_Detour, (LPVOID*)&g_lstmOrig) == MH_OK && MH_EnableHook(lstm) == MH_OK)
+        tprintf("[lua] hooked lua_settagmethod (sub_18690F9C0) @ %p [WARN-BEFORE-CRASH]\n", lstm);
+    else
+        tprintf("[lua] FAILED to hook lua_settagmethod @ %p\n", lstm);
     fflush(stdout);
 }
 static void InstallCheckpoints(uintptr_t base)

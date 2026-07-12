@@ -797,7 +797,10 @@ static void __cdecl initterm_Detour(PVFV* first, PVFV* last)
     int i = 0, failed = 0;
     for (PVFV* p = first; p < last; ++p, ++i)
     {
-        //if (i >= 4857) continue;
+        if (i >= 4857)
+        {
+            continue;
+        }
         if (*p) {
             LogInit("XC", (void*)*p, i);
             if (!CallGuarded(*p)) {
@@ -873,7 +876,7 @@ void Misc::InstallEarlyHooks()
     MH_Initialize();
     //InstallTokenCapture();
     InstallUpcProductCapture();   // arm the real-run UPC_ProductListGet capture (via the LoadLibrary catch, before UPC init)
-    //InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
+    InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
 }
 
 // ===================================================================================================
