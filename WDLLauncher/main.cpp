@@ -1933,12 +1933,10 @@ static const uintptr_t kChkRvasOld[] = {
     0x8C0FD70, // sub_188C0FD70
 };
 */
-// TARGETED: the CEngineServices::Initialize (sub_1867C0300) singleton-ctor sequence AFTER CScriptSystem::Init
-// -- brackets each callee so the last ENTER without a matching RETURNED pinpoints the DOWNSTREAM hang (boot
-// now completes CNomadDb correctly -- verified vs a normal-run capture -- but freezes further along). The two
-// CNomadDb ctor (sub_18686F4C0) + GenRegisterLibrary (sub_18686FF80) have dedicated hooks so they're omitted.
-// Order matches the retail decompile; RVAs off imagebase 0x180000000.
-static const uintptr_t kChkRvas[] = {
+// PASSED: the CEngineServices::Initialize (sub_1867C0300) singleton-ctor sequence after CScriptSystem::Init.
+// Initialize now RETURNS cleanly, so these are commented out; swap back if it regresses.
+/*
+static const uintptr_t kChkRvasCESInit[] = {
     0x68C5AB0, // sub_1868C5AB0 (right after CScriptSystem::Init)
     0x6812250, // sub_186812250
     0x6876290, // sub_186876290
@@ -1969,6 +1967,29 @@ static const uintptr_t kChkRvas[] = {
     0x6822B60, // sub_186822B60
     0x68EB040, // sub_1868EB040
     0x686B2D0, // sub_18686B2D0 (last -- near end of Initialize)
+};
+*/
+// ACTIVE: callees of CEngine::InitializeEngineServices (sub_1867936F0) AFTER its 2nd CConfig::LoadConfig
+// (call site 0x67938B9). Boot now completes Initialize + both LoadConfigs + the language resolution
+// (sub_1805C48C0 -> str2enum) then HANGS in a VM spin before CEngine::Initialize -- bracket these callees so
+// the last ENTER without a RETURNED names the stuck one. Order matches the disasm of sub_1867936F0;
+// sub_1805C48C0 is the last confirmed-reached call, sub_186875450 (right after) is the prime suspect.
+static const uintptr_t kChkRvas[] = {
+    0x6874B40, // sub_186874B40 (1st call after the 2nd CConfig::LoadConfig)
+    0x67C2420, // sub_1867C2420
+    0x5C48C0,  // sub_1805C48C0 = language resolution (calls str2enum) -- LAST confirmed reached
+    0x6875450, // sub_186875450 -- 1st call AFTER the language resolution (PRIME hang suspect)
+    0x6D7B20,  // sub_1806D7B20 (called x3)
+    0x67BC300, // sub_1867BC300 (called x2)
+    0x9DBDBE0, // sub_189DBDBE0
+    0x9DBDBF0, // sub_189DBDBF0
+    0x67BC850, // sub_1867BC850
+    0x67BC580, // sub_1867BC580
+    0x6CFA30,  // sub_1806CFA30
+    0x6793C50, // sub_186793C50
+    0x77FB640, // sub_1877FB640
+    0x77FB740, // sub_1877FB740
+    0x686CBC0, // sub_18686CBC0 (last call before InitializeEngineServices returns)
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
