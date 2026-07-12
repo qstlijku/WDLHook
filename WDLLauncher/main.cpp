@@ -12,6 +12,7 @@
 #include <Windows.h>
 #include <shlwapi.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <thread>
 #include <intrin.h>
@@ -343,6 +344,64 @@ static void InstallKillLogger()
         if (void* p = GetProcAddress(ntdll, "NtTerminateProcess")) g_realNtTP = (NtTP_t)HookSyscallStub(p, &NtTP_Detour);
     tprintf("[diag] VEH + NtTerminateProcess logger installed (NtTP tramp=%p)\n", (void*)g_realNtTP);
     fflush(stdout);
+}
+
+// Watchdog: every few seconds, snapshot ALL process threads and log each thread's RIP as module+RVA. Retail
+// DuniaDemo has no symbols and Denuvo/optimized frames wreck the debugger's unwinder (manual break-stacks are
+// garbled / vary run-to-run / land on whichever thread surfaces), so instead of unwinding we sample just the
+// instruction pointer of every thread. When boot HANGS the samples converge: a thread stuck at a stable
+// DuniaDemo+RVA is SPINNING there (map the RVA -> function); one stuck at ntdll!NtWaitForSingleObject /
+// NtDelayExecution is BLOCKED on a worker/event/sleep. No debugger needed -- the hang shows up in the log.
+static const bool kWatchdog = true;
+static DWORD WINAPI WatchdogThread(LPVOID)
+{
+    DWORD self = GetCurrentThreadId();
+    DWORD pid  = GetCurrentProcessId();
+    for (int round = 0; ; ++round)
+    {
+        Sleep(5000);
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE) continue;
+        tprintf("[watchdog] === round %d ===\n", round);
+        THREADENTRY32 te; te.dwSize = sizeof(te);
+        if (Thread32First(snap, &te))
+        {
+            do
+            {
+                if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+                HANDLE hT = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, te.th32ThreadID);
+                if (!hT) continue;
+                CONTEXT ctx; memset(&ctx, 0, sizeof(ctx)); ctx.ContextFlags = CONTEXT_CONTROL;
+                uintptr_t rip = 0;
+                if (SuspendThread(hT) != (DWORD)-1)   // minimal window: read RIP, resume before any logging
+                {
+                    if (GetThreadContext(hT, &ctx)) rip = (uintptr_t)ctx.Rip;
+                    ResumeThread(hT);
+                }
+                if (rip)
+                {
+                    HMODULE m = nullptr;
+                    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)rip, &m) && m)
+                    {
+                        char p[MAX_PATH]; GetModuleFileNameA(m, p, MAX_PATH);
+                        const char* b = strrchr(p, '\\');
+                        tprintf("[watchdog]   tid %5lu RIP = %s+0x%llX\n", te.th32ThreadID, b ? b + 1 : p, (unsigned long long)(rip - (uintptr_t)m));
+                    }
+                    else
+                        tprintf("[watchdog]   tid %5lu RIP = %p (no module)\n", te.th32ThreadID, (void*)rip);
+                }
+                CloseHandle(hT);
+            } while (Thread32Next(snap, &te));
+        }
+        CloseHandle(snap);
+        fflush(stdout);
+    }
+}
+static void StartWatchdog()
+{
+    if (!kWatchdog) return;
+    CreateThread(nullptr, 0, WatchdogThread, nullptr, 0, nullptr);
+    tprintf("[watchdog] started -- sampling all threads' RIP every 5s\n"); fflush(stdout);
 }
 
 // ---- uplay_aux_r164.dll gate patch (ported from ACMHook — retail WDL uses the identical DLL) ----
@@ -2188,6 +2247,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
 
     // Diagnostics: VEH for crashes + NtTerminateProcess logger to catch the relaunch's clean kill.
     InstallKillLogger();
+    StartWatchdog();   // sample all threads' RIP every 5s -> a hang shows as a stable module+RVA in the log
 
     // Hide the debugger BEFORE the DLL (and its anti-debug watcher) loads.
     if (kHideDebugger) InstallDebuggerHider();
