@@ -1963,6 +1963,20 @@ static __int64 __fastcall LuaSetTagMethod_Detour(void* L, int tag, const char* e
     auto result = g_lstmOrig(L, tag, event);
     return result;
 }
+// Standalone breakpoint hook for sub_18686F4C0 (RVA 0x686F4C0) -- reached after lua_gc in CScriptSystem::Init,
+// near the current crash frontier. Generic 4-arg __fastcall signature (extra/fewer args are harmless on x64;
+// return comes back in rax). Set a breakpoint inside this detour to catch the call live.
+typedef __int64 (__fastcall* Sub686F4C0_t)(void*, void*, void*, void*);
+static Sub686F4C0_t g_sub686F4C0Orig = nullptr;
+static __int64 __fastcall Sub686F4C0_Detour(void* a, void* b, void* c, void* d)
+{
+    tprintf("[hook] sub_18686F4C0 ENTER a=%p b=%p c=%p d=%p\n", a, b, c, d);
+    fflush(stdout);
+    __int64 result = g_sub686F4C0Orig(a, b, c, d);
+    tprintf("[hook] sub_18686F4C0 RETURNED %lld (0x%llX)\n", (long long)result, (unsigned long long)result);
+    fflush(stdout);
+    return result;
+}
 static void InstallVmStubs(uintptr_t base)
 {
     MH_Initialize();   // idempotent
@@ -1984,6 +1998,12 @@ static void InstallVmStubs(uintptr_t base)
         tprintf("[lua] hooked lua_settagmethod (sub_18690F9C0) @ %p [checkpoint]\n", lstm);
     else
         tprintf("[lua] FAILED to hook lua_settagmethod @ %p\n", lstm);
+
+    void* s686 = (void*)(base + 0x686F4C0);   // sub_18686F4C0 -- standalone breakpoint hook (post-lua_gc frontier)
+    if (MH_CreateHook(s686, &Sub686F4C0_Detour, (LPVOID*)&g_sub686F4C0Orig) == MH_OK && MH_EnableHook(s686) == MH_OK)
+        tprintf("[hook] hooked sub_18686F4C0 @ %p\n", s686);
+    else
+        tprintf("[hook] FAILED to hook sub_18686F4C0 @ %p\n", s686);
     fflush(stdout);
 }
 static void InstallCheckpoints(uintptr_t base)
