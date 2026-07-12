@@ -415,6 +415,7 @@ static DWORD WINAPI WatchdogThread(LPVOID)
         CloseHandle(snap);
         fflush(stdout);
     }
+    return 0;   // unreachable (loop never exits) -- satisfies MSVC C4716
 }
 static void StartWatchdog()
 {
@@ -1977,12 +1978,12 @@ static const uintptr_t kChkRvasCESInit[] = {
 static const uintptr_t kChkRvas[] = {
     0x6874B40, // sub_186874B40 (1st call after the 2nd CConfig::LoadConfig)
     0x67C2420, // sub_1867C2420
-    0x5C48C0,  // sub_1805C48C0 = language resolution (calls str2enum) -- LAST confirmed reached
-    0x6875450, // sub_186875450 -- 1st call AFTER the language resolution (PRIME hang suspect)
+  //0x5C48C0,  // sub_1805C48C0 -- HOT inner fn (196K calls inside sub_186875450); checkpointing it crawls boot
+    0x6875450, // sub_186875450 -- runs a big 196K-iter loop over sub_1805C48C0 (completes; slow only due to us)
     0x6D7B20,  // sub_1806D7B20 (called x3)
-    0x67BC300, // sub_1867BC300 (called x2)
+    0x67BC300, // sub_1867BC300 = Denuvo-VIRTUALIZED (thunk -> 0x20F139F0); alloc-heavy under the VM = current stall
     0x9DBDBE0, // sub_189DBDBE0
-    0x9DBDBF0, // sub_189DBDBF0
+  //0x9DBDBF0, // sub_189DBDBF0 -- HOT (3946 calls); dropped to cut log spam
     0x67BC850, // sub_1867BC850
     0x67BC580, // sub_1867BC580
     0x6CFA30,  // sub_1806CFA30
