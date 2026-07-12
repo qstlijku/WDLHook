@@ -1598,6 +1598,11 @@ static __int64 __fastcall LoadConfig_Detour(void* self, const char* path)
 static __int64 __fastcall ScriptSystemInit_Detour(void* self)
 {
     tprintf("[eng] CScriptSystem::Init (sub_1868CAC10) ENTER  this=%p\n", self); fflush(stdout);
+    // Probe CScriptMarshal::s_holderInfos (RB-tree @ base+0xB482950). Empty tree => [0] == &s_holderInfos.
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    void** tree = (void**)(base + 0xB482950);
+    tprintf("[probe] s_holderInfos @ %p : [0]=%p (self=%p; empty-if-equal) [8]=%p [0x10]=%p [0x18]=%p [0x20]=%p\n",
+            (void*)tree, tree[0], (void*)tree, tree[1], tree[2], tree[3], tree[4]); fflush(stdout);
     __int64 r = g_ssiOrig(self);
     tprintf("[eng] CScriptSystem::Init RETURNED\n"); fflush(stdout);
     return r;
@@ -1776,10 +1781,18 @@ static const uintptr_t kChkRvas[] = {
     0x67BF8D0, // sub_1867BF8D0
     0x68D2270, // sub_1868D2270
     // 0x68CAC10 = CScriptSystem::Init -- promoted to a named [eng] hook (ScriptSystemInit_Detour)
-    0x690A800, // sub_18690A800  = lua_newstate
-    0x68CABD0, // sub_1868CABD0  = CScriptSystem::LuaAlloc (lua_Alloc)
-    0x6900870, // sub_186900870 = CallGuarded -- runs f_luaopen (sub_18690AA40, VIRTUALIZED) -> crash
-    0x690AA40, // f_luaopen = sub_18690AA40
+    // --- lua_newstate/f_luaopen path: DISABLED (f_luaopen reimpl works now; kept for reference) ---
+    // 0x690A800  = lua_newstate
+    // 0x68CABD0  = CScriptSystem::LuaAlloc (fires every alloc -- spam)
+    // 0x6900870  = luaD_rawrunprotected
+    // 0x690AA40  = f_luaopen (hooked by InstallVmStubs, not a checkpoint)
+    // --- CScriptSystem::Init post-luaL_openlibs sequence: trace how far Init gets ---
+    0x68F4DD0, // sub_1868F4DD0 = "System" type/metatable reg -> RBTree insert into s_holderInfos (CURRENT CRASH)
+    0x68CB600, // sub_1868CB600 = CScriptMarshal::PushData(L, this)
+    0x690EE30, // sub_18690EE30 = lua_newtag
+    0x690D1B0, // sub_18690D1B0
+    0x690F9C0, // sub_18690F9C0 = lua_settagmethod (VIRTUALIZED -> will fault if reached)
+    0x690E510, // sub_18690E510 = lua_gc
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
