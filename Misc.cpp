@@ -797,9 +797,9 @@ static void __cdecl initterm_Detour(PVFV* first, PVFV* last)
     int i = 0, failed = 0;
     for (PVFV* p = first; p < last; ++p, ++i)
     {
-        if (i >= 4857)
+        if (i == 4857)
         {
-            continue;
+            printf("Checkpoint that used to cause catastrophic failures, continuing past...\n");
         }
         if (*p) {
             LogInit("XC", (void*)*p, i);
@@ -809,7 +809,9 @@ static void __cdecl initterm_Detour(PVFV* first, PVFV* last)
             }
         }
     }
-    tprintf("[init] === _initterm batch %d done: %d faulted ===\n", batch, failed);
+    tprintf("[init] === _initterm batch %d done: %d executed, %d faulted ===\n", batch, i, failed);
+
+    tprintf("Exiting\n");
 }
 
 static int __cdecl initterm_e_Detour(PIFV* first, PIFV* last)

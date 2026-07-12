@@ -1317,6 +1317,28 @@ static void SpotCallCmdCtor(uintptr_t base)
     for (int i = 0; i < 24; ++i) tprintf("%02X ", str[i]);
     tprintf("\n"); fflush(stdout);
 }
+// VERIFY post-bind: .trace has TWO identical kernel32 blocks (copy A ~0xA97A, copy B ~0xA97C). G4::Platform::
+// Platform calls the copy-B slots and crashed, so check BOTH copies of each import vs the real export. If
+// copyA match=1 but copyB match=0, the binder bound one block not the other. (Spot-check diagnostic only.)
+static void VerifyPostBind(uintptr_t base)
+{
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    struct { const char* nm; uintptr_t a, b; } chk[] = {
+        { "GetSystemInfo",           0xA97A4B8, 0xA97C580 },
+        { "GlobalMemoryStatusEx",    0xA97A558, 0xA97C620 },
+        { "GetLogicalDriveStringsA", 0xA97A418, 0xA97C4E0 },
+    };
+    for (auto& c : chk)
+    {
+        void* real = (void*)GetProcAddress(k32, c.nm);
+        uintptr_t va = *(uintptr_t*)(base + c.a);
+        uintptr_t vb = *(uintptr_t*)(base + c.b);
+        tprintf("[verify] %-24s copyA 0x%llX=%p match=%d | copyB 0x%llX=%p match=%d | real=%p\n",
+                c.nm, (unsigned long long)c.a, (void*)va, (int)(va == (uintptr_t)real),
+                (unsigned long long)c.b, (void*)vb, (int)(vb == (uintptr_t)real), real);
+    }
+    fflush(stdout);
+}
 // ------------------------------------------------------------------------------------------------------
 
 static bool ManualInitDll(HMODULE mod)
@@ -1390,30 +1412,16 @@ static bool ManualInitDll(HMODULE mod)
         fflush(stdout);
         initialize_thread_safe_statics();   // __xi (tss + onexit) so the ctor's magic-statics/atexit work
         BindDenuvoImports(base);            // bind the private IAT so its imports resolve
-        {   // VERIFY post-bind: .trace has TWO identical kernel32 blocks (copy A ~0xA97A, copy B ~0xA97C).
-            // G4::Platform::Platform calls the copy-B slots and crashed, so check BOTH copies of each import
-            // vs the real export. If copyA match=1 but copyB match=0, the binder bound one block not the other.
-            HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
-            struct { const char* nm; uintptr_t a, b; } chk[] = {
-                { "GetSystemInfo",           0xA97A4B8, 0xA97C580 },
-                { "GlobalMemoryStatusEx",    0xA97A558, 0xA97C620 },
-                { "GetLogicalDriveStringsA", 0xA97A418, 0xA97C4E0 },
-            };
-            for (auto& c : chk)
-            {
-                void* real = (void*)GetProcAddress(k32, c.nm);
-                uintptr_t va = *(uintptr_t*)(base + c.a);
-                uintptr_t vb = *(uintptr_t*)(base + c.b);
-                tprintf("[verify] %-24s copyA 0x%llX=%p match=%d | copyB 0x%llX=%p match=%d | real=%p\n",
-                        c.nm, (unsigned long long)c.a, (void*)va, (int)(va == (uintptr_t)real),
-                        (unsigned long long)c.b, (void*)vb, (int)(vb == (uintptr_t)real), real);
-            }
-            fflush(stdout);
-        }
+        VerifyPostBind(base);               // check both kernel32 copy-A/copy-B blocks bound vs real exports
         SpotCallCmdCtor(base);              // manually call the ctor + dump the result
     }
     else
-        ML_RunInitTerms(xca, xcz, xia, xiz);
+    {
+        tprintf("[ml] === full init: bind .trace imports, then __xi (tss) + _initterm(__xc) ===\n");
+        fflush(stdout);
+        BindDenuvoImports(base);            // bind the private IAT so the ctors' imports resolve
+        ML_RunInitTerms(xca, xcz, xia, xiz);// __xi (hand-rolled tss + onexit) then _initterm(__xc)
+    }
     tprintf("[ml] manual init complete\n"); fflush(stdout);
     return true;
 }
@@ -1943,27 +1951,17 @@ static void __fastcall f_luaopen_Detour(void* L, void* /*ud*/)
     *(unsigned long long*)(g + 0x70) = 4 * *(unsigned long long*)(g + 0x78);   // GCthreshold = 4*totalbytes
     tprintf("[lua] f_luaopen reimpl ran -- Lua state initialized natively\n"); fflush(stdout);
 }
-// Denuvo-VM WARNING hook: lua_settagmethod (sub_18690F9C0) is virtualized (entry jmp 0x211B1180 -> VM).
-// CScriptSystem::Init calls it (sets the "gc" tag method) after the s_holderInfos registration -- once that
-// crash is fixed, this fires. Not yet reimplemented: this hook prints a LOUD banner right before the
-// trampoline (= the VM entry) crashes, so the log unmistakably flags lua_settagmethod as the next blocker.
-// (We have its PDB body -- the customized tag-compat shim -- so it's a cheap reimpl when we're ready.)
+// Checkpoint hook: lua_settagmethod (sub_18690F9C0). Once thought to be a hard Denuvo-VM blocker, but with
+// the __xc ctor pass run + imports bound, the call goes through cleanly (verified: it returns and Init
+// continues to lua_gc). Kept as a lightweight checkpoint that logs the tag/event and passes through.
 typedef __int64 (__fastcall* LSTM_t)(void* L, int tag, const char* event);
 static LSTM_t g_lstmOrig = nullptr;
 static __int64 __fastcall LuaSetTagMethod_Detour(void* L, int tag, const char* event)
 {
-    tprintf("\n");
-    tprintf("################################################################################\n");
-    tprintf("##                                                                            ##\n");
-    tprintf("##   !!!!!  LUA_SETTAGMETHOD (sub_18690F9C0) REACHED  !!!!!                    ##\n");
-    tprintf("##   !!!!!  THIS FUNCTION IS DENUVO-VIRTUALIZED (jmp -> VM @ 0x211B1180)       ##\n");
-    tprintf("##   !!!!!  CALLING THE ORIGINAL WILL CRASH -- VM IS NOT BOOTSTRAPPED  !!!!!    ##\n");
-    tprintf("##   !!!!!  >>>>>>>>>>>>>>>>>  CRASH IMMINENT  <<<<<<<<<<<<<<<<<  !!!!!          ##\n");
-    tprintf("##         L=%p  tag=%d  event=%s\n", L, tag, event ? event : "(null)");
-    tprintf("##                                                                            ##\n");
-    tprintf("################################################################################\n");
-    tprintf("\n"); fflush(stdout);
-    return g_lstmOrig(L, tag, event);   // trampoline = the virtualized entry -> VM -> CRASH
+    tprintf("[lua] lua_settagmethod(L=%p tag=%d event=%s) -- passing through\n", L, tag, event ? event : "(null)");
+    fflush(stdout);
+    auto result = g_lstmOrig(L, tag, event);
+    return result;
 }
 static void InstallVmStubs(uintptr_t base)
 {
@@ -1981,9 +1979,9 @@ static void InstallVmStubs(uintptr_t base)
     else
         tprintf("[lua] FAILED to hook f_luaopen @ %p\n", flua);
 
-    void* lstm = (void*)(base + 0x690F9C0);   // sub_18690F9C0 = lua_settagmethod (VIRTUALIZED -- warn-before-crash)
+    void* lstm = (void*)(base + 0x690F9C0);   // sub_18690F9C0 = lua_settagmethod (checkpoint -- passes through)
     if (MH_CreateHook(lstm, &LuaSetTagMethod_Detour, (LPVOID*)&g_lstmOrig) == MH_OK && MH_EnableHook(lstm) == MH_OK)
-        tprintf("[lua] hooked lua_settagmethod (sub_18690F9C0) @ %p [WARN-BEFORE-CRASH]\n", lstm);
+        tprintf("[lua] hooked lua_settagmethod (sub_18690F9C0) @ %p [checkpoint]\n", lstm);
     else
         tprintf("[lua] FAILED to hook lua_settagmethod @ %p\n", lstm);
     fflush(stdout);
