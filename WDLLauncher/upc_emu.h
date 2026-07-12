@@ -124,7 +124,14 @@ extern "C" int  emu_UPC_ProductListGet(void* ctx, const char* uid, unsigned int 
 }
 extern "C" int  emu_UPC_InstallChunkListGet(void* ctx, void** out)
 {
-    UpcLogOnce("UPC_InstallChunkListGet"); if (out) *out = nullptr; return 0; // TODO all-present
+    UpcLogOnce("UPC_InstallChunkListGet");
+    // Return a valid EMPTY chunk list (non-null) instead of null: CInstallPackageManagerBase::Init treats a
+    // 0-return as "got a list" and derefs *out (crash at DuniaDemo+0x7ADE58B when it was null). Zeroed header
+    // => count 0 / chunks null, so any iteration runs zero times. Fully-installed offline has all chunks
+    // present anyway. TODO: if the game bails on an empty list, populate it with the real installed chunks.
+    static long long s_emptyChunkList[16] = { 0 };   // 128 bytes zeroed header (generously sized)
+    if (out) *out = (void*)s_emptyChunkList;
+    return 0;
 }
 extern "C" int  emu_UPC_InstallChunksPresenceCheck(void* ctx, void* a, void* b, void* c)
 {

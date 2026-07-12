@@ -143,7 +143,7 @@ static int MyRunGame(HINSTANCE hInstance, const char* lpCmdLine)
 // never corrupt anything. OFF by default -- flip on only when you want to debug. If the watcher
 // still fires, it's using a check we don't cover yet (NtQuerySystemInformation / debug-registers /
 // rdtsc timing) -> extend here or just use ScyllaHide, which covers them all.
-static const bool kHideDebugger = true;
+static const bool kHideDebugger = false;
 
 // Copy a target x64 ntdll syscall stub's first 16 bytes to an exec trampoline (+ jmp back to
 // target+16) and patch the target with a jmp to `detour`. Returns the trampoline (callable as the
@@ -1664,6 +1664,65 @@ static int WINAPI MessageBoxW_Detour(HWND hwnd, LPCWSTR text, LPCWSTR caption, U
     return g_msgBoxWOrig(hwnd, text, caption, type);
 }
 
+// SEH-guarded bounded copy of a C string (the name arg to GenRegisterLibrary may be a bad ptr for the 2nd/3rd
+// call -- the decompiler lost track of v107/v108).
+static const char* SafeCopyStr(const char* s, char* buf, int n)
+{
+    __try
+    {
+        int i = 0;
+        for (; i < n - 1 && s && s[i]; ++i) buf[i] = s[i];
+        buf[i] = 0;
+        return buf;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { buf[0] = 0; return "(bad-ptr)"; }
+}
+// CNomadDb::GenRegisterLibrary (sub_18686FF80) -- registers a named game-data library; called 3x from
+// CEngineServices::Initialize right after the CNomadDb ctors. Real signature (7 args, from the callee + PDB;
+// the retail CALLER decompile mis-recovered them): (this, libType, createObjectFunc, typeName, dataType,
+// variablePrefix, validatorFunc). typeName (r9) and variablePrefix (stack) are the real char* strings.
+typedef void* (__fastcall* GenRegLib_t)(void*, int, void*, char*, int, char*, void*);
+static GenRegLib_t g_genRegOrig = nullptr;
+static void* __fastcall GenRegLib_Detour(void* self, int libType, void* createFn, char* typeName,
+                                         int dataType, char* varPrefix, void* validatorFn)
+{
+    char tn[64], vp[64];
+    tprintf("[eng] GenRegisterLibrary(self=%p libType=%d typeName=%s dataType=%d varPrefix=%s) ENTER\n",
+            self, libType, SafeCopyStr(typeName, tn, sizeof(tn)), dataType,
+            SafeCopyStr(varPrefix, vp, sizeof(vp))); fflush(stdout);
+    void* r = g_genRegOrig(self, libType, createFn, typeName, dataType, varPrefix, validatorFn);
+    tprintf("[eng] GenRegisterLibrary RETURNED %p\n", r); fflush(stdout);
+    return r;
+}
+// CBloombergClient::Initialize (sub_18680AEF0) -- telemetry init; a network connect here is a prime hang
+// suspect. Standalone breakpoint hook. arg2 = reporterAddress c_str (empty in the retail decompile).
+typedef __int64 (__fastcall* BbgInit_t)(void*, void*);
+static BbgInit_t g_bbgInitOrig = nullptr;
+static __int64 __fastcall BbgClientInit_Detour(void* self, void* reporterAddr)
+{
+    tprintf("[eng] CBloombergClient::Initialize(self=%p reporterAddr=%p) ENTER\n", self, reporterAddr); fflush(stdout);
+    //__int64 r = g_bbgInitOrig(self, reporterAddr);
+    //tprintf("[eng] CBloombergClient::Initialize RETURNED %lld\n", (long long)r); fflush(stdout);
+    //return r;
+    return 0;
+}
+// Bloomberg::Tracer::Log (sub_188BBB0F0) -- the engine's Bloomberg trace logger (varargs -> VLog). VLog early-
+// returns unless m_logCb is set, so the engine's own sink is likely off under manual load; hooking Log's entry
+// surfaces the trace messages regardless. We format the message ourselves and DON'T forward (pure logging, no
+// essential side effects -- also sidesteps the VM body if Log is virtualized).
+typedef void (*BbgLog_t)(int level, const char* format, ...);
+static BbgLog_t g_bbgLogOrig = nullptr;   // trampoline (unused -- we don't forward varargs)
+static void BbgLog_Detour(int level, const char* format, ...)
+{
+    char buf[1024];
+    va_list ap;
+    va_start(ap, format);
+    __try { vsnprintf(buf, sizeof(buf), format ? format : "(null-fmt)", ap); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { strcpy_s(buf, "(fmt fault)"); }
+    va_end(ap);
+    tprintf("[bbg] Tracer::Log lvl=%d: %s\n", level, buf); fflush(stdout);
+}
+
 static void InstallSkuTrace(uintptr_t base)
 {
     if (!kTraceSku) return;
@@ -1719,6 +1778,21 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked SceneRendererFacade::EndInit (sub_187398370) @ %p\n", pgi);
     else
         tprintf("[eng] FAILED to hook SceneRendererFacade::EndInit @ %p\n", pgi);
+    void* grl = (void*)(base + 0x686FF80);   // sub_18686FF80 = CNomadDb::GenRegisterLibrary (called 3x post-CNomadDb)
+    if (MH_CreateHook(grl, &GenRegLib_Detour, (LPVOID*)&g_genRegOrig) == MH_OK && MH_EnableHook(grl) == MH_OK)
+        tprintf("[eng] hooked GenRegisterLibrary (sub_18686FF80) @ %p\n", grl);
+    else
+        tprintf("[eng] FAILED to hook GenRegisterLibrary @ %p\n", grl);
+    void* bbi = (void*)(base + 0x680AEF0);   // sub_18680AEF0 = CBloombergClient::Initialize (promoted from checkpoint)
+    if (MH_CreateHook(bbi, &BbgClientInit_Detour, (LPVOID*)&g_bbgInitOrig) == MH_OK && MH_EnableHook(bbi) == MH_OK)
+        tprintf("[eng] hooked CBloombergClient::Initialize (sub_18680AEF0) @ %p\n", bbi);
+    else
+        tprintf("[eng] FAILED to hook CBloombergClient::Initialize @ %p\n", bbi);
+    void* bbl = (void*)(base + 0x8BBB0F0);   // sub_188BBB0F0 = Bloomberg::Tracer::Log
+    if (MH_CreateHook(bbl, &BbgLog_Detour, (LPVOID*)&g_bbgLogOrig) == MH_OK && MH_EnableHook(bbl) == MH_OK)
+        tprintf("[eng] hooked Bloomberg::Tracer::Log (sub_188BBB0F0) @ %p\n", bbl);
+    else
+        tprintf("[eng] FAILED to hook Bloomberg::Tracer::Log @ %p\n", bbl);
 
     // Win32 seams: resolve the real export addresses, then MinHook them.
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
@@ -1780,27 +1854,42 @@ static const uintptr_t kChkRvasOld[] = {
     0x8C0FD70, // sub_188C0FD70
 };
 */
-// TARGETED: just the critical path through CEngine::InitializeEngineServices (sub_1867936F0) down to the
-// current virtualized-fn crash -- CallGuarded (sub_186900870) -> `call rdx`. Reconstructed from the VEH
-// stack scan; the last ENTER without a matching RETURN is the frame that jumps into the un-bootstrapped VM.
+// TARGETED: the CEngineServices::Initialize (sub_1867C0300) singleton-ctor sequence AFTER CScriptSystem::Init
+// -- brackets each callee so the last ENTER without a matching RETURNED pinpoints the DOWNSTREAM hang (boot
+// now completes CNomadDb correctly -- verified vs a normal-run capture -- but freezes further along). The two
+// CNomadDb ctor (sub_18686F4C0) + GenRegisterLibrary (sub_18686FF80) have dedicated hooks so they're omitted.
+// Order matches the retail decompile; RVAs off imagebase 0x180000000.
 static const uintptr_t kChkRvas[] = {
-    0x67936F0, // sub_1867936F0 = CEngine::InitializeEngineServices  (parent)
-    0x67BF650, // sub_1867BF650 = CEngineServices init (CMemMng::NMalloc(288), 1st call)
-    0x67BF8D0, // sub_1867BF8D0
-    0x68D2270, // sub_1868D2270
-    // 0x68CAC10 = CScriptSystem::Init -- promoted to a named [eng] hook (ScriptSystemInit_Detour)
-    // --- lua_newstate/f_luaopen path: DISABLED (f_luaopen reimpl works now; kept for reference) ---
-    // 0x690A800  = lua_newstate
-    // 0x68CABD0  = CScriptSystem::LuaAlloc (fires every alloc -- spam)
-    // 0x6900870  = luaD_rawrunprotected
-    // 0x690AA40  = f_luaopen (hooked by InstallVmStubs, not a checkpoint)
-    // --- CScriptSystem::Init post-luaL_openlibs sequence: trace how far Init gets ---
-    0x68F4DD0, // sub_1868F4DD0 = "System" type/metatable reg -> RBTree insert into s_holderInfos (CURRENT CRASH)
-    0x68CB600, // sub_1868CB600 = CScriptMarshal::PushData(L, this)
-    0x690EE30, // sub_18690EE30 = lua_newtag
-    0x690D1B0, // sub_18690D1B0
-  //0x690F9C0, // sub_18690F9C0 = lua_settagmethod -- now has its own dedicated warn-before-crash hook (InstallVmStubs)
-    0x690E510, // sub_18690E510 = lua_gc
+    0x68C5AB0, // sub_1868C5AB0 (right after CScriptSystem::Init)
+    0x6812250, // sub_186812250
+    0x6876290, // sub_186876290
+    0x687DF00, // sub_18687DF00
+    0x68D53F0, // sub_1868D53F0 (last before CNomadDb ctor #1)
+    0x686F3E0, // sub_18686F3E0 = CNomadDb ctor #2 (into qword_18B481FE0)
+    0x686F5C0, // sub_18686F5C0 = CNomadDb ctor #3 (into qword_18B481FE8)
+    0x63CBF0,  // sub_18063CBF0 = CFreeAllPool::CFreeAllPool(0x4000,16)
+    0x688CCF0, // sub_18688CCF0
+    0x680AC00, // sub_18680AC00
+  //0x680AEF0, // sub_18680AEF0 = CBloombergClient::Initialize -- promoted to a standalone hook (BbgClientInit_Detour)
+    0x6880DC0, // sub_186880DC0
+    0x67C18B0, // sub_1867C18B0(a1)
+    0x6CE640,  // sub_1806CE640
+    0x7E97C20, // sub_187E97C20
+    0x68C16F0, // sub_1868C16F0
+    0x6C69C0,  // sub_1806C69C0
+    0x6CA570,  // sub_1806CA570
+    0x77F5010, // sub_1877F5010
+    0x7E879C0, // sub_187E879C0
+    0x7E88990, // sub_187E88990
+    0x7E885E0, // sub_187E885E0
+    0x7E8A090, // sub_187E8A090
+    0x6817760, // sub_186817760
+    0x68D9E60, // sub_1868D9E60
+    0x67CAA80, // sub_1867CAA80
+    0x6821DF0, // sub_186821DF0
+    0x6822B60, // sub_186822B60
+    0x68EB040, // sub_1868EB040
+    0x686B2D0, // sub_18686B2D0 (last -- near end of Initialize)
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
@@ -1810,6 +1899,7 @@ template<int N> static __int64 __fastcall ChkThunk(void* a, void* b, void* c, vo
 {
     if (N == 28)   // sub_188C0FD70 = G4::Platform::Platform -- overwrite-vs-code-mutation test at entry
     {
+        /*
         tprintf("CPU detection started\n");
         uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
         HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
@@ -1828,7 +1918,8 @@ template<int N> static __int64 __fastcall ChkThunk(void* a, void* b, void* c, vo
         unsigned char* call = (unsigned char*)(base + 0x8C0FDB9);   // the GetSystemInfo `call [rip+..]` at +0x49
         tprintf("[g4] call@+0x49 bytes:");
         for (int i = 0; i < 8; ++i) tprintf(" %02X", call[i]);      // FF 15 C1 C7 D6 01 = call [rip+0x1d6c7c1] if unmutated
-        tprintf("\n"); fflush(stdout);
+        tprintf("\n"); fflush(stdout);*/
+        tprintf("InstallPackage test\n");
     }
     tprintf("[chk] sub_%llX ENTER\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
     __int64 r = g_chkOrig[N](a, b, c, d);
