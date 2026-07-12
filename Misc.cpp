@@ -937,6 +937,50 @@ static void InstallNomadDbCapture()
         tprintf("[cap] CNomadDb-ctor capture FAILED @ %p\n", tgt);
     fflush(stdout);
 }
+// NORMAL-RUN capture of the 3 CConfig methods the manual-load path had to stub (they're Denuvo-virtualized and
+// decoy-hang under manual load; on a real run the VM is bootstrapped so they work). Forward to the real fn and
+// log args + result -> ground truth (the real config queries/values) to validate a native reimpl against.
+typedef const char* (__fastcall* CfgGet_t)(const char*, const char*);
+typedef bool        (__fastcall* CfgExists_t)(const char*, const char*);
+typedef void        (__fastcall* CfgMerge_t)(void*, const char*, const char*, bool);
+static CfgGet_t    g_cfgGetOrig    = nullptr;
+static CfgExists_t g_cfgExistsOrig = nullptr;
+static CfgMerge_t  g_cfgMergeOrig  = nullptr;
+static const char* __fastcall CfgGet_Capture(const char* section, const char* key)
+{
+    const char* r = g_cfgGetOrig(section, key);
+    tprintf("[cfg] Get(%s, %s) = %s\n", section ? section : "?", key ? key : "?", r ? r : "(null)"); fflush(stdout);
+    return r;
+}
+static bool __fastcall CfgExists_Capture(const char* section, const char* key)
+{
+    bool r = g_cfgExistsOrig(section, key);
+    tprintf("[cfg] Exists(%s, %s) = %d\n", section ? section : "?", key ? key : "?", (int)r); fflush(stdout);
+    return r;
+}
+static void __fastcall CfgMerge_Capture(void* self, const char* src, const char* dst, bool ovr)
+{
+    tprintf("[cfg] MergeSections(src=%s dst=%s ovr=%d)\n", src ? src : "?", dst ? dst : "?", (int)ovr); fflush(stdout);
+    g_cfgMergeOrig(self, src, dst, ovr);
+}
+static void InstallCConfigCapture()
+{
+    uintptr_t base = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+    if (!base) { tprintf("[cfg] CConfig capture: module not loaded\n"); return; }
+    struct { void* addr; void* det; LPVOID* orig; const char* nm; } H[] = {
+        { (void*)(base + 0x67BC300), &CfgGet_Capture,    reinterpret_cast<LPVOID*>(&g_cfgGetOrig),    "CConfig::Get (sub_1867BC300)" },
+        { (void*)(base + 0x67BC580), &CfgExists_Capture, reinterpret_cast<LPVOID*>(&g_cfgExistsOrig), "CConfig::Exists (sub_1867BC580)" },
+        { (void*)(base + 0x67BC850), &CfgMerge_Capture,  reinterpret_cast<LPVOID*>(&g_cfgMergeOrig),  "CConfig::MergeSections (sub_1867BC850)" },
+    };
+    for (auto& h : H)
+    {
+        if (MH_CreateHook(h.addr, h.det, h.orig) == MH_OK && MH_EnableHook(h.addr) == MH_OK)
+            tprintf("[cfg] hooked %s @ %p\n", h.nm, h.addr);
+        else
+            tprintf("[cfg] FAILED to hook %s @ %p\n", h.nm, h.addr);
+    }
+    fflush(stdout);
+}
 void Misc::InstallEarlyHooks()
 {
     if (g_earlyHooksDone) return;
@@ -946,6 +990,7 @@ void Misc::InstallEarlyHooks()
     InstallUpcProductCapture();   // arm the real-run UPC_ProductListGet capture (via the LoadLibrary catch, before UPC init)
     //InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
     InstallNomadDbCapture();   // NORMAL-RUN: dump the real CNomadDb sentinel sub-object init (ground truth for the manual-load stub)
+    InstallCConfigCapture();   // NORMAL-RUN: log real CConfig::Get/Exists/MergeSections args+results (vs the manual-load stubs)
 }
 
 // ===================================================================================================

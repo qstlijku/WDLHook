@@ -352,7 +352,7 @@ static void InstallKillLogger()
 // instruction pointer of every thread. When boot HANGS the samples converge: a thread stuck at a stable
 // DuniaDemo+RVA is SPINNING there (map the RVA -> function); one stuck at ntdll!NtWaitForSingleObject /
 // NtDelayExecution is BLOCKED on a worker/event/sleep. No debugger needed -- the hang shows up in the log.
-static const bool kWatchdog = true;
+static const bool kWatchdog = false;   // re-enable when we need thread RIP sampling for a hang
 static DWORD g_mainTid = 0;   // the WinMain/boot thread (marked "(BOOT)" in samples)
 static DWORD WINAPI WatchdogThread(LPVOID)
 {
@@ -1802,6 +1802,44 @@ static void BbgLog_Detour(int level, const char* format, ...)
     va_end(ap);
     tprintf("[bbg] Tracer::Log lvl=%d: %s\n", level, buf); fflush(stdout);
 }
+// CConfig::Get (sub_1867BC300) -- Denuvo-VIRTUALIZED (thunk -> 0x20F139F0); its VM body decoy-loops forever
+// under manual load (InitializeEngineServices' first config query, Get("settings","Quality"), hangs the boot
+// thread here). The REAL fn (PDB) is a pure 2-level RB-tree lookup section->key over CConfig::ms_instance->
+// m_settings, returning the value's c_str or a static empty default (&line) on a miss. Native bypass: skip the
+// VM and return "" (= the miss/default) so callers fall back to their defaults. TODO: walk the real config
+// tree (TreeNodeBase 0x20: m_left@0/m_right@8/m_parent@0x10/m_color@0x18; value @ key-node+0x28) if a default
+// turns out to be load-bearing.
+typedef const char* (__fastcall* CConfigGet_t)(const char* section, const char* key);
+static CConfigGet_t g_cconfigGetOrig = nullptr;
+static const char* __fastcall CConfigGet_Detour(const char* section, const char* key)
+{
+    static int n = 0;
+    if (n++ < 40) { tprintf("[cfg] CConfig::Get(section=%s key=%s) -> empty\n", section ? section : "?", key ? key : "?"); fflush(stdout); }
+    return "";
+}
+// CConfig::MergeSections (sub_1867BC850) -- also Denuvo-VIRTUALIZED (thunk -> 0x20F15B60), also decoy-hangs.
+// Merges a source section's keys into a dest section (override/insert). Since CConfig::Get is stubbed to
+// return empty (defaults), the merged tree is never read -> a no-op is safe + consistent. Skip it.
+typedef void (__fastcall* CConfigMerge_t)(void*, const char*, const char*, bool);
+static CConfigMerge_t g_cconfigMergeOrig = nullptr;
+static void __fastcall CConfigMerge_Detour(void* self, const char* src, const char* dst, bool overrideIfPresent)
+{
+    static int n = 0;
+    if (n++ < 20) { tprintf("[cfg] CConfig::MergeSections(src=%s dst=%s ovr=%d) -> skip\n", src ? src : "?", dst ? dst : "?", (int)overrideIfPresent); fflush(stdout); }
+    // no-op
+}
+// CConfig::Exists (sub_1867BC580) -- same 2-level RB-tree walk as Get, returns bool; also Denuvo-virtualized
+// and decoy-hangs. Normal-run capture: Exists("settings","MaxDeltaTime")=0 (config doesn't define it -> game
+// uses its default). Stub returns false so callers skip the config-value branch. Consistent with the empty
+// Get stub. TODO: real tree walk if a later query needs true (see the normal-run [cfg] log).
+typedef bool (__fastcall* CConfigExists_t)(const char*, const char*);
+static CConfigExists_t g_cconfigExistsOrig = nullptr;
+static bool __fastcall CConfigExists_Detour(const char* section, const char* key)
+{
+    static int n = 0;
+    if (n++ < 40) { tprintf("[cfg] CConfig::Exists(section=%s key=%s) -> false\n", section ? section : "?", key ? key : "?"); fflush(stdout); }
+    return false;
+}
 
 static void InstallSkuTrace(uintptr_t base)
 {
@@ -1873,6 +1911,21 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked Bloomberg::Tracer::Log (sub_188BBB0F0) @ %p\n", bbl);
     else
         tprintf("[eng] FAILED to hook Bloomberg::Tracer::Log @ %p\n", bbl);
+    void* cfgGet = (void*)(base + 0x67BC300);   // sub_1867BC300 = CConfig::Get (virtualized decoy) -> native empty stub
+    if (MH_CreateHook(cfgGet, &CConfigGet_Detour, (LPVOID*)&g_cconfigGetOrig) == MH_OK && MH_EnableHook(cfgGet) == MH_OK)
+        tprintf("[eng] hooked CConfig::Get (sub_1867BC300) @ %p [empty-stub, bypasses VM decoy]\n", cfgGet);
+    else
+        tprintf("[eng] FAILED to hook CConfig::Get @ %p\n", cfgGet);
+    void* cfgMerge = (void*)(base + 0x67BC850);   // sub_1867BC850 = CConfig::MergeSections (virtualized decoy) -> no-op
+    if (MH_CreateHook(cfgMerge, &CConfigMerge_Detour, (LPVOID*)&g_cconfigMergeOrig) == MH_OK && MH_EnableHook(cfgMerge) == MH_OK)
+        tprintf("[eng] hooked CConfig::MergeSections (sub_1867BC850) @ %p [no-op, bypasses VM decoy]\n", cfgMerge);
+    else
+        tprintf("[eng] FAILED to hook CConfig::MergeSections @ %p\n", cfgMerge);
+    void* cfgExists = (void*)(base + 0x67BC580);   // sub_1867BC580 = CConfig::Exists (virtualized decoy) -> false stub
+    if (MH_CreateHook(cfgExists, &CConfigExists_Detour, (LPVOID*)&g_cconfigExistsOrig) == MH_OK && MH_EnableHook(cfgExists) == MH_OK)
+        tprintf("[eng] hooked CConfig::Exists (sub_1867BC580) @ %p [false-stub, bypasses VM decoy]\n", cfgExists);
+    else
+        tprintf("[eng] FAILED to hook CConfig::Exists @ %p\n", cfgExists);
 
     // Win32 seams: resolve the real export addresses, then MinHook them.
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
@@ -1981,11 +2034,11 @@ static const uintptr_t kChkRvas[] = {
   //0x5C48C0,  // sub_1805C48C0 -- HOT inner fn (196K calls inside sub_186875450); checkpointing it crawls boot
     0x6875450, // sub_186875450 -- runs a big 196K-iter loop over sub_1805C48C0 (completes; slow only due to us)
     0x6D7B20,  // sub_1806D7B20 (called x3)
-    0x67BC300, // sub_1867BC300 = Denuvo-VIRTUALIZED (thunk -> 0x20F139F0); alloc-heavy under the VM = current stall
+  //0x67BC300, // sub_1867BC300 = CConfig::Get -- now a dedicated native empty-stub hook (bypasses VM decoy)
     0x9DBDBE0, // sub_189DBDBE0
   //0x9DBDBF0, // sub_189DBDBF0 -- HOT (3946 calls); dropped to cut log spam
-    0x67BC850, // sub_1867BC850
-    0x67BC580, // sub_1867BC580
+  //0x67BC850, // sub_1867BC850 = CConfig::MergeSections -- now a dedicated no-op hook (bypasses VM decoy)
+  //0x67BC580, // sub_1867BC580 = CConfig::Exists -- now a dedicated false-stub hook (bypasses VM decoy)
     0x6CFA30,  // sub_1806CFA30
     0x6793C50, // sub_186793C50
     0x77FB640, // sub_1877FB640
