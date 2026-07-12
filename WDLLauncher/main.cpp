@@ -1645,6 +1645,7 @@ typedef __int64 (__fastcall* EIC_t) (void* eng, void* params, double a, double b
 typedef __int64 (__fastcall* SREI_t)(void* a, void* b, double c, double d);
 static EIC_t  g_eicOrig  = nullptr;
 static EIC_t  g_ceiOrig  = nullptr;   // CEngine::Initialize (same sig as InitializeCore)
+static EIC_t  g_iesOrig  = nullptr;   // CEngine::InitializeEngineServices (sub_1867936F0) -- parent of CEngineServices::Initialize + the config cluster
 static SREI_t g_sreiOrig = nullptr;
 typedef __int64 (__fastcall* S440_t)(void* a, void* b, void* c, void* d);
 static S440_t g_s440Orig = nullptr;   // CDriverGame::CreateAndInitGamerProfileManager (sub_181240440)
@@ -1667,6 +1668,13 @@ static __int64 __fastcall Initialize_Detour(void* eng, void* params, double a, d
     tprintf("[eng] CEngine::Initialize (sub_186799B80) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
     __int64 r = g_ceiOrig(eng, params, a, b);
     tprintf("[eng] CEngine::Initialize RETURNED\n"); fflush(stdout);
+    return r;
+}
+static __int64 __fastcall InitEngineServices_Detour(void* eng, void* params, double a, double b)
+{
+    tprintf("[eng] CEngine::InitializeEngineServices (sub_1867936F0) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
+    __int64 r = g_iesOrig ? g_iesOrig(eng, params, a, b) : 0;
+    tprintf("[eng] CEngine::InitializeEngineServices RETURNED\n"); fflush(stdout);
     return r;
 }
 static __int64 __fastcall EngineServicesInit_Detour(void* self, void* params)
@@ -1840,6 +1848,17 @@ static bool __fastcall CConfigExists_Detour(const char* section, const char* key
     if (n++ < 40) { tprintf("[cfg] CConfig::Exists(section=%s key=%s) -> false\n", section ? section : "?", key ? key : "?"); fflush(stdout); }
     return false;
 }
+// sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, const char* name) -> char (confirmed). The
+// 3 calls here query "-txtlang"/"-localizationhideerror"/"-localizationdisplayid". NOT a decoy (returns fine);
+// trace hook -- forward + log which command-line param is queried and the result.
+typedef __int64 (__fastcall* HasParam_t)(void*, const char*);
+static HasParam_t g_hasParamOrig = nullptr;
+static __int64 __fastcall HasParam_Detour(void* self, const char* param)
+{
+    __int64 r = g_hasParamOrig(self, param);
+    tprintf("[eng] sub_1806D7B20(self=%p param=%s) = %lld\n", self, param ? param : "(null)", (long long)r); fflush(stdout);
+    return r;
+}
 
 static void InstallSkuTrace(uintptr_t base)
 {
@@ -1873,6 +1892,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked CEngine::Initialize (sub_186799B80) @ %p\n", cei);
     else
         tprintf("[eng] FAILED to hook CEngine::Initialize @ %p\n", cei);
+    void* ies = (void*)(base + 0x67936F0);   // sub_1867936F0 = CEngine::InitializeEngineServices (parent of CEngineServices::Initialize + the config cluster)
+    if (MH_CreateHook(ies, &InitEngineServices_Detour, (LPVOID*)&g_iesOrig) == MH_OK && MH_EnableHook(ies) == MH_OK)
+        tprintf("[eng] hooked CEngine::InitializeEngineServices (sub_1867936F0) @ %p\n", ies);
+    else
+        tprintf("[eng] FAILED to hook CEngine::InitializeEngineServices @ %p\n", ies);
     void* esi = (void*)(base + 0x67C0300);   // sub_1867C0300 = CEngineServices::Initialize (wraps the virtualized-fn crash path)
     if (MH_CreateHook(esi, &EngineServicesInit_Detour, (LPVOID*)&g_esiOrig) == MH_OK && MH_EnableHook(esi) == MH_OK)
         tprintf("[eng] hooked CEngineServices::Initialize (sub_1867C0300) @ %p\n", esi);
@@ -1926,6 +1950,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked CConfig::Exists (sub_1867BC580) @ %p [false-stub, bypasses VM decoy]\n", cfgExists);
     else
         tprintf("[eng] FAILED to hook CConfig::Exists @ %p\n", cfgExists);
+    void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
+    if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
+        tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
+    else
+        tprintf("[eng] FAILED to hook HasParameter @ %p\n", hp);
 
     // Win32 seams: resolve the real export addresses, then MinHook them.
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
@@ -2033,7 +2062,7 @@ static const uintptr_t kChkRvas[] = {
     0x67C2420, // sub_1867C2420
   //0x5C48C0,  // sub_1805C48C0 -- HOT inner fn (196K calls inside sub_186875450); checkpointing it crawls boot
     0x6875450, // sub_186875450 -- runs a big 196K-iter loop over sub_1805C48C0 (completes; slow only due to us)
-    0x6D7B20,  // sub_1806D7B20 (called x3)
+  //0x6D7B20,  // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter -- now a dedicated trace hook
   //0x67BC300, // sub_1867BC300 = CConfig::Get -- now a dedicated native empty-stub hook (bypasses VM decoy)
     0x9DBDBE0, // sub_189DBDBE0
   //0x9DBDBF0, // sub_189DBDBF0 -- HOT (3946 calls); dropped to cut log spam

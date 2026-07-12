@@ -987,10 +987,10 @@ void Misc::InstallEarlyHooks()
     g_earlyHooksDone = true;
     MH_Initialize();
     //InstallTokenCapture();
-    InstallUpcProductCapture();   // arm the real-run UPC_ProductListGet capture (via the LoadLibrary catch, before UPC init)
+    //InstallUpcProductCapture();   // arm the real-run UPC_ProductListGet capture (via the LoadLibrary catch, before UPC init)
     //InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
-    InstallNomadDbCapture();   // NORMAL-RUN: dump the real CNomadDb sentinel sub-object init (ground truth for the manual-load stub)
-    InstallCConfigCapture();   // NORMAL-RUN: log real CConfig::Get/Exists/MergeSections args+results (vs the manual-load stubs)
+    //InstallNomadDbCapture();   // NORMAL-RUN: dump the real CNomadDb sentinel sub-object init (ground truth for the manual-load stub)
+    //InstallCConfigCapture();   // NORMAL-RUN: log real CConfig::Get/Exists/MergeSections args+results (vs the manual-load stubs)
 }
 
 // ===================================================================================================
