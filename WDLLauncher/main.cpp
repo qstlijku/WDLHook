@@ -353,6 +353,7 @@ static void InstallKillLogger()
 // DuniaDemo+RVA is SPINNING there (map the RVA -> function); one stuck at ntdll!NtWaitForSingleObject /
 // NtDelayExecution is BLOCKED on a worker/event/sleep. No debugger needed -- the hang shows up in the log.
 static const bool kWatchdog = true;
+static DWORD g_mainTid = 0;   // the WinMain/boot thread (marked "(BOOT)" in samples)
 static DWORD WINAPI WatchdogThread(LPVOID)
 {
     DWORD self = GetCurrentThreadId();
@@ -360,6 +361,7 @@ static DWORD WINAPI WatchdogThread(LPVOID)
     for (int round = 0; ; ++round)
     {
         Sleep(5000);
+        uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if (snap == INVALID_HANDLE_VALUE) continue;
         tprintf("[watchdog] === round %d ===\n", round);
@@ -372,23 +374,40 @@ static DWORD WINAPI WatchdogThread(LPVOID)
                 HANDLE hT = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, te.th32ThreadID);
                 if (!hT) continue;
                 CONTEXT ctx; memset(&ctx, 0, sizeof(ctx)); ctx.ContextFlags = CONTEXT_CONTROL;
-                uintptr_t rip = 0;
-                if (SuspendThread(hT) != (DWORD)-1)   // minimal window: read RIP, resume before any logging
+                uintptr_t rip = 0, rsp = 0;
+                uintptr_t stk[512]; int nstk = 0;                 // stack snapshot (4KB), taken while suspended
+                bool inGame = false;
+                if (SuspendThread(hT) != (DWORD)-1)
                 {
-                    if (GetThreadContext(hT, &ctx)) rip = (uintptr_t)ctx.Rip;
-                    ResumeThread(hT);
+                    if (GetThreadContext(hT, &ctx)) { rip = (uintptr_t)ctx.Rip; rsp = (uintptr_t)ctx.Rsp; }
+                    inGame = (rip && base && rip >= base && rip < base + 0x24000000);
+                    if (inGame && rsp)                            // only bother snapshotting the game-executing thread
+                    {
+                        __try { memcpy(stk, (void*)rsp, sizeof(stk)); nstk = 512; }
+                        __except (EXCEPTION_EXECUTE_HANDLER) { nstk = 0; }
+                    }
+                    ResumeThread(hT);                            // resume BEFORE any logging (no deadlock on the log lock)
                 }
                 if (rip)
                 {
+                    const char* tag = (te.th32ThreadID == g_mainTid) ? " (BOOT)" : "";
                     HMODULE m = nullptr;
                     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)rip, &m) && m)
                     {
                         char p[MAX_PATH]; GetModuleFileNameA(m, p, MAX_PATH);
                         const char* b = strrchr(p, '\\');
-                        tprintf("[watchdog]   tid %5lu RIP = %s+0x%llX\n", te.th32ThreadID, b ? b + 1 : p, (unsigned long long)(rip - (uintptr_t)m));
+                        tprintf("[watchdog]   tid %5lu%s RIP = %s+0x%llX\n", te.th32ThreadID, tag, b ? b + 1 : p, (unsigned long long)(rip - (uintptr_t)m));
                     }
                     else
-                        tprintf("[watchdog]   tid %5lu RIP = %p (no module)\n", te.th32ThreadID, (void*)rip);
+                        tprintf("[watchdog]   tid %5lu%s RIP = %p (no module)\n", te.th32ThreadID, tag, (void*)rip);
+                    // Scan the snapshot for return addresses into the REAL engine code (RVA < 0x9DBDE00; the
+                    // spin RIP is up in .rsrc/VM which we can't symbolize) -> the engine caller chain into the loop.
+                    for (int k = 0; k < nstk; ++k)
+                    {
+                        uintptr_t v = stk[k];
+                        if (v > base + 0x1000 && v < base + 0x9DBDE00)
+                            tprintf("[watchdog]       [sp+0x%03X] DuniaDemo+0x%llX\n", k * 8, (unsigned long long)(v - base));
+                    }
                 }
                 CloseHandle(hT);
             } while (Thread32Next(snap, &te));
@@ -400,8 +419,9 @@ static DWORD WINAPI WatchdogThread(LPVOID)
 static void StartWatchdog()
 {
     if (!kWatchdog) return;
+    g_mainTid = GetCurrentThreadId();   // StartWatchdog runs on the WinMain/boot thread
     CreateThread(nullptr, 0, WatchdogThread, nullptr, 0, nullptr);
-    tprintf("[watchdog] started -- sampling all threads' RIP every 5s\n"); fflush(stdout);
+    tprintf("[watchdog] started -- sampling all threads every 5s (boot tid=%lu)\n", g_mainTid); fflush(stdout);
 }
 
 // ---- uplay_aux_r164.dll gate patch (ported from ACMHook — retail WDL uses the identical DLL) ----
