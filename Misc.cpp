@@ -840,7 +840,7 @@ static atexit_t g_atexit_orig = nullptr;
 static int g_atexitCount = 0;
 static int __cdecl atexit_Detour(PVFV func)
 {
-    LogInit("atexit", (void*)func, g_atexitCount++);
+    //LogInit("atexit", (void*)func, g_atexitCount++);
     return 0;
     //return g_atexit_orig ? g_atexit_orig(func) : 0;
 }
@@ -871,6 +871,72 @@ static void InstallInitTermLogger()
 // MainThread -- so the LoadLibrary/GetProcAddress/getGameTokenInterface hooks are in place before
 // RunGame's early token+activation flow runs. A spawned thread can't do this: it's blocked until the
 // loader lock releases, by which point RunGame has already called getGameTokenInterface (missed).
+// NORMAL-RUN CAPTURE of the CNomadDb ctor (sub_18686F4C0) -- ground truth for the WDLLauncher manual-load
+// stub. On a normal run the Denuvo VM is bootstrapped, so the two virtualized member-ctors (called through
+// VM-table slots base+0x21B1F040 / +0x21B1F048 on the sentinel sub-object at CNomadDb+0x20) run FOR REAL.
+// After the ctor returns we dump: the real (decrypted) slot fn-pointers, and the sub-object's post-init
+// state as qwords annotated self-relative -- so we can replicate the exact CSlot sentinel layout instead of
+// guessing (our manual-load stub froze the engine's list walk with a wrong ring).
+typedef void* (__fastcall* NomadDbCtor_t)(void* self);
+static NomadDbCtor_t g_nomadCtor_orig = nullptr;
+static int g_nomadCtorCount = 0;
+// Dump `nq` qwords of an object, annotating each value: pointer into self, into v2 (the sub-object), or into
+// the module (vtables/statics). Lets us read the real retail CNomadDb layout field-by-field.
+static void DumpObjQwords(const char* tag, void* objBase, int nq, uintptr_t modBase, void* v2)
+{
+    unsigned long long b = (unsigned long long)objBase;
+    unsigned long long* q = (unsigned long long*)objBase;
+    for (int i = 0; i < nq; ++i)
+    {
+        unsigned long long val = q[i];
+        char note[80]; note[0] = 0;
+        if (val >= b && val < b + (unsigned long long)nq * 8)
+            sprintf_s(note, "  (= %s+0x%llX)", tag, val - b);
+        else if (v2 && val == (unsigned long long)v2)
+            strcpy_s(note, "  (= v2)");
+        else if (v2 && val >= (unsigned long long)v2 && val < (unsigned long long)v2 + 0x38)
+            sprintf_s(note, "  (= v2+0x%llX)", val - (unsigned long long)v2);
+        else if (val >= modBase && val < modBase + 0x40000000ull)
+            sprintf_s(note, "  (= DuniaDemo+0x%llX)", val - modBase);
+        tprintf("[cap]   %s+0x%02X = %016llX%s\n", tag, i * 8, val, note);
+    }
+}
+static void* __fastcall NomadDbCtor_Capture(void* self)
+{
+    void* r = g_nomadCtor_orig(self);
+    if (g_nomadCtorCount++ < 3)
+    {
+        uintptr_t base = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+        void* v2 = *(void**)((char*)self + 0x20);            // CNomadDb+0x20 = CSlot sentinel sub-object
+        void* sA = *(void**)(base + 0x21B1F040);
+        void* sB = *(void**)(base + 0x21B1F048);
+        tprintf("[cap] CNomadDb ctor #%d self=%p  v2(@+0x20)=%p\n", g_nomadCtorCount, self, v2);
+        tprintf("[cap]   real slot 0x21B1F040=%p (rva 0x%llX)  0x21B1F048=%p (rva 0x%llX)\n",
+                sA, (unsigned long long)((uintptr_t)sA - base),
+                sB, (unsigned long long)((uintptr_t)sB - base));
+        tprintf("[cap]   --- CNomadDb self (0x100 bytes / 32 qwords) ---\n");
+        DumpObjQwords("self", self, 32, base, v2);           // full retail CNomadDb (0x100)
+        if (v2)
+        {
+            tprintf("[cap]   --- sub-object v2 (0x38 bytes / 7 qwords) ---\n");
+            DumpObjQwords("v2", v2, 7, base, v2);            // sentinel/header sub-object
+        }
+        fflush(stdout);
+    }
+    return r;
+}
+static void InstallNomadDbCapture()
+{
+    uintptr_t base = (uintptr_t)GetModuleHandleA("DuniaDemo_clang_64_dx11.dll");
+    if (!base) { tprintf("[cap] CNomadDb capture: module not loaded\n"); return; }
+    void* tgt = (void*)(base + 0x686F4C0);
+    if (MH_CreateHook(tgt, &NomadDbCtor_Capture, reinterpret_cast<LPVOID*>(&g_nomadCtor_orig)) == MH_OK
+        && MH_EnableHook(tgt) == MH_OK)
+        tprintf("[cap] CNomadDb-ctor capture armed @ %p\n", tgt);
+    else
+        tprintf("[cap] CNomadDb-ctor capture FAILED @ %p\n", tgt);
+    fflush(stdout);
+}
 void Misc::InstallEarlyHooks()
 {
     if (g_earlyHooksDone) return;
@@ -878,7 +944,8 @@ void Misc::InstallEarlyHooks()
     MH_Initialize();
     //InstallTokenCapture();
     InstallUpcProductCapture();   // arm the real-run UPC_ProductListGet capture (via the LoadLibrary catch, before UPC init)
-    InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
+    //InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
+    InstallNomadDbCapture();   // NORMAL-RUN: dump the real CNomadDb sentinel sub-object init (ground truth for the manual-load stub)
 }
 
 // ===================================================================================================

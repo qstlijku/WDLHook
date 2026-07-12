@@ -1977,6 +1977,64 @@ static __int64 __fastcall Sub686F4C0_Detour(void* a, void* b, void* c, void* d)
     fflush(stdout);
     return result;
 }
+// --- CNomadDb VM-dispatch-table slot bind (manual-load) --------------------------------------------------
+// The two CNomadDb ctors (sub_18686F4C0 + sub_18686F3E0) each construct a 56-byte heap sub-object at
+// CNomadDb+0x20 by calling two member-ctors THROUGH the Denuvo VM dispatch table at base+0x21B1F040 /
+// +0x21B1F048 (call qword ptr [rip+disp]). A .rsrc scan of the boot frontier found these are the ONLY two
+// VM-table slots hit -- the other relocated Init callees never touch it. The VM/TLS-callback bootstrap would
+// decrypt these slots; we skip it, so they hold bare un-relocated RVAs (~0x21B2Bxxx) and calling them faults
+// (== the current crash right after lua_gc). Binding the two slots to a native stub fixes BOTH ctors with
+// their REAL bodies intact -- cheaper + more general than reimplementing each ctor.
+// GROUND TRUTH from a normal-run capture (DE_Hook NomadDbCtor_Capture, VM bootstrapped so the real member-
+// ctors ran): the two VM-table member-ctors leave the 0x38-byte sub-object v2 in this exact state -- NOT a
+// CSlot self-pointer ring (earlier guesses were wrong), but a small hash/table header (0xFFFF.. empty-slot
+// markers + a config word):
+//   v2+0x00=0  v2+0x08=0  v2+0x10=0xFFFFFFFFFFFFFFFF  v2+0x18=0x00000000FFFFFFFF
+//   v2+0x20=0  v2+0x28=0  v2+0x30=0x00000000020007D0
+// The real member-ctors live outside the module (VM-decrypted, rva ~0x1AC..) so we can't call them -- we just
+// reproduce their output. slot 0x40 is called on v2+8, slot 0x48 on v2+0x10; each recovers the base
+// (arg - field offset) and writes the full captured state idempotently.
+static void NomadSubObjInit(char* v2)
+{
+    *(unsigned long long*)(v2 + 0x00) = 0ull;
+    *(unsigned long long*)(v2 + 0x08) = 0ull;
+    *(unsigned long long*)(v2 + 0x10) = 0xFFFFFFFFFFFFFFFFull;
+    *(unsigned long long*)(v2 + 0x18) = 0x00000000FFFFFFFFull;
+    *(unsigned long long*)(v2 + 0x20) = 0ull;
+    *(unsigned long long*)(v2 + 0x28) = 0ull;
+    *(unsigned long long*)(v2 + 0x30) = 0x00000000020007D0ull;
+}
+static void* __fastcall NomadSlotNext(void* p)       // slot 0x21B1F040, arg = v2 + 8
+{
+    tprintf("[vmslot] slotA(arg=%p) v2=%p\n", p, (char*)p - 8);
+    fflush(stdout);
+    NomadSubObjInit((char*)p - 8);
+    return p;
+}
+static void* __fastcall NomadSlotPrev(void* p)       // slot 0x21B1F048, arg = v2 + 0x10
+{
+    tprintf("[vmslot] slotB(arg=%p) v2=%p\n", p, (char*)p - 0x10);
+    fflush(stdout);
+    NomadSubObjInit((char*)p - 0x10);
+    return p;
+}
+static void BindNomadDbVmSlots(uintptr_t base)
+{
+    void** slot = (void**)(base + 0x21B1F040);   // slot[0] = +0x21B1F040, slot[1] = +0x21B1F048
+    DWORD old = 0;
+    if (!VirtualProtect(slot, 16, PAGE_READWRITE, &old))
+    {
+        tprintf("[vmslot] VirtualProtect FAILED @ %p (err %lu)\n", (void*)slot, GetLastError());
+        fflush(stdout);
+        return;
+    }
+    tprintf("[vmslot] pre-bind: [0x21B1F040]=%p [0x21B1F048]=%p\n", slot[0], slot[1]);
+    slot[0] = (void*)&NomadSlotNext;   // 0x21B1F040
+    slot[1] = (void*)&NomadSlotPrev;   // 0x21B1F048
+    VirtualProtect(slot, 16, old, &old);
+    tprintf("[vmslot] bound 0x21B1F040->slotNext, 0x21B1F048->slotPrev\n");
+    fflush(stdout);
+}
 static void InstallVmStubs(uintptr_t base)
 {
     MH_Initialize();   // idempotent
@@ -2004,6 +2062,8 @@ static void InstallVmStubs(uintptr_t base)
         tprintf("[hook] hooked sub_18686F4C0 @ %p\n", s686);
     else
         tprintf("[hook] FAILED to hook sub_18686F4C0 @ %p\n", s686);
+
+    BindNomadDbVmSlots(base);   // fill the 2 Denuvo VM-table slots the CNomadDb ctors call through
     fflush(stdout);
 }
 static void InstallCheckpoints(uintptr_t base)
