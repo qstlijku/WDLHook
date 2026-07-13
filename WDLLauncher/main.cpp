@@ -1778,16 +1778,15 @@ static const char* SafeCopyStr(const char* s, char* buf, int n)
 // CEngineServices::Initialize right after the CNomadDb ctors. Real signature (7 args, from the callee + PDB;
 // the retail CALLER decompile mis-recovered them): (this, libType, createObjectFunc, typeName, dataType,
 // variablePrefix, validatorFunc). typeName (r9) and variablePrefix (stack) are the real char* strings.
-typedef void* (__fastcall* GenRegLib_t)(void*, int, void*, char*, int, char*, void*);
+typedef void* (__fastcall* GenRegLib_t)(void*, int, void*, int, char*, void*);
 static GenRegLib_t g_genRegOrig = nullptr;
-static void* __fastcall GenRegLib_Detour(void* self, int libType, void* createFn, char* typeName,
-                                         int dataType, char* varPrefix, void* validatorFn)
+static void* __fastcall GenRegLib_Detour(void* self, int libType, void* createFn,
+                                         int dataType, char* typeName, void* validatorFn)
 {
     char tn[64], vp[64];
     tprintf("[eng] GenRegisterLibrary(self=%p libType=%d typeName=%s dataType=%d varPrefix=%s) ENTER\n",
-            self, libType, SafeCopyStr(typeName, tn, sizeof(tn)), dataType,
-            SafeCopyStr(varPrefix, vp, sizeof(vp))); fflush(stdout);
-    void* r = g_genRegOrig(self, libType, createFn, typeName, dataType, varPrefix, validatorFn);
+            self, libType, SafeCopyStr(typeName, tn, sizeof(tn)), dataType); fflush(stdout);
+    void* r = g_genRegOrig(self, libType, createFn, dataType, typeName, validatorFn);
     tprintf("[eng] GenRegisterLibrary RETURNED %p\n", r); fflush(stdout);
     return r;
 }
