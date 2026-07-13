@@ -1658,32 +1658,41 @@ static SSI_t  g_ssiOrig  = nullptr;   // CScriptSystem::Init (sub_1868CAC10) -- 
 
 static __int64 __fastcall InitializeCore_Detour(void* eng, void* params, double a, double b)
 {
-    tprintf("[eng] CEngine::InitializeCore (sub_186793540) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
+    void* ret = _ReturnAddress();
+    tprintf("[eng] CEngine::InitializeCore (sub_186793540) ENTER  eng=%p params=%p  caller=%p (+0x%llX)\n",
+            eng, params, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
     __int64 r = g_eicOrig ? g_eicOrig(eng, params, a, b) : 0;
     tprintf("[eng] CEngine::InitializeCore RETURNED\n"); fflush(stdout);
     return r;
 }
 static __int64 __fastcall Initialize_Detour(void* eng, void* params, double a, double b)
 {
-    tprintf("[eng] CEngine::Initialize (sub_186799B80) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
+    void* ret = _ReturnAddress();
+    tprintf("[eng] CEngine::Initialize (sub_186799B80) ENTER  eng=%p params=%p  caller=%p (+0x%llX)\n",
+            eng, params, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
     __int64 r = g_ceiOrig(eng, params, a, b);
     tprintf("[eng] CEngine::Initialize RETURNED\n"); fflush(stdout);
     return r;
 }
 static __int64 __fastcall InitEngineServices_Detour(void* eng, void* params, double a, double b)
 {
-    tprintf("[eng] CEngine::InitializeEngineServices (sub_1867936F0) ENTER  eng=%p params=%p\n", eng, params); fflush(stdout);
+    void* ret = _ReturnAddress();
+    tprintf("[eng] CEngine::InitializeEngineServices (sub_1867936F0) ENTER  eng=%p params=%p  caller=%p (+0x%llX)\n",
+            eng, params, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
     __int64 r = g_iesOrig ? g_iesOrig(eng, params, a, b) : 0;
     tprintf("[eng] CEngine::InitializeEngineServices RETURNED\n"); fflush(stdout);
     return r;
 }
 static __int64 __fastcall EngineServicesInit_Detour(void* self, void* params)
 {
-    tprintf("[eng] CEngineServices::Initialize (sub_1867C0300) ENTER  this=%p params=%p\n", self, params); fflush(stdout);
+    void* ret = _ReturnAddress();
+    tprintf("[eng] CEngineServices::Initialize (sub_1867C0300) ENTER  this=%p params=%p  caller=%p (+0x%llX)\n",
+            self, params, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
     __int64 r = g_esiOrig(self, params);
     tprintf("[eng] CEngineServices::Initialize RETURNED\n"); fflush(stdout);
     return r;
 }
+
 static __int64 __fastcall LoadConfig_Detour(void* self, const char* path)
 {
     tprintf("[eng] CConfig::LoadConfig (sub_1867BCA70) ENTER  this=%p path=%s\n", self, path ? path : "(null)"); fflush(stdout);
