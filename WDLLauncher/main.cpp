@@ -2057,224 +2057,69 @@ static const uintptr_t kChkRvasCESInit[] = {
 // (sub_1805C48C0 -> str2enum) then HANGS in a VM spin before CEngine::Initialize -- bracket these callees so
 // the last ENTER without a RETURNED names the stuck one. Order matches the disasm of sub_1867936F0;
 // sub_1805C48C0 is the last confirmed-reached call, sub_186875450 (right after) is the prime suspect.
-// -- OLD array (InitializeEngineServices callees, all cleared) -- retained for reference:
-//static const uintptr_t kChkRvas[] = {
-//    0x6874B40, // sub_186874B40 (1st call after the 2nd CConfig::LoadConfig)
-//    0x67C2420, // sub_1867C2420
-//  //0x5C48C0,  // sub_1805C48C0 -- HOT inner fn (196K calls inside sub_186875450); checkpointing it crawls boot
-//    0x6875450, // sub_186875450 -- runs a big 196K-iter loop over sub_1805C48C0 (completes; slow only due to us)
-//  //0x6D7B20,  // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter -- now a dedicated trace hook
-//  //0x67BC300, // sub_1867BC300 = CConfig::Get -- now a dedicated native empty-stub hook (bypasses VM decoy)
-//    0x9DBDBE0, // sub_189DBDBE0
-//  //0x9DBDBF0, // sub_189DBDBF0 -- HOT (3946 calls); dropped to cut log spam
-//  //0x67BC850, // sub_1867BC850 = CConfig::MergeSections -- now a dedicated no-op hook (bypasses VM decoy)
-//  //0x67BC580, // sub_1867BC580 = CConfig::Exists -- now a dedicated false-stub hook (bypasses VM decoy)
-//    0x6CFA30,  // sub_1806CFA30
-//    0x6793C50, // sub_186793C50
-//    0x77FB640, // sub_1877FB640
-//    0x77FB740, // sub_1877FB740
-//    0x686CBC0, // sub_18686CBC0 (last call before InitializeEngineServices returns)
-//};
-
-// NEW array: every sub_* call in CEngine::Initialize (sub_186799B80) AFTER the internal
-// CEngine::InitializeEngineServices(a1,a2) call, in source order (excludes CMemMng::NMalloc/NFree,
-// ndStringBase ctors/c_str, nullsub_*, HasParameter (dedicated hook), MEMORY[] .trace indirects,
-// and sub_* referenced only as callback-pointer args). Dupes collapsed to first occurrence.
 static const uintptr_t kChkRvas[] = {
-    0x6659F00, // sub_186659F00
-    0x6799510, // sub_186799510
-    0x60F7CA0, // sub_1860F7CA0
-    0x6798E80, // sub_186798E80
-    0x6038FD0, // sub_186038FD0
-    0x63EED0,  // sub_18063EED0
-  //0x602E770, // sub_18602E770  [HOT/shared -- fires from CEngineServices::Initialize; removed]
-    0x687DF00, // sub_18687DF00
-    0x673BE20, // sub_18673BE20
-    0x7216BF0, // sub_187216BF0
-    0x7CE78B0, // sub_187CE78B0
-    0x7CEF390, // sub_187CEF390
-    0x7CE5AB0, // sub_187CE5AB0
-    0x7CE0600, // sub_187CE0600
-    0x7CBEFF0, // sub_187CBEFF0
-    0x620E9F0, // sub_18620E9F0
-    0x5BF980,  // sub_1805BF980
-    0x60A2360, // sub_1860A2360
-    0x67B9120, // sub_1867B9120
-    0x7398740, // sub_187398740
-    0x7398980, // sub_187398980
-    0x69222C0, // sub_1869222C0
-    0x68715C0, // sub_1868715C0
-    0x686EFE0, // sub_18686EFE0  (called 3x)
-    0x6870070, // sub_186870070
-  //0x5C3F60,  // sub_1805C3F60  [HOT/shared -- fires from CEngineServices::Initialize; removed]
-    0x7D5E810, // sub_187D5E810
-    0x6035400, // sub_186035400
-    0x7D633E0, // sub_187D633E0
-    0x686F8D0, // sub_18686F8D0
-    0x6799130, // sub_186799130
-    0x7F60DC0, // sub_187F60DC0
-    0x603E650, // sub_18603E650
-    0x7F12760, // sub_187F12760  (called 2x)
-    0x60AD8D0, // sub_1860AD8D0
-    0x7802ED0, // sub_187802ED0
-    0x60AD900, // sub_1860AD900
-    0x60F90C0, // sub_1860F90C0
-    0x60D7A90, // sub_1860D7A90
-    0x6110E90, // sub_186110E90
-    0x6121760, // sub_186121760
-    0x66098F0, // sub_1866098F0
-    0x6121220, // sub_186121220
-    0x64B0A70, // sub_1864B0A70
-    0x677BAD0, // sub_18677BAD0
-    0x60278C0, // sub_1860278C0  (called 2x)
-    0x6794680, // sub_186794680
-    0x6794A30, // sub_186794A30
-    0x6245A20, // sub_186245A20
-    0x6796300, // sub_186796300
-    0x677CA00, // sub_18677CA00
-    0x657EEB0, // sub_18657EEB0
-    0x6371A40, // sub_186371A40
-    0x63B2C40, // sub_1863B2C40
-    0x63B56B0, // sub_1863B56B0
-    0x665E2D0, // sub_18665E2D0
-    0x64A2170, // sub_1864A2170
-    0x64A7FF0, // sub_1864A7FF0
-    0x2ABFD80, // sub_182ABFD80
-  //0x5B89E0,  // sub_1805B89E0  [HOT/shared -- CRASHED at +0x3F from CEngineServices::Initialize; removed]
-    0x5A6FD80, // sub_185A6FD80
-    0x684E200, // sub_18684E200
-    0x60ADBC0, // sub_1860ADBC0
-    0x7D1B6C0, // sub_187D1B6C0
-    0x656E250, // sub_18656E250
-    0x6027190, // sub_186027190
-    0x671D890, // sub_18671D890
-    0x671E600, // sub_18671E600
-    0x6720730, // sub_186720730
-    0x672FF20, // sub_18672FF20
-    0x671B150, // sub_18671B150
-    0x6884560, // sub_186884560  (called 5x -- event-channel register)
-    0x6640DD0, // sub_186640DD0
-    0x6641010, // sub_186641010
-    0x6640770, // sub_186640770
-    0x63D5740, // sub_1863D5740
-    0x60A5710, // sub_1860A5710
-    0x6373BA0, // sub_186373BA0
-    0x636FA80, // sub_18636FA80
-    0x63CE370, // sub_1863CE370
-    0x63CE910, // sub_1863CE910
-    0x7256AE0, // sub_187256AE0
-    0x173220,  // sub_180173220
-    0xD6DE0,   // sub_1800D6DE0
-    0x60EC860, // sub_1860EC860
-    0x673CF10, // sub_18673CF10
-    0x7633530, // sub_187633530
-    0x661E530, // sub_18661E530
-    0x643EA50, // sub_18643EA50
-    0x6445590, // sub_186445590
-    0x7804B80, // sub_187804B80  (called 2x)
-    0x6891E50, // sub_186891E50
-    0x60DE210, // sub_1860DE210
-    0x6177E40, // sub_186177E40
-    0x63BA960, // sub_1863BA960
-    0x65B2620, // sub_1865B2620
-    0x65BACF0, // sub_1865BACF0
-    0x65F2D00, // sub_1865F2D00
-    0x65ED0A0, // sub_1865ED0A0
-    0x65FDCE0, // sub_1865FDCE0
-    0x65EE2F0, // sub_1865EE2F0
-    0x65771F0, // sub_1865771F0
-    0x609D0E0, // sub_18609D0E0
-    0x7F3C0D0, // sub_187F3C0D0
-    0x60DA4B0, // sub_1860DA4B0
-    0x60FA2C0, // sub_1860FA2C0
-    0x6032330, // sub_186032330
-    0x67356A0, // sub_1867356A0
-    0x60A49F0, // sub_1860A49F0
-    0x686E950, // sub_18686E950  (called 2x)
-    0x60F79B0, // sub_1860F79B0  (called 4x)
-  //0x9372994, // sub_189372994  [HOT/shared call_once guard -- fires from CEngineServices::Initialize; removed]
-    0x678FC10, // sub_18678FC10
-  //0x9372F90, // sub_189372F90  [HOT/shared call_once register -- removed]
-  //0x9372A2C, // sub_189372A2C  [HOT/shared call_once complete -- removed]
-    0x67907F0, // sub_1867907F0
-    0x64F69C0, // sub_1864F69C0
-    0x64F6C50, // sub_1864F6C50
-    0x6423210, // sub_186423210
-    0x641CC50, // sub_18641CC50
-    0x6420F20, // sub_186420F20
-    0x668B370, // sub_18668B370
-    0x6664C10, // sub_186664C10
-    0x66831A0, // sub_1866831A0
-    0x63B7A80, // sub_1863B7A80
-    0x62472C0, // sub_1862472C0
-    0x6247780, // sub_186247780
-    0x603FBB0, // sub_18603FBB0
-    0x64C4D70, // sub_1864C4D70
-    0x65B2450, // sub_1865B2450
-    0x6319D00, // sub_186319D00
-  //0x8C18AE0, // sub_188C18AE0  [HOT/shared lock -- fires from CEngineServices::Initialize; removed]
-    0x6821C60, // sub_186821C60  (called 2x)
-  //0x8C18AF0, // sub_188C18AF0  [HOT/shared unlock -- removed]
-    0x68252B0, // sub_1868252B0  (called 2x)
-    0x6648B90, // sub_186648B90
-    0x7E879C0, // sub_187E879C0
-    0x7E8CD10, // sub_187E8CD10
-  //0x5A81C0,  // sub_1805A81C0  [HOT/shared -- fires from CEngineServices::Initialize; removed]
-  //0x5E6EC0,  // sub_1805E6EC0  [HOT/shared -- fires from CEngineServices::Initialize; removed]
-    0x7E8F060, // sub_187E8F060
+    0x6874B40, // sub_186874B40 (1st call after the 2nd CConfig::LoadConfig)
+    0x67C2420, // sub_1867C2420
+  //0x5C48C0,  // sub_1805C48C0 -- HOT inner fn (196K calls inside sub_186875450); checkpointing it crawls boot
+    0x6875450, // sub_186875450 -- runs a big 196K-iter loop over sub_1805C48C0 (completes; slow only due to us)
+  //0x6D7B20,  // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter -- now a dedicated trace hook
+  //0x67BC300, // sub_1867BC300 = CConfig::Get -- now a dedicated native empty-stub hook (bypasses VM decoy)
+    0x9DBDBE0, // sub_189DBDBE0
+  //0x9DBDBF0, // sub_189DBDBF0 -- HOT (3946 calls); dropped to cut log spam
+  //0x67BC850, // sub_1867BC850 = CConfig::MergeSections -- now a dedicated no-op hook (bypasses VM decoy)
+  //0x67BC580, // sub_1867BC580 = CConfig::Exists -- now a dedicated false-stub hook (bypasses VM decoy)
+    0x6CFA30,  // sub_1806CFA30
+    0x6793C50, // sub_186793C50
+    0x77FB640, // sub_1877FB640
+    0x77FB740, // sub_1877FB740
+    0x686CBC0, // sub_18686CBC0 (last call before InitializeEngineServices returns)
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
-static ChkFn_t g_chkOrig[160];
+static ChkFn_t g_chkOrig[32];
 
 template<int N> static __int64 __fastcall ChkThunk(void* a, void* b, void* c, void* d)
 {
+    if (N == 28)   // sub_188C0FD70 = G4::Platform::Platform -- overwrite-vs-code-mutation test at entry
+    {
+        /*
+        tprintf("CPU detection started\n");
+        uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+        HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+        struct { const char* nm; uintptr_t slot; } s[] = {
+            { "GetSystemInfo",           0xA97C580 },   // called at +0x49
+            { "GlobalMemoryStatusEx",    0xA97C620 },
+            { "GetLogicalDriveStringsA", 0xA97C4E0 },
+        };
+        for (auto& e : s)
+        {
+            uintptr_t v = *(uintptr_t*)(base + e.slot);
+            void* real = (void*)GetProcAddress(k32, e.nm);
+            tprintf("[g4] slot 0x%llX %-24s = %p (real=%p match=%d)\n",
+                    (unsigned long long)e.slot, e.nm, (void*)v, real, (int)(v == (uintptr_t)real));
+        }
+        unsigned char* call = (unsigned char*)(base + 0x8C0FDB9);   // the GetSystemInfo `call [rip+..]` at +0x49
+        tprintf("[g4] call@+0x49 bytes:");
+        for (int i = 0; i < 8; ++i) tprintf(" %02X", call[i]);      // FF 15 C1 C7 D6 01 = call [rip+0x1d6c7c1] if unmutated
+        tprintf("\n"); fflush(stdout);*/
+        tprintf("InstallPackage test\n");
+    }
     tprintf("[chk] sub_%llX ENTER\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
     __int64 r = g_chkOrig[N](a, b, c, d);
     tprintf("[chk] sub_%llX RETURNED\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
+    if (N == 17)
+        tprintf("InitializeEngineServices (anon): DetectDesktopMonitorResolution returned\n");
     return r;
 }
 static void* g_chkThunks[] = {
-    (void*)&ChkThunk<0>,   (void*)&ChkThunk<1>,   (void*)&ChkThunk<2>,   (void*)&ChkThunk<3>,
-    (void*)&ChkThunk<4>,   (void*)&ChkThunk<5>,   (void*)&ChkThunk<6>,   (void*)&ChkThunk<7>,
-    (void*)&ChkThunk<8>,   (void*)&ChkThunk<9>,   (void*)&ChkThunk<10>,  (void*)&ChkThunk<11>,
-    (void*)&ChkThunk<12>,  (void*)&ChkThunk<13>,  (void*)&ChkThunk<14>,  (void*)&ChkThunk<15>,
-    (void*)&ChkThunk<16>,  (void*)&ChkThunk<17>,  (void*)&ChkThunk<18>,  (void*)&ChkThunk<19>,
-    (void*)&ChkThunk<20>,  (void*)&ChkThunk<21>,  (void*)&ChkThunk<22>,  (void*)&ChkThunk<23>,
-    (void*)&ChkThunk<24>,  (void*)&ChkThunk<25>,  (void*)&ChkThunk<26>,  (void*)&ChkThunk<27>,
-    (void*)&ChkThunk<28>,  (void*)&ChkThunk<29>,  (void*)&ChkThunk<30>,  (void*)&ChkThunk<31>,
-    (void*)&ChkThunk<32>,  (void*)&ChkThunk<33>,  (void*)&ChkThunk<34>,  (void*)&ChkThunk<35>,
-    (void*)&ChkThunk<36>,  (void*)&ChkThunk<37>,  (void*)&ChkThunk<38>,  (void*)&ChkThunk<39>,
-    (void*)&ChkThunk<40>,  (void*)&ChkThunk<41>,  (void*)&ChkThunk<42>,  (void*)&ChkThunk<43>,
-    (void*)&ChkThunk<44>,  (void*)&ChkThunk<45>,  (void*)&ChkThunk<46>,  (void*)&ChkThunk<47>,
-    (void*)&ChkThunk<48>,  (void*)&ChkThunk<49>,  (void*)&ChkThunk<50>,  (void*)&ChkThunk<51>,
-    (void*)&ChkThunk<52>,  (void*)&ChkThunk<53>,  (void*)&ChkThunk<54>,  (void*)&ChkThunk<55>,
-    (void*)&ChkThunk<56>,  (void*)&ChkThunk<57>,  (void*)&ChkThunk<58>,  (void*)&ChkThunk<59>,
-    (void*)&ChkThunk<60>,  (void*)&ChkThunk<61>,  (void*)&ChkThunk<62>,  (void*)&ChkThunk<63>,
-    (void*)&ChkThunk<64>,  (void*)&ChkThunk<65>,  (void*)&ChkThunk<66>,  (void*)&ChkThunk<67>,
-    (void*)&ChkThunk<68>,  (void*)&ChkThunk<69>,  (void*)&ChkThunk<70>,  (void*)&ChkThunk<71>,
-    (void*)&ChkThunk<72>,  (void*)&ChkThunk<73>,  (void*)&ChkThunk<74>,  (void*)&ChkThunk<75>,
-    (void*)&ChkThunk<76>,  (void*)&ChkThunk<77>,  (void*)&ChkThunk<78>,  (void*)&ChkThunk<79>,
-    (void*)&ChkThunk<80>,  (void*)&ChkThunk<81>,  (void*)&ChkThunk<82>,  (void*)&ChkThunk<83>,
-    (void*)&ChkThunk<84>,  (void*)&ChkThunk<85>,  (void*)&ChkThunk<86>,  (void*)&ChkThunk<87>,
-    (void*)&ChkThunk<88>,  (void*)&ChkThunk<89>,  (void*)&ChkThunk<90>,  (void*)&ChkThunk<91>,
-    (void*)&ChkThunk<92>,  (void*)&ChkThunk<93>,  (void*)&ChkThunk<94>,  (void*)&ChkThunk<95>,
-    (void*)&ChkThunk<96>,  (void*)&ChkThunk<97>,  (void*)&ChkThunk<98>,  (void*)&ChkThunk<99>,
-    (void*)&ChkThunk<100>, (void*)&ChkThunk<101>, (void*)&ChkThunk<102>, (void*)&ChkThunk<103>,
-    (void*)&ChkThunk<104>, (void*)&ChkThunk<105>, (void*)&ChkThunk<106>, (void*)&ChkThunk<107>,
-    (void*)&ChkThunk<108>, (void*)&ChkThunk<109>, (void*)&ChkThunk<110>, (void*)&ChkThunk<111>,
-    (void*)&ChkThunk<112>, (void*)&ChkThunk<113>, (void*)&ChkThunk<114>, (void*)&ChkThunk<115>,
-    (void*)&ChkThunk<116>, (void*)&ChkThunk<117>, (void*)&ChkThunk<118>, (void*)&ChkThunk<119>,
-    (void*)&ChkThunk<120>, (void*)&ChkThunk<121>, (void*)&ChkThunk<122>, (void*)&ChkThunk<123>,
-    (void*)&ChkThunk<124>, (void*)&ChkThunk<125>, (void*)&ChkThunk<126>, (void*)&ChkThunk<127>,
-    (void*)&ChkThunk<128>, (void*)&ChkThunk<129>, (void*)&ChkThunk<130>, (void*)&ChkThunk<131>,
-    (void*)&ChkThunk<132>, (void*)&ChkThunk<133>, (void*)&ChkThunk<134>, (void*)&ChkThunk<135>,
-    (void*)&ChkThunk<136>, (void*)&ChkThunk<137>, (void*)&ChkThunk<138>, (void*)&ChkThunk<139>,
-    (void*)&ChkThunk<140>, (void*)&ChkThunk<141>, (void*)&ChkThunk<142>, (void*)&ChkThunk<143>,
-    (void*)&ChkThunk<144>, (void*)&ChkThunk<145>, (void*)&ChkThunk<146>, (void*)&ChkThunk<147>,
-    (void*)&ChkThunk<148>, (void*)&ChkThunk<149>, (void*)&ChkThunk<150>, (void*)&ChkThunk<151>,
-    (void*)&ChkThunk<152>, (void*)&ChkThunk<153>, (void*)&ChkThunk<154>, (void*)&ChkThunk<155>,
-    (void*)&ChkThunk<156>, (void*)&ChkThunk<157>, (void*)&ChkThunk<158>, (void*)&ChkThunk<159>,
+    (void*)&ChkThunk<0>,  (void*)&ChkThunk<1>,  (void*)&ChkThunk<2>,  (void*)&ChkThunk<3>,
+    (void*)&ChkThunk<4>,  (void*)&ChkThunk<5>,  (void*)&ChkThunk<6>,  (void*)&ChkThunk<7>,
+    (void*)&ChkThunk<8>,  (void*)&ChkThunk<9>,  (void*)&ChkThunk<10>, (void*)&ChkThunk<11>,
+    (void*)&ChkThunk<12>, (void*)&ChkThunk<13>, (void*)&ChkThunk<14>, (void*)&ChkThunk<15>,
+    (void*)&ChkThunk<16>, (void*)&ChkThunk<17>, (void*)&ChkThunk<18>, (void*)&ChkThunk<19>,
+    (void*)&ChkThunk<20>, (void*)&ChkThunk<21>, (void*)&ChkThunk<22>, (void*)&ChkThunk<23>,
+    (void*)&ChkThunk<24>, (void*)&ChkThunk<25>, (void*)&ChkThunk<26>, (void*)&ChkThunk<27>,
+    (void*)&ChkThunk<28>, (void*)&ChkThunk<29>, (void*)&ChkThunk<30>,
 };
 // ===================================================================================================
 // Denuvo-VM stub: G4::Platform::RetrieveClassicalCPUCacheDetails (sub_188C10530).
