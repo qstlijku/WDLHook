@@ -1770,7 +1770,6 @@ static GenRegLib_t g_genRegOrig = nullptr;
 static void* __fastcall GenRegLib_Detour(void* self, int libType, void* createFn,
                                          int dataType, char* typeName, void* validatorFn)
 {
-    char tn[64], vp[64];
     tprintf("[eng] GenRegisterLibrary(self=%p libType=%d typeName=%s dataType=%d) ENTER\n",
             self, libType, typeName, dataType); fflush(stdout);
     void* r = g_genRegOrig(self, libType, createFn, dataType, typeName, validatorFn);
