@@ -1761,19 +1761,6 @@ static int WINAPI MessageBoxW_Detour(HWND hwnd, LPCWSTR text, LPCWSTR caption, U
     return g_msgBoxWOrig(hwnd, text, caption, type);
 }
 
-// SEH-guarded bounded copy of a C string (the name arg to GenRegisterLibrary may be a bad ptr for the 2nd/3rd
-// call -- the decompiler lost track of v107/v108).
-static const char* SafeCopyStr(const char* s, char* buf, int n)
-{
-    __try
-    {
-        int i = 0;
-        for (; i < n - 1 && s && s[i]; ++i) buf[i] = s[i];
-        buf[i] = 0;
-        return buf;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { buf[0] = 0; return "(bad-ptr)"; }
-}
 // CNomadDb::GenRegisterLibrary (sub_18686FF80) -- registers a named game-data library; called 3x from
 // CEngineServices::Initialize right after the CNomadDb ctors. Real signature (7 args, from the callee + PDB;
 // the retail CALLER decompile mis-recovered them): (this, libType, createObjectFunc, typeName, dataType,
@@ -1785,7 +1772,7 @@ static void* __fastcall GenRegLib_Detour(void* self, int libType, void* createFn
 {
     char tn[64], vp[64];
     tprintf("[eng] GenRegisterLibrary(self=%p libType=%d typeName=%s dataType=%d varPrefix=%s) ENTER\n",
-            self, libType, SafeCopyStr(typeName, tn, sizeof(tn)), dataType); fflush(stdout);
+            self, libType, typeName, dataType); fflush(stdout);
     void* r = g_genRegOrig(self, libType, createFn, dataType, typeName, validatorFn);
     tprintf("[eng] GenRegisterLibrary RETURNED %p\n", r); fflush(stdout);
     return r;
