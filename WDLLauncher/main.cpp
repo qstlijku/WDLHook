@@ -1916,6 +1916,56 @@ static void* __fastcall InsertLayerBefore_Detour(void* a1self, int layerType, vo
     return g_insertLayer(a1self, pos, newLayer);
 }
 
+// CSelectionLayer::AddRequestQueue (sub_1806CAA80) -- Denuvo-VIRTUALIZED (jmp -> .rsrc VM handler: jump-chains,
+// junk int3, popfq/xor-rsp flag games, rip-relative into the VM register file); base+0 crashes un-bootstrapped.
+// Native reimpl VALIDATED in E3Hook (E3 sub_1806B7240). Allocates a GearLockFreeQueue<CStreamingRequest*>, then
+// inserts it into the selection layer's two ndVectorHashMap<CStringID,...> members keyed on requestType:
+//   m_outputQueues (CSelectionLayer+0x88, 16B entries: key@+0, value@+8) = the queue ptr,
+//   m_outputQueuesSize (CSelectionLayer+0xB0, 8B entries: key@+0, value@+4) = pending count, init 0.
+// Both operator[] are relocated-real / real (sub_180714010 / sub_1807142D0) and run un-bootstrapped: they are
+// get-or-insert, returning a 0x11-byte iterator via the out-param { &map@+0, slot@+8, inserted-bool@+0x10 };
+// the bucket entry (slot) holds key@+0 and value@+8 (queue) or +4 (size).  NMalloc(0x18,0x10) = sizeof queue.
+typedef void* (__fastcall* ArqNMalloc_t)(unsigned long long size, unsigned long long align);
+typedef void* (__fastcall* ArqQueueCtor_t)(void* mem);
+typedef void* (__fastcall* ArqMapOp_t)(void* map, void* outIter, void* keyRec);
+static ArqNMalloc_t   g_arqNMalloc   = nullptr;   // base + 0x60F430  CMemMng::NMalloc
+static ArqQueueCtor_t g_arqQueueCtor = nullptr;   // base + 0x6C5A50  GearLockFreeQueue<CStreamingRequest*>::ctor
+static ArqMapOp_t     g_arqQueuesOp  = nullptr;   // base + 0x714010  m_outputQueues::operator[]
+static ArqMapOp_t     g_arqSizesOp   = nullptr;   // base + 0x7142D0  m_outputQueuesSize::operator[]
+static void*          g_arqOrig      = nullptr;   // MinHook trampoline (unused -- pure replacement)
+
+struct ArqMapIter { void* map; void** slot; unsigned char inserted; unsigned char pad[7]; };   // 0x18, out-param
+struct ArqKeyRecQ { unsigned int key; unsigned int pad; void* value; };                        // queue keyrec (16B)
+struct ArqKeyRecS { unsigned int key; unsigned int value; };                                   // size  keyrec (8B)
+
+static void __fastcall AddRequestQueue_Detour(void* self, int requestType)
+{
+    char* sl = (char*)self;
+    void* q = g_arqNMalloc(0x18, 0x10);
+    if (q)
+        q = g_arqQueueCtor(q);
+
+    ArqKeyRecQ qk;
+    qk.key = (unsigned int)requestType;
+    qk.pad = 0;
+    qk.value = nullptr;
+    ArqMapIter itq;
+    g_arqQueuesOp(sl + 0x88, &itq, &qk);
+    void** slot = itq.slot;
+
+    ArqKeyRecS sk;
+    sk.key = (unsigned int)requestType;
+    sk.value = 0;
+    ArqMapIter its;
+    g_arqSizesOp(sl + 0xB0, &its, &sk);
+    *(unsigned int*)((char*)its.slot + 4) = 0;
+
+    slot[1] = q;   // *(m_outputQueues[type] + 8) = the new queue
+
+    tprintf("[arq] AddRequestQueue(this=%p type=0x%08X) native reimpl -> queue=%p\n",
+            self, (unsigned)requestType, q); fflush(stdout);
+}
+
 static void InstallSkuTrace(uintptr_t base)
 {
     if (!kTraceSku) return;
@@ -2019,6 +2069,18 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[iolb] hooked CIOLayerManager::InsertLayerBefore (sub_1806C6E70) @ %p [native reimpl, bypasses VM]\n", ilb);
     else
         tprintf("[iolb] FAILED to hook InsertLayerBefore @ %p\n", ilb);
+    // CSelectionLayer::AddRequestQueue (sub_1806CAA80, Denuvo-virtualized -> base+0 crash) -> native reimpl
+    // (validated in E3Hook). Delegates to real NMalloc + queue ctor + the two ndVectorHashMap::operator[]
+    // (sub_180714010 real, sub_1807142D0 relocated-real -- both run un-bootstrapped).
+    g_arqNMalloc   = (ArqNMalloc_t)(base + 0x60F430);
+    g_arqQueueCtor = (ArqQueueCtor_t)(base + 0x6C5A50);
+    g_arqQueuesOp  = (ArqMapOp_t)(base + 0x714010);
+    g_arqSizesOp   = (ArqMapOp_t)(base + 0x7142D0);
+    void* arq = (void*)(base + 0x6CAA80);
+    if (MH_CreateHook(arq, &AddRequestQueue_Detour, (LPVOID*)&g_arqOrig) == MH_OK && MH_EnableHook(arq) == MH_OK)
+        tprintf("[arq] hooked CSelectionLayer::AddRequestQueue (sub_1806CAA80) @ %p [native reimpl, bypasses VM]\n", arq);
+    else
+        tprintf("[arq] FAILED to hook AddRequestQueue @ %p\n", arq);
     void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
     if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
         tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
@@ -2161,7 +2223,7 @@ static const uintptr_t kChkRvas[] = {
   //0x6C6E70,  // sub_1806C6E70  (FuncA+0x34DB, x2) = CIOLayerManager::InsertLayerBefore -- now a dedicated native reimpl hook (see InsertLayerBefore_Detour); removed from checkpoints to avoid double-hook
     0xA890,    // sub_18000A890  (FuncA+0x34F8)
     0x6D4BD0,  // sub_1806D4BD0  (FuncA+0x3528)
-    0x6CAA80,  // sub_1806CAA80  (FuncA+0x354D, x2)
+  //0x6CAA80,  // sub_1806CAA80  (FuncA+0x354D, x2) = CSelectionLayer::AddRequestQueue -- now a dedicated native reimpl hook (see AddRequestQueue_Detour); removed from checkpoints to avoid double-hook
     0x6C6AA0,  // sub_1806C6AA0  (FuncA+0x3569)
     0x6CA980,  // sub_1806CA980  (FuncA+0x357C)
     0x8C0FD70, // sub_188C0FD70  (FuncA+0x35BD)
