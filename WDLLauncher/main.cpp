@@ -1868,6 +1868,54 @@ static __int64 __fastcall HasParam_Detour(void* self, const char* param)
     return r;
 }
 
+// CIOLayerManager::InsertLayerBefore (sub_1806C6E70) -- Denuvo-VIRTUALIZED (jmp -> .rsrc); base+0 crashes
+// (0x21B2B9F4) un-bootstrapped. Native reimpl VALIDATED in E3Hook (E3 sub_1806C5AF0 booted clean with this
+// exact body). Walks m_layers to the entry whose leaf type-id == layerType (else end), then delegates to the
+// REAL (non-virtualized) InsertLayer (sub_1806C6F60). Struct layout confirmed identical to E3: [this+8] =
+// m_properties.m_fullValue (sign bit set => inline storage; clear => heap, deref [this+16]); [this+16] =
+// m_data; count = HIDWORD(m_fullValue) & 0x7FFFFFFF. ms_instance folded into a1 (only called on the singleton).
+typedef void* (__fastcall* InsertLayer_t)(void* self, void* it, void* layer);           // sub_1806C6F60
+typedef void* (__fastcall* InsertLayerBefore_t)(void* self, int layerType, void* layer);
+static InsertLayer_t       g_insertLayer           = nullptr;   // real CIOLayerManager::InsertLayer (base + 0x6C6F60)
+static InsertLayerBefore_t g_insertLayerBeforeOrig = nullptr;   // MinHook trampoline (unused -- pure replacement)
+
+static inline void** IOLayerMgr_End(char* self)   // = &m_layers.m_data[count]
+{
+    void** data = (void**)(self + 16);
+    if (*(long long*)(self + 8) >= 0)
+        data = (void**)*data;
+    unsigned int count = (unsigned int)((unsigned long long)*(unsigned long long*)(self + 8) >> 32) & 0x7FFFFFFFu;
+    return &data[count];
+}
+static void* __fastcall InsertLayerBefore_Detour(void* a1self, int layerType, void* newLayer)
+{
+    char* self = (char*)a1self;
+    void** v3 = (void**)(self + 16);
+    if (*(long long*)(self + 8) >= 0)
+        v3 = (void**)*v3;
+
+    void** pos = IOLayerMgr_End(self);   // default = append at end (the "not found" / empty case)
+    if (v3 != pos)
+    {
+        while (true)
+        {
+            void* layer = *v3;                                    // CIOLayer*
+            long long hier = ((long long(__fastcall*)(void*))(*(void***)layer)[1])(layer);  // (*layer)->vtbl[+8](layer)
+            int count = *(int*)(hier + 8);
+            if (*(int*)(hier + 4LL * (unsigned int)(count - 1) + 16) == layerType)
+            {
+                pos = v3;                                         // found -> insert before this layer
+                break;
+            }
+            if (++v3 == IOLayerMgr_End(self))
+                break;                                            // walked off end -> pos stays = end (append)
+        }
+    }
+    tprintf("[iolb] InsertLayerBefore(this=%p type=0x%08X layer=%p) native reimpl -> InsertLayer\n",
+            a1self, (unsigned)layerType, newLayer); fflush(stdout);
+    return g_insertLayer(a1self, pos, newLayer);
+}
+
 static void InstallSkuTrace(uintptr_t base)
 {
     if (!kTraceSku) return;
@@ -1963,6 +2011,14 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked CConfig::Exists (sub_1867BC580) @ %p [false-stub, bypasses VM decoy]\n", cfgExists);
     else
         tprintf("[eng] FAILED to hook CConfig::Exists @ %p\n", cfgExists);
+    // CIOLayerManager::InsertLayerBefore (sub_1806C6E70, Denuvo-virtualized -> base+0 crash) -> native reimpl
+    // (validated in E3Hook). Delegates the actual insert to the real InsertLayer (sub_1806C6F60).
+    g_insertLayer = (InsertLayer_t)(base + 0x6C6F60);   // real CIOLayerManager::InsertLayer
+    void* ilb = (void*)(base + 0x6C6E70);
+    if (MH_CreateHook(ilb, &InsertLayerBefore_Detour, (LPVOID*)&g_insertLayerBeforeOrig) == MH_OK && MH_EnableHook(ilb) == MH_OK)
+        tprintf("[iolb] hooked CIOLayerManager::InsertLayerBefore (sub_1806C6E70) @ %p [native reimpl, bypasses VM]\n", ilb);
+    else
+        tprintf("[iolb] FAILED to hook InsertLayerBefore @ %p\n", ilb);
     void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
     if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
         tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
@@ -2102,7 +2158,7 @@ static const uintptr_t kChkRvas[] = {
     0x6D3760,  // sub_1806D3760  (FuncA+0x345E)
     0x6D3E00,  // sub_1806D3E00  (FuncA+0x3495)
     0x9EE0,    // sub_180009EE0  (FuncA+0x34CA)
-    0x6C6E70,  // sub_1806C6E70  (FuncA+0x34DB, x2)  <== CRASH SUSPECT (stack scan 0x34E0 = ret after this call)
+  //0x6C6E70,  // sub_1806C6E70  (FuncA+0x34DB, x2) = CIOLayerManager::InsertLayerBefore -- now a dedicated native reimpl hook (see InsertLayerBefore_Detour); removed from checkpoints to avoid double-hook
     0xA890,    // sub_18000A890  (FuncA+0x34F8)
     0x6D4BD0,  // sub_1806D4BD0  (FuncA+0x3528)
     0x6CAA80,  // sub_1806CAA80  (FuncA+0x354D, x2)
