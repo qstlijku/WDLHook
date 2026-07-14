@@ -1646,6 +1646,7 @@ typedef __int64 (__fastcall* SREI_t)(void* a, void* b, double c, double d);
 static EIC_t  g_eicOrig  = nullptr;
 static EIC_t  g_ceiOrig  = nullptr;   // CEngine::Initialize (same sig as InitializeCore)
 static EIC_t  g_iesOrig  = nullptr;   // CEngine::InitializeEngineServices (sub_1867936F0) -- parent of CEngineServices::Initialize + the config cluster
+static EIC_t  g_duniaIesOrig = nullptr;   // CDuniaEngineInitBase::InitializeEngineServices (FuncA, sub_180003270) -- builds the IO-layer stack; InsertLayerBefore (sub_1806C6E70) crash inside
 static SREI_t g_sreiOrig = nullptr;
 typedef __int64 (__fastcall* S440_t)(void* a, void* b, void* c, void* d);
 static S440_t g_s440Orig = nullptr;   // CDriverGame::CreateAndInitGamerProfileManager (sub_181240440)
@@ -1690,6 +1691,19 @@ static __int64 __fastcall EngineServicesInit_Detour(void* self, void* params)
             self, params, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
     __int64 r = g_esiOrig(self, params);
     tprintf("[eng] CEngineServices::Initialize RETURNED\n"); fflush(stdout);
+    return r;
+}
+// FuncA = CDuniaEngineInitBase::InitializeEngineServices (sub_180003270): calls CEngine::InitializeEngineServices
+// (sub_1867936F0) first, then builds the streaming/IO-layer stack; the 0x21B2B9F4 crash is inside its call to
+// CIOLayerManager::InsertLayerBefore (sub_1806C6E70) near the end -- so this ENTER should log but RETURNED won't
+// (until that call is stubbed). Caller RVA should be the anon override at +0x56D8.
+static __int64 __fastcall DuniaInitEngineServices_Detour(void* self, void* params, double a, double b)
+{
+    void* ret = _ReturnAddress();
+    tprintf("[eng] CDuniaEngineInitBase::InitializeEngineServices (sub_180003270) ENTER  this=%p params=%p  caller=%p (+0x%llX)\n",
+            self, params, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
+    __int64 r = g_duniaIesOrig ? g_duniaIesOrig(self, params, a, b) : 0;
+    tprintf("[eng] CDuniaEngineInitBase::InitializeEngineServices RETURNED\n"); fflush(stdout);
     return r;
 }
 
@@ -1891,6 +1905,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked CEngine::InitializeEngineServices (sub_1867936F0) @ %p\n", ies);
     else
         tprintf("[eng] FAILED to hook CEngine::InitializeEngineServices @ %p\n", ies);
+    void* dies = (void*)(base + 0x3270);   // FuncA = CDuniaEngineInitBase::InitializeEngineServices -- IO-layer stack build; InsertLayerBefore (sub_1806C6E70) crash inside
+    if (MH_CreateHook(dies, &DuniaInitEngineServices_Detour, (LPVOID*)&g_duniaIesOrig) == MH_OK && MH_EnableHook(dies) == MH_OK)
+        tprintf("[eng] hooked CDuniaEngineInitBase::InitializeEngineServices (sub_180003270) @ %p\n", dies);
+    else
+        tprintf("[eng] FAILED to hook CDuniaEngineInitBase::InitializeEngineServices @ %p\n", dies);
     void* esi = (void*)(base + 0x67C0300);   // sub_1867C0300 = CEngineServices::Initialize (wraps the virtualized-fn crash path)
     if (MH_CreateHook(esi, &EngineServicesInit_Detour, (LPVOID*)&g_esiOrig) == MH_OK && MH_EnableHook(esi) == MH_OK)
         tprintf("[eng] hooked CEngineServices::Initialize (sub_1867C0300) @ %p\n", esi);
@@ -2051,22 +2070,45 @@ static const uintptr_t kChkRvasCESInit[] = {
 // (sub_1805C48C0 -> str2enum) then HANGS in a VM spin before CEngine::Initialize -- bracket these callees so
 // the last ENTER without a RETURNED names the stuck one. Order matches the disasm of sub_1867936F0;
 // sub_1805C48C0 is the last confirmed-reached call, sub_186875450 (right after) is the prime suspect.
-static const uintptr_t kChkRvas[] = {
+// CLEARED (historical): InitializeEngineServices callees -- all passed.
+static const uintptr_t kChkRvasIES[] = {
     0x6874B40, // sub_186874B40 (1st call after the 2nd CConfig::LoadConfig)
     0x67C2420, // sub_1867C2420
-  //0x5C48C0,  // sub_1805C48C0 -- HOT inner fn (196K calls inside sub_186875450); checkpointing it crawls boot
     0x6875450, // sub_186875450 -- runs a big 196K-iter loop over sub_1805C48C0 (completes; slow only due to us)
-  //0x6D7B20,  // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter -- now a dedicated trace hook
-  //0x67BC300, // sub_1867BC300 = CConfig::Get -- now a dedicated native empty-stub hook (bypasses VM decoy)
     0x9DBDBE0, // sub_189DBDBE0
-  //0x9DBDBF0, // sub_189DBDBF0 -- HOT (3946 calls); dropped to cut log spam
-  //0x67BC850, // sub_1867BC850 = CConfig::MergeSections -- now a dedicated no-op hook (bypasses VM decoy)
-  //0x67BC580, // sub_1867BC580 = CConfig::Exists -- now a dedicated false-stub hook (bypasses VM decoy)
     0x6CFA30,  // sub_1806CFA30
     0x6793C50, // sub_186793C50
     0x77FB640, // sub_1877FB640
     0x77FB740, // sub_1877FB740
     0x686CBC0, // sub_18686CBC0 (last call before InitializeEngineServices returns)
+};
+
+// ACTIVE crash-window set: FuncA = CDuniaEngineInitBase::InitializeEngineServices (retail 0x3270..0x36A5).
+// Its distinct calls AFTER CEngine::InitializeEngineServices (FuncA+0x3288) -- the streaming/IO-layer stack
+// build. The 0x21B2B9F4 un-bootstrapped-VM crash fires in here (after IES returns, before FuncA returns to
+// FuncB/gpm). 19 targets: dropped the hot per-layer AddThread/affinity pair (0x6CAC80/0x6C5E40), call_once
+// (0x9372994/0x9372A2C), HasParameter (0x6D7B20), and string helpers. Names via PDB (duniabackup is unnamed).
+// Fits the existing 31-thunk pool -- no expansion needed.
+static const uintptr_t kChkRvas[] = {
+    0x6751EF0, // sub_186751EF0  (FuncA+0x328D -- 1st call after IES; ~CreateNotificationManager)
+    0x7EA0D20, // sub_187EA0D20  (FuncA+0x32AC)
+    0x6D45C0,  // sub_1806D45C0  (FuncA+0x32E3)
+    0x6D6BF0,  // sub_1806D6BF0  (FuncA+0x3320)
+    0x686EFE0, // sub_18686EFE0  (FuncA+0x334F)
+    0x6D1460,  // sub_1806D1460  (FuncA+0x33B8)
+    0x6D1CB0,  // sub_1806D1CB0  (FuncA+0x33BD)
+    0x6C6F20,  // sub_1806C6F20  (FuncA+0x33F4)
+    0x6C6F60,  // sub_1806C6F60  (FuncA+0x3406, called x4)
+    0x6D3760,  // sub_1806D3760  (FuncA+0x345E)
+    0x6D3E00,  // sub_1806D3E00  (FuncA+0x3495)
+    0x9EE0,    // sub_180009EE0  (FuncA+0x34CA)
+    0x6C6E70,  // sub_1806C6E70  (FuncA+0x34DB, x2)  <== CRASH SUSPECT (stack scan 0x34E0 = ret after this call)
+    0xA890,    // sub_18000A890  (FuncA+0x34F8)
+    0x6D4BD0,  // sub_1806D4BD0  (FuncA+0x3528)
+    0x6CAA80,  // sub_1806CAA80  (FuncA+0x354D, x2)
+    0x6C6AA0,  // sub_1806C6AA0  (FuncA+0x3569)
+    0x6CA980,  // sub_1806CA980  (FuncA+0x357C)
+    0x8C0FD70, // sub_188C0FD70  (FuncA+0x35BD)
 };
 static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
