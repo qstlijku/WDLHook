@@ -2083,10 +2083,49 @@ static __int64 __fastcall Sub75F8980_Detour(void* a1, int w, int h, void* a4, vo
 // park check: ENTER with no RETURNED (or a [veh] in its range) => this is the wall. Sig (_QWORD* a1, __int64 a2).
 typedef __int64 (__fastcall* Sub707BC40_t)(void* a1, __int64 a2);
 static Sub707BC40_t g_sub707BC40Orig = nullptr;
+// Flag a vtable-method target that lands in the .rsrc VM region (0xBC39000..0x21B12800) -> it's virtualized.
+static const char* SceneVirtTag(unsigned long long fn, unsigned long long base)
+{
+    unsigned long long rva = fn - base;
+    return (rva >= 0xBC39000ull && rva < 0x21B12800ull) ? "   <== .rsrc VIRTUALIZED" : "";
+}
 static __int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
 {
     tprintf("[scene] CSceneObjectManager::CreateSingletons(this=%p a2=0x%llX) ENTER\n",
             a1, (unsigned long long)a2); fflush(stdout);
+    // Enumerate the indirect-call targets so we can see WHICH one is virtualized (target in .rsrc) without a
+    // debugger. (1) each registered scene object's vtable[+0x10] (the do..while loop's call), and (2) the old
+    // singleton slots a1[19..23] with vtable[+8]/[+0x10] (the release path). The .rsrc one hangs the VM.
+    __try
+    {
+        unsigned long long base = (unsigned long long)GetModuleHandleW(kRendererDll);
+        unsigned long long* aa = (unsigned long long*)a1;
+        unsigned long long v4 = aa[1];
+        unsigned int count = (unsigned int)(v4 >> 32) & 0x7FFFFFFFu;
+        unsigned long long* v7 = ((long long)v4 < 0) ? (aa + 2) : (unsigned long long*)aa[2];
+        tprintf("[scene]   %u registered scene objects (loop calls vtable[+0x10]):\n", count);
+        for (unsigned int i = 0; i < count && i < 256; ++i)
+        {
+            unsigned long long obj = v7[i];
+            if (!obj) continue;
+            unsigned long long vt = *(unsigned long long*)obj;
+            unsigned long long m10 = *(unsigned long long*)(vt + 0x10);
+            tprintf("[scene]     obj[%u]=0x%llX vtbl=0x%llX [+0x10]=DuniaDemo+0x%llX%s\n",
+                    i, obj, vt, m10 - base, SceneVirtTag(m10, base));
+        }
+        for (int s = 19; s <= 23; ++s)
+        {
+            unsigned long long old = aa[s];
+            if (!old) { tprintf("[scene]     a1[%d] = null (release skipped)\n", s); continue; }
+            unsigned long long vt = *(unsigned long long*)old;
+            unsigned long long m8 = *(unsigned long long*)(vt + 8);
+            unsigned long long m10 = *(unsigned long long*)(vt + 0x10);
+            tprintf("[scene]     a1[%d]=0x%llX vtbl[+8]=DuniaDemo+0x%llX%s vtbl[+0x10]=DuniaDemo+0x%llX%s\n",
+                    s, old, m8 - base, SceneVirtTag(m8, base), m10 - base, SceneVirtTag(m10, base));
+        }
+        fflush(stdout);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[scene]   (object enumeration faulted)\n"); fflush(stdout); }
     __int64 r = g_sub707BC40Orig(a1, a2);
     tprintf("[scene] CSceneObjectManager::CreateSingletons RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
