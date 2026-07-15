@@ -78,7 +78,8 @@ static const uintptr_t kChkRvasIE[] = {
     //     NMalloc (0x60F430) and sub_1805B89E0 (already listed). All real .rdata call targets.
     0x7072EA0, 0x758D8E0, 0x7285820, 0x72861F0, 0x7664750, 0x76649A0, 0x7668D00, 0x7518C90,
     0x7214F60, 0x8C13CD0, 0x727C940, 0x726E3E0, 0x6CEF40,  0x727C980, 0x67BBFA0, 0x727CD00,
-    0x726E6B0, 0x760B5C0, 0x73982C0, 0x73982F0,
+    0x726E6B0, 0x760B5C0, 0x73982C0,
+    // 0x73982F0 REMOVED -- now a dedicated [rndr] hook in main.cpp (sub_1873982F0; avoids double-hook)
 };
 static const int kNumChk = (int)(sizeof(kChkRvasIE) / sizeof(kChkRvasIE[0]));
 // Checkpoints must forward ALL args transparently: several targets take >4 args (e.g. sub_1805B89E0 takes 8),
@@ -91,13 +92,23 @@ static const int kChkThunkPool = 160;   // detour-pool size; must be >= kNumChk.
 static_assert(kChkThunkPool >= kNumChk, "kChkThunkPool too small for kChkRvasIE");
 static ChkFn_t g_chkOrig[kChkThunkPool];
 
+// Per-thread call-nesting depth so the [chk] log shows nesting (via indent) AND which thread each line is on.
+// This disambiguates "nested call the main thread makes" from "worker-thread noise" -- plain ENTER/RETURNED
+// balance can't. thread_local lives in WDLLauncher.exe's static TLS, so every thread (incl. game workers that
+// call hooked fns) gets its own independent counter. To find the park: filter to the boot tid and read the
+// DEEPEST checkpoint whose ENTER has no matching RETURNED.
+static thread_local int g_chkDepth = 0;
+
 template<int N> static __int64 __fastcall ChkThunk(
     void* p0, void* p1, void* p2, void* p3, void* p4, void* p5, void* p6, void* p7,
     void* p8, void* p9, void* p10, void* p11, void* p12, void* p13, void* p14, void* p15)
 {
-    tprintf("[chk] sub_%llX ENTER\n", (unsigned long long)(0x180000000 + kChkRvasIE[N])); fflush(stdout);
+    const unsigned long long fn = 0x180000000ull + kChkRvasIE[N];
+    tprintf("[chk] t%-5lu d%-2d %*ssub_%llX ENTER\n",    GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn); fflush(stdout);
+    ++g_chkDepth;
     __int64 r = g_chkOrig[N](p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15);
-    tprintf("[chk] sub_%llX RETURNED\n", (unsigned long long)(0x180000000 + kChkRvasIE[N])); fflush(stdout);
+    --g_chkDepth;
+    tprintf("[chk] t%-5lu d%-2d %*ssub_%llX RETURNED\n", GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn); fflush(stdout);
     return r;   // per-index debug probes used to run here -> see ChkThunkDebug (#if 0) just below
 }
 

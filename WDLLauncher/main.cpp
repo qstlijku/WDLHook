@@ -1844,6 +1844,34 @@ static void BbgLog_Detour(int level, const char* format, ...)
     va_end(ap);
     tprintf("[bbg] Tracer::Log lvl=%d: %s\n", level, buf); fflush(stdout);
 }
+// sub_1896EB250 (RVA 0x96EB250) -- an engine source-located logger: (file, line, func, fmt, ...). Same deal as
+// Bloomberg::Tracer::Log: format the varargs ourselves + print with the source location, DON'T forward (pure
+// logging, no essential side effects -- also sidesteps the VM body if it's virtualized). Surfaces the engine's
+// own trace stream (asserts / warnings / init messages) under manual load, where its real sink is likely off.
+typedef void (*Log250_t)(const char* file, int line, const char* func, const char* fmt, ...);
+static Log250_t g_log250Orig = nullptr;   // trampoline (unused -- we don't forward varargs)
+static void Log250_Detour(const char* file, int line, const char* func, const char* fmt, ...)
+{
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    __try { vsnprintf(buf, sizeof(buf), fmt ? fmt : "(null-fmt)", ap); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { strcpy_s(buf, "(fmt fault)"); }
+    va_end(ap);
+    tprintf("[log250] %s:%d %s | %s\n", file ? file : "?", line, func ? func : "?", buf); fflush(stdout);
+}
+// sub_1875A0180 = CNvNGXWrapper::InitInternal (DLSS/NGX init, called indirectly via vtable). Pure reach-check:
+// log ENTER/RETURNED. If we never see [ngx] ENTER, boot hasn't reached DLSS/upscaler init yet (expected while
+// the render engine is still hung upstream). Uses this(rcx)+one param(rdx); forward 6 args for margin.
+typedef __int64 (__fastcall* NgxInit_t)(void* self, void* a2, void* a3, void* a4, void* a5, void* a6);
+static NgxInit_t g_ngxInitOrig = nullptr;
+static __int64 __fastcall NgxInit_Detour(void* self, void* a2, void* a3, void* a4, void* a5, void* a6)
+{
+    tprintf("[ngx] CNvNGXWrapper::InitInternal(this=%p a2=%p) ENTER\n", self, a2); fflush(stdout);
+    __int64 r = g_ngxInitOrig(self, a2, a3, a4, a5, a6);
+    tprintf("[ngx] CNvNGXWrapper::InitInternal RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
 // CConfig::Get (sub_1867BC300) -- Denuvo-VIRTUALIZED (thunk -> 0x20F139F0); its VM body decoy-loops forever
 // under manual load (InitializeEngineServices' first config query, Get("settings","Quality"), hangs the boot
 // thread here). The REAL fn (PDB) is a pure 2-level RB-tree lookup section->key over CConfig::ms_instance->
@@ -2033,6 +2061,22 @@ static void* __fastcall C3DEngineCtor_Detour(void* self, int iWidth, int iHeight
     return r;
 }
 
+// sub_1873982F0 (RVA 0x73982F0) -- thin render wrapper (SceneRendererFacade area) that forwards to sub_1875F8980,
+// where boot currently PARKS. Was a checkpoint; promoted to a dedicated trace to surface its ARGS (the checkpoint
+// only showed ENTER/no-RETURNED). NOTE: a3 is a 64-bit POINTER (IDA mis-types it as int) -- sub_1873982F0 saves
+// the full r8 (mov r11,r8) and forwards it as r9 to sub_1875F8980, so declaring it int TRUNCATES the pointer and
+// crashes the callee. a1/a2 are the real ints (w/h). Returns rax (passes through sub_1875F8980).
+typedef __int64 (__fastcall* Sub73982F0_t)(int a1, int a2, void* a3, void* a4, char a5);
+static Sub73982F0_t g_sub73982F0Orig = nullptr;
+static __int64 __fastcall Sub73982F0_Detour(int a1, int a2, void* a3, void* a4, char a5)
+{
+    tprintf("[rndr] sub_1873982F0(a1=%d a2=%d a3=%p a4=%p a5=%d) ENTER\n",
+            a1, a2, a3, a4, (int)(unsigned char)a5); fflush(stdout);
+    __int64 r = g_sub73982F0Orig(a1, a2, a3, a4, a5);
+    tprintf("[rndr] sub_1873982F0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 static void InstallSkuTrace(uintptr_t base)
 {
     if (!kTraceSku) return;
@@ -2113,6 +2157,16 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[eng] hooked Bloomberg::Tracer::Log (sub_188BBB0F0) @ %p\n", bbl);
     else
         tprintf("[eng] FAILED to hook Bloomberg::Tracer::Log @ %p\n", bbl);
+    void* log250 = (void*)(base + 0x96EB250);   // sub_1896EB250 = engine source-located logger (file,line,func,fmt,...)
+    if (MH_CreateHook(log250, &Log250_Detour, (LPVOID*)&g_log250Orig) == MH_OK && MH_EnableHook(log250) == MH_OK)
+        tprintf("[log250] hooked sub_1896EB250 @ %p\n", log250);
+    else
+        tprintf("[log250] FAILED to hook sub_1896EB250 @ %p\n", log250);
+    void* ngx = (void*)(base + 0x75A0180);   // sub_1875A0180 = CNvNGXWrapper::InitInternal (DLSS/NGX init reach-check)
+    if (MH_CreateHook(ngx, &NgxInit_Detour, (LPVOID*)&g_ngxInitOrig) == MH_OK && MH_EnableHook(ngx) == MH_OK)
+        tprintf("[ngx] hooked CNvNGXWrapper::InitInternal (sub_1875A0180) @ %p\n", ngx);
+    else
+        tprintf("[ngx] FAILED to hook CNvNGXWrapper::InitInternal @ %p\n", ngx);
     void* cfgGet = (void*)(base + 0x67BC300);   // sub_1867BC300 = CConfig::Get (virtualized decoy) -> native empty stub
     if (MH_CreateHook(cfgGet, &CConfigGet_Detour, (LPVOID*)&g_cconfigGetOrig) == MH_OK && MH_EnableHook(cfgGet) == MH_OK)
         tprintf("[eng] hooked CConfig::Get (sub_1867BC300) @ %p [empty-stub, bypasses VM decoy]\n", cfgGet);
@@ -2167,6 +2221,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[3d] hooked C3DEngine::C3DEngine (sub_1872141F0) @ %p\n", c3dCtor);
     else
         tprintf("[3d] FAILED to hook C3DEngine::C3DEngine @ %p\n", c3dCtor);
+    void* r3982 = (void*)(base + 0x73982F0);   // sub_1873982F0 -- render wrapper -> sub_1875F8980 (park); pulled from kChkRvasIE
+    if (MH_CreateHook(r3982, &Sub73982F0_Detour, (LPVOID*)&g_sub73982F0Orig) == MH_OK && MH_EnableHook(r3982) == MH_OK)
+        tprintf("[rndr] hooked sub_1873982F0 @ %p\n", r3982);
+    else
+        tprintf("[rndr] FAILED to hook sub_1873982F0 @ %p\n", r3982);
     void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
     if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
         tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
