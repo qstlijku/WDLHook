@@ -38,5 +38,8 @@
     <ClInclude Include="upc_emu.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="checkpoints.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
