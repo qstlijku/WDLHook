@@ -2077,6 +2077,20 @@ static __int64 __fastcall Sub75F8980_Detour(void* a1, int w, int h, void* a4, vo
     return r;
 }
 
+// sub_18707BC40 (RVA 0x707BC40) = CSceneObjectManager setup -- registers the "CSceneObjectManager::StartPrepare
+// Updates" task; a TAIL callee of sub_1875F8980, in the park region (after sub_18686E950 @ +0x2BC). Pass-through
+// park check: ENTER with no RETURNED => sub_1875F8980 parks inside here. Sig (_QWORD* a1, __int64 a2).
+typedef __int64 (__fastcall* Sub707BC40_t)(void* a1, __int64 a2);
+static Sub707BC40_t g_sub707BC40Orig = nullptr;
+static __int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
+{
+    tprintf("[scene] sub_18707BC40(a1=%p a2=0x%llX) ENTER  [CSceneObjectManager setup]\n",
+            a1, (unsigned long long)a2); fflush(stdout);
+    __int64 r = g_sub707BC40Orig(a1, a2);
+    tprintf("[scene] sub_18707BC40 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 static void InstallSkuTrace(uintptr_t base)
 {
     if (!kTraceSku) return;
@@ -2226,6 +2240,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[rndr] hooked sub_1875F8980 @ %p\n", r75f);
     else
         tprintf("[rndr] FAILED to hook sub_1875F8980 @ %p\n", r75f);
+    void* scene = (void*)(base + 0x707BC40);   // sub_18707BC40 = CSceneObjectManager setup (sub_1875F8980 tail callee)
+    if (MH_CreateHook(scene, &Sub707BC40_Detour, (LPVOID*)&g_sub707BC40Orig) == MH_OK && MH_EnableHook(scene) == MH_OK)
+        tprintf("[scene] hooked sub_18707BC40 @ %p\n", scene);
+    else
+        tprintf("[scene] FAILED to hook sub_18707BC40 @ %p\n", scene);
     void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
     if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
         tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
