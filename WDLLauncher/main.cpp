@@ -2061,19 +2061,19 @@ static void* __fastcall C3DEngineCtor_Detour(void* self, int iWidth, int iHeight
     return r;
 }
 
-// sub_1873982F0 (RVA 0x73982F0) -- thin render wrapper (SceneRendererFacade area) that forwards to sub_1875F8980,
-// where boot currently PARKS. Was a checkpoint; promoted to a dedicated trace to surface its ARGS (the checkpoint
-// only showed ENTER/no-RETURNED). NOTE: a3 is a 64-bit POINTER (IDA mis-types it as int) -- sub_1873982F0 saves
-// the full r8 (mov r11,r8) and forwards it as r9 to sub_1875F8980, so declaring it int TRUNCATES the pointer and
-// crashes the callee. a1/a2 are the real ints (w/h). Returns rax (passes through sub_1875F8980).
-typedef __int64 (__fastcall* Sub73982F0_t)(int a1, int a2, void* a3, void* a4, char a5);
-static Sub73982F0_t g_sub73982F0Orig = nullptr;
-static __int64 __fastcall Sub73982F0_Detour(int a1, int a2, void* a3, void* a4, char a5)
+// sub_1875F8980 (RVA 0x75F8980) -- the real render fn where boot PARKS. Reached via C3DEngine::C3DEngine ->
+// sub_1873982F0 (thin wrapper, still a [chk] checkpoint) -> here. sub_1873982F0 calls it as
+// sub_1875F8980(qword_18B4B75C8, w, h, a3ptr, &structCopy, flag) -- 6 args, IDA's trailing "..." is unused by
+// the (sole) caller. a1 = a global singleton ptr; a4/a5 are ptrs (__int128*). Returns rax. ENTER with no
+// RETURNED => confirmed park inside it.
+typedef __int64 (__fastcall* Sub75F8980_t)(void* a1, int w, int h, void* a4, void* structPtr, char flag);
+static Sub75F8980_t g_sub75F8980Orig = nullptr;
+static __int64 __fastcall Sub75F8980_Detour(void* a1, int w, int h, void* a4, void* structPtr, char flag)
 {
-    tprintf("[rndr] sub_1873982F0(a1=%d a2=%d a3=%p a4=%p a5=%d) ENTER\n",
-            a1, a2, a3, a4, (int)(unsigned char)a5); fflush(stdout);
-    __int64 r = g_sub73982F0Orig(a1, a2, a3, a4, a5);
-    tprintf("[rndr] sub_1873982F0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    tprintf("[rndr] sub_1875F8980(singleton=%p w=%d h=%d a4=%p structPtr=%p flag=%d) ENTER\n",
+            a1, w, h, a4, structPtr, (int)(unsigned char)flag); fflush(stdout);
+    __int64 r = g_sub75F8980Orig(a1, w, h, a4, structPtr, flag);
+    tprintf("[rndr] sub_1875F8980 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
 
@@ -2221,11 +2221,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[3d] hooked C3DEngine::C3DEngine (sub_1872141F0) @ %p\n", c3dCtor);
     else
         tprintf("[3d] FAILED to hook C3DEngine::C3DEngine @ %p\n", c3dCtor);
-    void* r3982 = (void*)(base + 0x73982F0);   // sub_1873982F0 -- render wrapper -> sub_1875F8980 (park); pulled from kChkRvasIE
-    if (MH_CreateHook(r3982, &Sub73982F0_Detour, (LPVOID*)&g_sub73982F0Orig) == MH_OK && MH_EnableHook(r3982) == MH_OK)
-        tprintf("[rndr] hooked sub_1873982F0 @ %p\n", r3982);
+    void* r75f = (void*)(base + 0x75F8980);   // sub_1875F8980 -- the render fn where boot parks (via sub_1873982F0)
+    if (MH_CreateHook(r75f, &Sub75F8980_Detour, (LPVOID*)&g_sub75F8980Orig) == MH_OK && MH_EnableHook(r75f) == MH_OK)
+        tprintf("[rndr] hooked sub_1875F8980 @ %p\n", r75f);
     else
-        tprintf("[rndr] FAILED to hook sub_1873982F0 @ %p\n", r3982);
+        tprintf("[rndr] FAILED to hook sub_1875F8980 @ %p\n", r75f);
     void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
     if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
         tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
@@ -2627,6 +2627,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
     InstallSkuTrace((uintptr_t)dll);
     InstallVmStubs((uintptr_t)dll);       // replace virtualized sub_188C10530 (cache detail) -- VM not bootstrapped
     InstallCheckpoints((uintptr_t)dll);   // bracket every call between InitializeCore and Initialize
+    InstallCheckpointsRA((uintptr_t)dll); // [chkra]: multi-call-site fns that also log _ReturnAddress (caller)
 
     int rc;
     if (kUseCustomRunGame)

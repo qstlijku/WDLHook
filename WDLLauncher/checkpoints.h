@@ -55,10 +55,12 @@ static const uintptr_t kChkRvasIE[] = {
     0x6799510, 0x60F7CA0, 0x6038FD0, 0x63EED0,  0x602E770, 0x687DF00, 0x673BE20,
     // 0x7216BF0 (C3DEngine::CreateInstance) REMOVED -- now a dedicated [3d] hook in main.cpp (avoids double-hook)
     0x7CE78B0, 0x7CEF390, 0x7CE5AB0, 0x7CE0600, 0x7CBEFF0, 0x620E9F0, 0x5BF980,  0x60A2360,
-    0x67B9120, 0x7398740, 0x7398980, 0x69222C0, 0x68715C0, 0x686EFE0, 0x6870070,
+    0x67B9120, 0x7398740, 0x7398980, 0x69222C0,
+    // 0x68715C0, 0x686EFE0, 0x6870070, 0x686E950, 0x7F12760 MOVED to kChkRvasRA below -- these fire from MANY
+    // call sites (incl. from inside sub_1875F8980); the RA variant logs _ReturnAddress to show WHERE each is from.
     // 0x5C3F60, 0x5A81C0, 0x5E6EC0 REMOVED -- hot generic string/container helpers, called everywhere
     // (thousands of hits), useless as CEngine::Initialize progress markers and flooded the log.
-    0x7D5E810, 0x6035400, 0x7D633E0, 0x686F8D0, 0x6799130, 0x7F60DC0, 0x603E650, 0x7F12760,
+    0x7D5E810, 0x6035400, 0x7D633E0, 0x686F8D0, 0x6799130, 0x7F60DC0, 0x603E650,
     0x60AD8D0, 0x7802ED0, 0x60AD900, 0x60F90C0, 0x60D7A90, 0x6110E90, 0x6121760, 0x66098F0,
     0x6121220, 0x64B0A70, 0x677BAD0, 0x60278C0, 0x6794680, 0x6794A30, 0x6245A20, 0x6796300,
     0x677CA00, 0x657EEB0, 0x6371A40, 0x63B2C40, 0x63B56B0, 0x665E2D0, 0x64A2170, 0x64A7FF0,
@@ -68,7 +70,7 @@ static const uintptr_t kChkRvasIE[] = {
     0x173220,  0xD6DE0,   0x60EC860, 0x673CF10, 0x7633530, 0x661E530, 0x643EA50, 0x6445590,
     0x7804B80, 0x6891E50, 0x60DE210, 0x6177E40, 0x63BA960, 0x65B2620, 0x65BACF0, 0x65F2D00,
     0x65ED0A0, 0x65FDCE0, 0x65EE2F0, 0x65771F0, 0x609D0E0, 0x7F3C0D0, 0x60DA4B0, 0x60FA2C0,
-    0x6032330, 0x67356A0, 0x60A49F0, 0x686E950, 0x60F79B0, 0x678FC10, 0x67907F0, 0x64F69C0,
+    0x6032330, 0x67356A0, 0x60A49F0, 0x60F79B0, 0x678FC10, 0x67907F0, 0x64F69C0,
     0x64F6C50, 0x6423210, 0x641CC50, 0x6420F20, 0x668B370, 0x6664C10, 0x66831A0, 0x63B7A80,
     0x62472C0, 0x6247780, 0x603FBB0, 0x64C4D70, 0x65B2450, 0x6319D00, 0x6821C60, 0x68252B0,
     0x6648B90, 0x7E879C0, 0x7E8CD10, 0x7E8F060,
@@ -78,8 +80,8 @@ static const uintptr_t kChkRvasIE[] = {
     //     NMalloc (0x60F430) and sub_1805B89E0 (already listed). All real .rdata call targets.
     0x7072EA0, 0x758D8E0, 0x7285820, 0x72861F0, 0x7664750, 0x76649A0, 0x7668D00, 0x7518C90,
     0x7214F60, 0x8C13CD0, 0x727C940, 0x726E3E0, 0x6CEF40,  0x727C980, 0x67BBFA0, 0x727CD00,
-    0x726E6B0, 0x760B5C0, 0x73982C0,
-    // 0x73982F0 REMOVED -- now a dedicated [rndr] hook in main.cpp (sub_1873982F0; avoids double-hook)
+    0x726E6B0, 0x760B5C0, 0x73982C0, 0x73982F0,   // 0x73982F0 back as a checkpoint (its 16-arg thunk forwards
+    // a3 safely); the dedicated [rndr] hook now targets its callee sub_1875F8980 (the real park) instead.
 };
 static const int kNumChk = (int)(sizeof(kChkRvasIE) / sizeof(kChkRvasIE[0]));
 // Checkpoints must forward ALL args transparently: several targets take >4 args (e.g. sub_1805B89E0 takes 8),
@@ -177,4 +179,62 @@ static void InstallCheckpoints(uintptr_t base)
             tprintf("[chk] FAILED sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasIE[i]), tgt);
     }
     tprintf("[chk] %d checkpoint hooks installed\n", kNumChk); fflush(stdout);
+}
+
+// ===================================================================================================
+// RETURN-ADDRESS checkpoint variant ([chkra]) -- same pass-through trace, but ALSO logs the caller
+// (_ReturnAddress() -> DuniaDemo-relative RVA). Use for functions called from MANY sites, where the
+// plain [chk] trace can't tell you WHICH call site fired (e.g. the CNomadDb register cluster
+// sub_1868715C0/sub_18686EFE0/... called from inside the unhooked sub_1875F8980 and elsewhere).
+// Separate array + pool so it coexists with kChkRvasIE. Shares g_chkDepth (unified per-thread nesting).
+// MinHook's jmp doesn't touch [rsp], so at detour entry [rsp] = the ORIGINAL caller's return address,
+// which _ReturnAddress() reads. APPEND-ONLY, same rules as kChkRvasIE.
+static uintptr_t g_chkBase = 0;   // module base, set by InstallCheckpointsRA, for caller-RVA math
+
+static const uintptr_t kChkRvasRA[] = {
+    0x68715C0, // sub_1868715C0  (CNomadDb library register cluster; also a sub_1875F8980 callee)
+    0x686EFE0, // sub_18686EFE0
+    0x6870070, // sub_186870070
+    0x686E950, // sub_18686E950
+    0x7F12760, // sub_187F12760  (fires on its own worker thread -- RA will show a different caller)
+};
+static const int kNumChkRA = (int)(sizeof(kChkRvasRA) / sizeof(kChkRvasRA[0]));
+static const int kChkThunkPoolRA = 32;   // separate pool for the RA variant; must be >= kNumChkRA
+static_assert(kChkThunkPoolRA >= kNumChkRA, "kChkThunkPoolRA too small for kChkRvasRA");
+static ChkFn_t g_chkOrigRA[kChkThunkPoolRA];
+
+template<int N> static __int64 __fastcall ChkThunkRA(
+    void* p0, void* p1, void* p2, void* p3, void* p4, void* p5, void* p6, void* p7,
+    void* p8, void* p9, void* p10, void* p11, void* p12, void* p13, void* p14, void* p15)
+{
+    void* ra = _ReturnAddress();                                   // MUST be first: the original caller
+    const unsigned long long fn = 0x180000000ull + kChkRvasRA[N];
+    const unsigned long long crva = (unsigned long long)((uintptr_t)ra - g_chkBase);   // DuniaDemo-relative
+    tprintf("[chkra] t%-5lu d%-2d %*ssub_%llX ENTER  caller=%p (DuniaDemo+0x%llX)\n",
+            GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn, ra, crva); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_chkOrigRA[N](p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15);
+    --g_chkDepth;
+    tprintf("[chkra] t%-5lu d%-2d %*ssub_%llX RETURNED\n",
+            GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn); fflush(stdout);
+    return r;
+}
+template<size_t... I>
+static std::array<ChkFn_t, sizeof...(I)> MakeChkThunksRA(std::index_sequence<I...>) { return {{ &ChkThunkRA<I>... }}; }
+static const std::array<ChkFn_t, kChkThunkPoolRA> g_chkThunksRA = MakeChkThunksRA(std::make_index_sequence<kChkThunkPoolRA>{});
+
+static void InstallCheckpointsRA(uintptr_t base)
+{
+    if (!kCheckpoints) return;
+    MH_Initialize();
+    g_chkBase = base;
+    for (int i = 0; i < kNumChkRA; ++i)
+    {
+        void* tgt = (void*)(base + kChkRvasRA[i]);
+        if (MH_CreateHook(tgt, (LPVOID)g_chkThunksRA[i], (LPVOID*)&g_chkOrigRA[i]) == MH_OK && MH_EnableHook(tgt) == MH_OK)
+            tprintf("[chkra] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasRA[i]), tgt);
+        else
+            tprintf("[chkra] FAILED sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasRA[i]), tgt);
+    }
+    tprintf("[chkra] %d return-address checkpoint hooks installed\n", kNumChkRA); fflush(stdout);
 }
