@@ -2253,7 +2253,10 @@ static const uintptr_t kChkRvasIES[] = {
 // FuncB/gpm). 19 targets: dropped the hot per-layer AddThread/affinity pair (0x6CAC80/0x6C5E40), call_once
 // (0x9372994/0x9372A2C), HasParameter (0x6D7B20), and string helpers. Names via PDB (duniabackup is unnamed).
 // Fits the existing 31-thunk pool -- no expansion needed.
-static const uintptr_t kChkRvas[] = {
+// INACTIVE reference (renamed from kChkRvas): FuncA is now passed cleanly, so this set no longer installs.
+// Active checkpoint set is kChkRvasIE below (CEngine::Initialize body). Swap back by pointing the machinery
+// (kNumChk / ChkThunk / InstallCheckpoints) at kChkRvasFuncA if FuncA ever regresses.
+static const uintptr_t kChkRvasFuncA[] = {
     0x6751EF0, // sub_186751EF0  (FuncA+0x328D -- 1st call after IES; ~CreateNotificationManager)
     0x7EA0D20, // sub_187EA0D20  (FuncA+0x32AC)
     0x6D45C0,  // sub_1806D45C0  (FuncA+0x32E3)
@@ -2266,60 +2269,101 @@ static const uintptr_t kChkRvas[] = {
     0x6D3760,  // sub_1806D3760  (FuncA+0x345E)
     0x6D3E00,  // sub_1806D3E00  (FuncA+0x3495)
     0x9EE0,    // sub_180009EE0  (FuncA+0x34CA)
-  //0x6C6E70,  // sub_1806C6E70  (FuncA+0x34DB, x2) = CIOLayerManager::InsertLayerBefore -- now a dedicated native reimpl hook (see InsertLayerBefore_Detour); removed from checkpoints to avoid double-hook
     0xA890,    // sub_18000A890  (FuncA+0x34F8)
     0x6D4BD0,  // sub_1806D4BD0  (FuncA+0x3528)
-  //0x6CAA80,  // sub_1806CAA80  (FuncA+0x354D, x2) = CSelectionLayer::AddRequestQueue -- now a dedicated native reimpl hook (see AddRequestQueue_Detour); removed from checkpoints to avoid double-hook
     0x6C6AA0,  // sub_1806C6AA0  (FuncA+0x3569)
     0x6CA980,  // sub_1806CA980  (FuncA+0x357C)
     0x8C0FD70, // sub_188C0FD70  (FuncA+0x35BD)
 };
-static const int kNumChk = (int)(sizeof(kChkRvas) / sizeof(kChkRvas[0]));
-typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*);
-static ChkFn_t g_chkOrig[32];
 
-template<int N> static __int64 __fastcall ChkThunk(void* a, void* b, void* c, void* d)
+// ACTIVE: CEngine::Initialize (sub_186799B80) body -- every distinct call AFTER sub_186659F00(v6), in source
+// order (deduped). Traces how far Initialize gets. Currently ALL of these sit past sub_186798E80
+// (InitializeOnlineInterface) which spin-hangs (see project_online_interface_hang), so they only start firing
+// once we bypass that. EXCLUDED: sub_186798E80 (dedicated [hang] hook -> double-hook), the sync/yield prims
+// sub_188C18AE0/sub_188C18AF0, std::call_once internals sub_189372994/A2C/F90, and the nullsub_/HasParameter/
+// NMalloc named helpers. RVA = VA - 0x180000000 (i.e. the hex after "sub_18").
+static const uintptr_t kChkRvasIE[] = {
+    0x6799510, 0x60F7CA0, 0x6038FD0, 0x63EED0,  0x602E770, 0x687DF00, 0x673BE20, 0x7216BF0,
+    0x7CE78B0, 0x7CEF390, 0x7CE5AB0, 0x7CE0600, 0x7CBEFF0, 0x620E9F0, 0x5BF980,  0x60A2360,
+    0x67B9120, 0x7398740, 0x7398980, 0x69222C0, 0x68715C0, 0x686EFE0, 0x6870070,
+    // 0x5C3F60, 0x5A81C0, 0x5E6EC0 REMOVED -- hot generic string/container helpers, called everywhere
+    // (thousands of hits), useless as CEngine::Initialize progress markers and flooded the log.
+    0x7D5E810, 0x6035400, 0x7D633E0, 0x686F8D0, 0x6799130, 0x7F60DC0, 0x603E650, 0x7F12760,
+    0x60AD8D0, 0x7802ED0, 0x60AD900, 0x60F90C0, 0x60D7A90, 0x6110E90, 0x6121760, 0x66098F0,
+    0x6121220, 0x64B0A70, 0x677BAD0, 0x60278C0, 0x6794680, 0x6794A30, 0x6245A20, 0x6796300,
+    0x677CA00, 0x657EEB0, 0x6371A40, 0x63B2C40, 0x63B56B0, 0x665E2D0, 0x64A2170, 0x64A7FF0,
+    0x2ABFD80, 0x5B89E0,  0x5A6FD80, 0x684E200, 0x60ADBC0, 0x7D1B6C0, 0x656E250, 0x6027190,
+    0x671D890, 0x671E600, 0x6720730, 0x672FF20, 0x671B150, 0x6884560, 0x6640DD0, 0x6641010,
+    0x6640770, 0x63D5740, 0x60A5710, 0x6373BA0, 0x636FA80, 0x63CE370, 0x63CE910, 0x7256AE0,
+    0x173220,  0xD6DE0,   0x60EC860, 0x673CF10, 0x7633530, 0x661E530, 0x643EA50, 0x6445590,
+    0x7804B80, 0x6891E50, 0x60DE210, 0x6177E40, 0x63BA960, 0x65B2620, 0x65BACF0, 0x65F2D00,
+    0x65ED0A0, 0x65FDCE0, 0x65EE2F0, 0x65771F0, 0x609D0E0, 0x7F3C0D0, 0x60DA4B0, 0x60FA2C0,
+    0x6032330, 0x67356A0, 0x60A49F0, 0x686E950, 0x60F79B0, 0x678FC10, 0x67907F0, 0x64F69C0,
+    0x64F6C50, 0x6423210, 0x641CC50, 0x6420F20, 0x668B370, 0x6664C10, 0x66831A0, 0x63B7A80,
+    0x62472C0, 0x6247780, 0x603FBB0, 0x64C4D70, 0x65B2450, 0x6319D00, 0x6821C60, 0x68252B0,
+    0x6648B90, 0x7E879C0, 0x7E8CD10, 0x7E8F060,
+};
+static const int kNumChk = (int)(sizeof(kChkRvasIE) / sizeof(kChkRvasIE[0]));
+// Checkpoints must forward ALL args transparently: several targets take >4 args (e.g. sub_1805B89E0 takes 8),
+// and a 4-arg thunk drops the stack args -> the callee derefs garbage -> AV. Forward 16 register+stack slots.
+// For functions with fewer args the extra slots are read from the caller frame (committed stack, harmless) and
+// ignored by the callee. Covers any target with <=16 args.
+typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*, void*, void*, void*, void*,
+                                      void*, void*, void*, void*, void*, void*, void*, void*);
+static ChkFn_t g_chkOrig[160];
+
+template<int N> static __int64 __fastcall ChkThunk(
+    void* p0, void* p1, void* p2, void* p3, void* p4, void* p5, void* p6, void* p7,
+    void* p8, void* p9, void* p10, void* p11, void* p12, void* p13, void* p14, void* p15)
 {
-    if (N == 28)   // sub_188C0FD70 = G4::Platform::Platform -- overwrite-vs-code-mutation test at entry
-    {
-        /*
-        tprintf("CPU detection started\n");
-        uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
-        HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
-        struct { const char* nm; uintptr_t slot; } s[] = {
-            { "GetSystemInfo",           0xA97C580 },   // called at +0x49
-            { "GlobalMemoryStatusEx",    0xA97C620 },
-            { "GetLogicalDriveStringsA", 0xA97C4E0 },
-        };
-        for (auto& e : s)
-        {
-            uintptr_t v = *(uintptr_t*)(base + e.slot);
-            void* real = (void*)GetProcAddress(k32, e.nm);
-            tprintf("[g4] slot 0x%llX %-24s = %p (real=%p match=%d)\n",
-                    (unsigned long long)e.slot, e.nm, (void*)v, real, (int)(v == (uintptr_t)real));
-        }
-        unsigned char* call = (unsigned char*)(base + 0x8C0FDB9);   // the GetSystemInfo `call [rip+..]` at +0x49
-        tprintf("[g4] call@+0x49 bytes:");
-        for (int i = 0; i < 8; ++i) tprintf(" %02X", call[i]);      // FF 15 C1 C7 D6 01 = call [rip+0x1d6c7c1] if unmutated
-        tprintf("\n"); fflush(stdout);*/
-        tprintf("InstallPackage test\n");
-    }
-    tprintf("[chk] sub_%llX ENTER\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
-    __int64 r = g_chkOrig[N](a, b, c, d);
-    tprintf("[chk] sub_%llX RETURNED\n", (unsigned long long)(0x180000000 + kChkRvas[N])); fflush(stdout);
-    if (N == 17)
-        tprintf("InitializeEngineServices (anon): DetectDesktopMonitorResolution returned\n");
+    tprintf("[chk] sub_%llX ENTER\n", (unsigned long long)(0x180000000 + kChkRvasIE[N])); fflush(stdout);
+    __int64 r = g_chkOrig[N](p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15);
+    tprintf("[chk] sub_%llX RETURNED\n", (unsigned long long)(0x180000000 + kChkRvasIE[N])); fflush(stdout);
     return r;
 }
+// 160-thunk pool (kChkRvasIE has 134 entries; headroom for growth). Each &ChkThunk<N> is a distinct detour so
+// MinHook can map it to g_chkOrig[N]; only the first kNumChk are installed.
 static void* g_chkThunks[] = {
-    (void*)&ChkThunk<0>,  (void*)&ChkThunk<1>,  (void*)&ChkThunk<2>,  (void*)&ChkThunk<3>,
-    (void*)&ChkThunk<4>,  (void*)&ChkThunk<5>,  (void*)&ChkThunk<6>,  (void*)&ChkThunk<7>,
-    (void*)&ChkThunk<8>,  (void*)&ChkThunk<9>,  (void*)&ChkThunk<10>, (void*)&ChkThunk<11>,
-    (void*)&ChkThunk<12>, (void*)&ChkThunk<13>, (void*)&ChkThunk<14>, (void*)&ChkThunk<15>,
-    (void*)&ChkThunk<16>, (void*)&ChkThunk<17>, (void*)&ChkThunk<18>, (void*)&ChkThunk<19>,
-    (void*)&ChkThunk<20>, (void*)&ChkThunk<21>, (void*)&ChkThunk<22>, (void*)&ChkThunk<23>,
-    (void*)&ChkThunk<24>, (void*)&ChkThunk<25>, (void*)&ChkThunk<26>, (void*)&ChkThunk<27>,
-    (void*)&ChkThunk<28>, (void*)&ChkThunk<29>, (void*)&ChkThunk<30>,
+    (void*)&ChkThunk<0>,   (void*)&ChkThunk<1>,   (void*)&ChkThunk<2>,   (void*)&ChkThunk<3>,
+    (void*)&ChkThunk<4>,   (void*)&ChkThunk<5>,   (void*)&ChkThunk<6>,   (void*)&ChkThunk<7>,
+    (void*)&ChkThunk<8>,   (void*)&ChkThunk<9>,   (void*)&ChkThunk<10>,  (void*)&ChkThunk<11>,
+    (void*)&ChkThunk<12>,  (void*)&ChkThunk<13>,  (void*)&ChkThunk<14>,  (void*)&ChkThunk<15>,
+    (void*)&ChkThunk<16>,  (void*)&ChkThunk<17>,  (void*)&ChkThunk<18>,  (void*)&ChkThunk<19>,
+    (void*)&ChkThunk<20>,  (void*)&ChkThunk<21>,  (void*)&ChkThunk<22>,  (void*)&ChkThunk<23>,
+    (void*)&ChkThunk<24>,  (void*)&ChkThunk<25>,  (void*)&ChkThunk<26>,  (void*)&ChkThunk<27>,
+    (void*)&ChkThunk<28>,  (void*)&ChkThunk<29>,  (void*)&ChkThunk<30>,  (void*)&ChkThunk<31>,
+    (void*)&ChkThunk<32>,  (void*)&ChkThunk<33>,  (void*)&ChkThunk<34>,  (void*)&ChkThunk<35>,
+    (void*)&ChkThunk<36>,  (void*)&ChkThunk<37>,  (void*)&ChkThunk<38>,  (void*)&ChkThunk<39>,
+    (void*)&ChkThunk<40>,  (void*)&ChkThunk<41>,  (void*)&ChkThunk<42>,  (void*)&ChkThunk<43>,
+    (void*)&ChkThunk<44>,  (void*)&ChkThunk<45>,  (void*)&ChkThunk<46>,  (void*)&ChkThunk<47>,
+    (void*)&ChkThunk<48>,  (void*)&ChkThunk<49>,  (void*)&ChkThunk<50>,  (void*)&ChkThunk<51>,
+    (void*)&ChkThunk<52>,  (void*)&ChkThunk<53>,  (void*)&ChkThunk<54>,  (void*)&ChkThunk<55>,
+    (void*)&ChkThunk<56>,  (void*)&ChkThunk<57>,  (void*)&ChkThunk<58>,  (void*)&ChkThunk<59>,
+    (void*)&ChkThunk<60>,  (void*)&ChkThunk<61>,  (void*)&ChkThunk<62>,  (void*)&ChkThunk<63>,
+    (void*)&ChkThunk<64>,  (void*)&ChkThunk<65>,  (void*)&ChkThunk<66>,  (void*)&ChkThunk<67>,
+    (void*)&ChkThunk<68>,  (void*)&ChkThunk<69>,  (void*)&ChkThunk<70>,  (void*)&ChkThunk<71>,
+    (void*)&ChkThunk<72>,  (void*)&ChkThunk<73>,  (void*)&ChkThunk<74>,  (void*)&ChkThunk<75>,
+    (void*)&ChkThunk<76>,  (void*)&ChkThunk<77>,  (void*)&ChkThunk<78>,  (void*)&ChkThunk<79>,
+    (void*)&ChkThunk<80>,  (void*)&ChkThunk<81>,  (void*)&ChkThunk<82>,  (void*)&ChkThunk<83>,
+    (void*)&ChkThunk<84>,  (void*)&ChkThunk<85>,  (void*)&ChkThunk<86>,  (void*)&ChkThunk<87>,
+    (void*)&ChkThunk<88>,  (void*)&ChkThunk<89>,  (void*)&ChkThunk<90>,  (void*)&ChkThunk<91>,
+    (void*)&ChkThunk<92>,  (void*)&ChkThunk<93>,  (void*)&ChkThunk<94>,  (void*)&ChkThunk<95>,
+    (void*)&ChkThunk<96>,  (void*)&ChkThunk<97>,  (void*)&ChkThunk<98>,  (void*)&ChkThunk<99>,
+    (void*)&ChkThunk<100>, (void*)&ChkThunk<101>, (void*)&ChkThunk<102>, (void*)&ChkThunk<103>,
+    (void*)&ChkThunk<104>, (void*)&ChkThunk<105>, (void*)&ChkThunk<106>, (void*)&ChkThunk<107>,
+    (void*)&ChkThunk<108>, (void*)&ChkThunk<109>, (void*)&ChkThunk<110>, (void*)&ChkThunk<111>,
+    (void*)&ChkThunk<112>, (void*)&ChkThunk<113>, (void*)&ChkThunk<114>, (void*)&ChkThunk<115>,
+    (void*)&ChkThunk<116>, (void*)&ChkThunk<117>, (void*)&ChkThunk<118>, (void*)&ChkThunk<119>,
+    (void*)&ChkThunk<120>, (void*)&ChkThunk<121>, (void*)&ChkThunk<122>, (void*)&ChkThunk<123>,
+    (void*)&ChkThunk<124>, (void*)&ChkThunk<125>, (void*)&ChkThunk<126>, (void*)&ChkThunk<127>,
+    (void*)&ChkThunk<128>, (void*)&ChkThunk<129>, (void*)&ChkThunk<130>, (void*)&ChkThunk<131>,
+    (void*)&ChkThunk<132>, (void*)&ChkThunk<133>, (void*)&ChkThunk<134>, (void*)&ChkThunk<135>,
+    (void*)&ChkThunk<136>, (void*)&ChkThunk<137>, (void*)&ChkThunk<138>, (void*)&ChkThunk<139>,
+    (void*)&ChkThunk<140>, (void*)&ChkThunk<141>, (void*)&ChkThunk<142>, (void*)&ChkThunk<143>,
+    (void*)&ChkThunk<144>, (void*)&ChkThunk<145>, (void*)&ChkThunk<146>, (void*)&ChkThunk<147>,
+    (void*)&ChkThunk<148>, (void*)&ChkThunk<149>, (void*)&ChkThunk<150>, (void*)&ChkThunk<151>,
+    (void*)&ChkThunk<152>, (void*)&ChkThunk<153>, (void*)&ChkThunk<154>, (void*)&ChkThunk<155>,
+    (void*)&ChkThunk<156>, (void*)&ChkThunk<157>, (void*)&ChkThunk<158>, (void*)&ChkThunk<159>,
 };
 // ===================================================================================================
 // Denuvo-VM stub: G4::Platform::RetrieveClassicalCPUCacheDetails (sub_188C10530).
@@ -2546,11 +2590,11 @@ static void InstallCheckpoints(uintptr_t base)
     MH_Initialize();
     for (int i = 0; i < kNumChk; ++i)
     {
-        void* tgt = (void*)(base + kChkRvas[i]);
+        void* tgt = (void*)(base + kChkRvasIE[i]);
         if (MH_CreateHook(tgt, g_chkThunks[i], (LPVOID*)&g_chkOrig[i]) == MH_OK && MH_EnableHook(tgt) == MH_OK)
-            tprintf("[chk] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvas[i]), tgt);
+            tprintf("[chk] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasIE[i]), tgt);
         else
-            tprintf("[chk] FAILED sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvas[i]), tgt);
+            tprintf("[chk] FAILED sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasIE[i]), tgt);
     }
     tprintf("[chk] %d checkpoint hooks installed\n", kNumChk); fflush(stdout);
 }
