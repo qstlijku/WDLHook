@@ -356,99 +356,61 @@ static const bool kWatchdog = true;    // re-enable when we need thread RIP samp
 static DWORD g_mainTid = 0;   // the WinMain/boot thread (marked "(BOOT)" in samples)
 static DWORD WINAPI WatchdogThread(LPVOID)
 {
-    DWORD self = GetCurrentThreadId();
-    DWORD pid  = GetCurrentProcessId();
-    uintptr_t prevBootRip = 0;   // boot-thread RIP from the previous round (stuck-detection)
-    bool reported = false;       // already dumped this stall episode? (avoid re-spamming while hung)
+    uintptr_t prevRip = 0, prevTopEng = 0;   // previous round's RIP / top engine caller -> stall hint
     for (int round = 0; ; ++round)
     {
         Sleep(5000);
         uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+        if (!g_mainTid) continue;
 
-        // Cheap probe: sample ONLY the boot thread's RIP. Escalate to a full thread snapshot only when it is
-        // STUCK (RIP unchanged across a 5s round), and only ONCE per stall. Keeps the log silent during normal
-        // boot (the RIP is always moving) and speaks up exactly when a hang sets in -- no per-round spam.
-        uintptr_t bootRip = 0;
-        if (g_mainTid)
+        // Sample the BOOT thread ONLY (one thread -> low noise, unlike the old all-thread dump), and report it
+        // EVERY round. Works for a BLOCKED wait (RIP parked) AND a SPIN (RIP cycles through a loop + its callees)
+        // -- the old exact-RIP-match gate missed spins. Read the engine stack scan across rounds to confirm a
+        // stall; the "<== STALLED" hint is best-effort (RIP within 0x400 of last round, or same top engine caller).
+        HANDLE hB = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, g_mainTid);
+        if (!hB) continue;
+        CONTEXT c; memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_CONTROL;
+        uintptr_t rip = 0, rsp = 0; uintptr_t stk[512]; int nstk = 0;
+        if (SuspendThread(hB) != (DWORD)-1)
         {
-            if (HANDLE hB = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, g_mainTid))
-            {
-                CONTEXT c; memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_CONTROL;
-                if (SuspendThread(hB) != (DWORD)-1)
-                {
-                    if (GetThreadContext(hB, &c)) bootRip = (uintptr_t)c.Rip;
-                    ResumeThread(hB);
-                }
-                CloseHandle(hB);
-            }
+            if (GetThreadContext(hB, &c)) { rip = (uintptr_t)c.Rip; rsp = (uintptr_t)c.Rsp; }
+            if (rsp) { __try { memcpy(stk, (void*)rsp, sizeof(stk)); nstk = 512; } __except (EXCEPTION_EXECUTE_HANDLER) { nstk = 0; } }
+            ResumeThread(hB);   // resume BEFORE logging (avoid the log-lock deadlock)
         }
-        bool stuck = (bootRip != 0 && bootRip == prevBootRip);
-        prevBootRip = bootRip;
-        if (!stuck) { reported = false; continue; }   // progressing (or no boot tid yet) -> stay quiet
-        if (reported) continue;                        // already dumped this stall -> stay quiet
-        reported = true;
+        CloseHandle(hB);
+        if (!rip) continue;
 
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap == INVALID_HANDLE_VALUE) { reported = false; continue; }
-        tprintf("[watchdog] BOOT thread stuck >=5s -- full thread snapshot (round %d):\n", round);
-        THREADENTRY32 te; te.dwSize = sizeof(te);
-        if (Thread32First(snap, &te))
+        uintptr_t topEng = 0;   // first (deepest) engine return address on the stack -- stable across a spin
+        for (int k = 0; k < nstk; ++k) { uintptr_t v = stk[k]; if (v > base + 0x1000 && v < base + 0x9DBDE00) { topEng = v; break; } }
+        uintptr_t d = rip > prevRip ? rip - prevRip : prevRip - rip;
+        bool stall = (prevRip && d < 0x400) || (topEng && topEng == prevTopEng);
+        prevRip = rip; prevTopEng = topEng;
+
+        char ripdesc[160]; HMODULE m = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)rip, &m) && m)
         {
-            do
-            {
-                if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
-                HANDLE hT = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, te.th32ThreadID);
-                if (!hT) continue;
-                CONTEXT ctx; memset(&ctx, 0, sizeof(ctx)); ctx.ContextFlags = CONTEXT_CONTROL;
-                uintptr_t rip = 0, rsp = 0;
-                uintptr_t stk[512]; int nstk = 0;                 // stack snapshot (4KB), taken while suspended
-                bool inGame = false;
-                if (SuspendThread(hT) != (DWORD)-1)
-                {
-                    if (GetThreadContext(hT, &ctx)) { rip = (uintptr_t)ctx.Rip; rsp = (uintptr_t)ctx.Rsp; }
-                    inGame = (rip && base && rip >= base && rip < base + 0x24000000);
-                    if (inGame && rsp)                            // only bother snapshotting the game-executing thread
-                    {
-                        __try { memcpy(stk, (void*)rsp, sizeof(stk)); nstk = 512; }
-                        __except (EXCEPTION_EXECUTE_HANDLER) { nstk = 0; }
-                    }
-                    ResumeThread(hT);                            // resume BEFORE any logging (no deadlock on the log lock)
-                }
-                if (rip)
-                {
-                    const char* tag = (te.th32ThreadID == g_mainTid) ? " (BOOT)" : "";
-                    HMODULE m = nullptr;
-                    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)rip, &m) && m)
-                    {
-                        char p[MAX_PATH]; GetModuleFileNameA(m, p, MAX_PATH);
-                        const char* b = strrchr(p, '\\');
-                        tprintf("[watchdog]   tid %5lu%s RIP = %s+0x%llX\n", te.th32ThreadID, tag, b ? b + 1 : p, (unsigned long long)(rip - (uintptr_t)m));
-                    }
-                    else
-                        tprintf("[watchdog]   tid %5lu%s RIP = %p (no module)\n", te.th32ThreadID, tag, (void*)rip);
-                    // Scan the snapshot for return addresses into the REAL engine code (RVA < 0x9DBDE00; the
-                    // spin RIP is up in .rsrc/VM which we can't symbolize) -> the engine caller chain into the loop.
-                    for (int k = 0; k < nstk; ++k)
-                    {
-                        uintptr_t v = stk[k];
-                        if (v > base + 0x1000 && v < base + 0x9DBDE00)
-                            tprintf("[watchdog]       [sp+0x%03X] DuniaDemo+0x%llX\n", k * 8, (unsigned long long)(v - base));
-                    }
-                }
-                CloseHandle(hT);
-            } while (Thread32Next(snap, &te));
+            char pth[MAX_PATH]; GetModuleFileNameA(m, pth, MAX_PATH); const char* b = strrchr(pth, '\');
+            sprintf_s(ripdesc, "%s+0x%llX", b ? b + 1 : pth, (unsigned long long)(rip - (uintptr_t)m));
         }
-        CloseHandle(snap);
+        else sprintf_s(ripdesc, "%p (no module)", (void*)rip);
+        tprintf("[watchdog] round %d: BOOT tid %lu RIP = %s%s\n", round, g_mainTid, ripdesc,
+                stall ? "   <== STALLED (same spot/caller as last round)" : "");
+        for (int k = 0; k < nstk; ++k)
+        {
+            uintptr_t v = stk[k];
+            if (v > base + 0x1000 && v < base + 0x9DBDE00)
+                tprintf("[watchdog]     [sp+0x%03X] DuniaDemo+0x%llX\n", k * 8, (unsigned long long)(v - base));
+        }
         fflush(stdout);
     }
-    return 0;   // unreachable (loop never exits) -- satisfies MSVC C4716
+    return 0;   // unreachable -- satisfies MSVC C4716
 }
 static void StartWatchdog()
 {
     if (!kWatchdog) return;
     g_mainTid = GetCurrentThreadId();   // StartWatchdog runs on the WinMain/boot thread
     CreateThread(nullptr, 0, WatchdogThread, nullptr, 0, nullptr);
-    tprintf("[watchdog] started -- sampling all threads every 5s (boot tid=%lu)\n", g_mainTid); fflush(stdout);
+    tprintf("[watchdog] started -- sampling boot thread every 5s (boot tid=%lu)\n", g_mainTid); fflush(stdout);
 }
 
 // ---- uplay_aux_r164.dll gate patch (ported from ACMHook — retail WDL uses the identical DLL) ----
