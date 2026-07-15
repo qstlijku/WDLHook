@@ -352,19 +352,45 @@ static void InstallKillLogger()
 // instruction pointer of every thread. When boot HANGS the samples converge: a thread stuck at a stable
 // DuniaDemo+RVA is SPINNING there (map the RVA -> function); one stuck at ntdll!NtWaitForSingleObject /
 // NtDelayExecution is BLOCKED on a worker/event/sleep. No debugger needed -- the hang shows up in the log.
-static const bool kWatchdog = false;   // re-enable when we need thread RIP sampling for a hang
+static const bool kWatchdog = true;    // re-enable when we need thread RIP sampling for a hang (ON: InitializeOnlineInterface hang hunt)
 static DWORD g_mainTid = 0;   // the WinMain/boot thread (marked "(BOOT)" in samples)
 static DWORD WINAPI WatchdogThread(LPVOID)
 {
     DWORD self = GetCurrentThreadId();
     DWORD pid  = GetCurrentProcessId();
+    uintptr_t prevBootRip = 0;   // boot-thread RIP from the previous round (stuck-detection)
+    bool reported = false;       // already dumped this stall episode? (avoid re-spamming while hung)
     for (int round = 0; ; ++round)
     {
         Sleep(5000);
         uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+
+        // Cheap probe: sample ONLY the boot thread's RIP. Escalate to a full thread snapshot only when it is
+        // STUCK (RIP unchanged across a 5s round), and only ONCE per stall. Keeps the log silent during normal
+        // boot (the RIP is always moving) and speaks up exactly when a hang sets in -- no per-round spam.
+        uintptr_t bootRip = 0;
+        if (g_mainTid)
+        {
+            if (HANDLE hB = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, g_mainTid))
+            {
+                CONTEXT c; memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_CONTROL;
+                if (SuspendThread(hB) != (DWORD)-1)
+                {
+                    if (GetThreadContext(hB, &c)) bootRip = (uintptr_t)c.Rip;
+                    ResumeThread(hB);
+                }
+                CloseHandle(hB);
+            }
+        }
+        bool stuck = (bootRip != 0 && bootRip == prevBootRip);
+        prevBootRip = bootRip;
+        if (!stuck) { reported = false; continue; }   // progressing (or no boot tid yet) -> stay quiet
+        if (reported) continue;                        // already dumped this stall -> stay quiet
+        reported = true;
+
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap == INVALID_HANDLE_VALUE) continue;
-        tprintf("[watchdog] === round %d ===\n", round);
+        if (snap == INVALID_HANDLE_VALUE) { reported = false; continue; }
+        tprintf("[watchdog] BOOT thread stuck >=5s -- full thread snapshot (round %d):\n", round);
         THREADENTRY32 te; te.dwSize = sizeof(te);
         if (Thread32First(snap, &te))
         {
@@ -1966,6 +1992,20 @@ static void __fastcall AddRequestQueue_Detour(void* self, int requestType)
             self, (unsigned)requestType, q); fflush(stdout);
 }
 
+// sub_186798E80 (RVA 0x6798E80) -- CEngine sibling of CEngine::Initialize (0x6799B80); real .rdata fn taking
+// one __int64 (rcx). Pass-through trace for the CEngine::Initialize hang hunt: logs ENTER (param) + RETURNED
+// (retval). If we see ENTER with no RETURNED, this fn is the hang site.
+typedef __int64 (__fastcall* Sub798E80_t)(__int64 a1);
+static Sub798E80_t g_sub798E80Orig = nullptr;
+static __int64 __fastcall Sub798E80_Detour(__int64 a1)
+{
+    return 0;
+    tprintf("[hang] sub_186798E80(a1=0x%llX) ENTER\n", (unsigned long long)a1); fflush(stdout);
+    __int64 r = g_sub798E80Orig(a1);
+    tprintf("[hang] sub_186798E80 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 static void InstallSkuTrace(uintptr_t base)
 {
     if (!kTraceSku) return;
@@ -2081,6 +2121,12 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[arq] hooked CSelectionLayer::AddRequestQueue (sub_1806CAA80) @ %p [native reimpl, bypasses VM]\n", arq);
     else
         tprintf("[arq] FAILED to hook AddRequestQueue @ %p\n", arq);
+    // sub_186798E80 -- CEngine::Initialize hang-hunt breadcrumb (pass-through ENTER/RETURNED trace)
+    void* s798e80 = (void*)(base + 0x6798E80);
+    if (MH_CreateHook(s798e80, &Sub798E80_Detour, (LPVOID*)&g_sub798E80Orig) == MH_OK && MH_EnableHook(s798e80) == MH_OK)
+        tprintf("[hang] hooked sub_186798E80 @ %p\n", s798e80);
+    else
+        tprintf("[hang] FAILED to hook sub_186798E80 @ %p\n", s798e80);
     void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
     if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
         tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
