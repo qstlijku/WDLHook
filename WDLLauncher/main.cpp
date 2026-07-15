@@ -978,7 +978,7 @@ static void InstallUplayAuxDefense()
 // running them executes the protection bootstrap. Expect iteration -- first pass just replicates.
 typedef void (__cdecl* PVFV)(void);
 typedef LONG (NTAPI* LdrpHandleTlsData_t)(void* ldrEntry);
-static const uintptr_t kLdrpHandleTlsDataRva = 0x10F30; // Win11 26200 ntdll (same as E3)
+static const uintptr_t kLdrpHandleTlsDataRva = 0x34C00; // Win11 26200 ntdll (same as E3)
 // E3 booted fine WITHOUT running the TLS callbacks (thread-locals init lazily on first access). Retail's
 // TlsCallback_0/1 are the Denuvo VM bootstrap -> flip this OFF to try skipping it (dodge the anti-debug
 // arming); ON runs it (safer if Denuvo-protected engine code needs its VM init).
