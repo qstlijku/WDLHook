@@ -1215,6 +1215,103 @@ __int64 __fastcall LoadSkuConfigPC_Detour(void* inst, int lang, void* sku)
     return r;
 }
 
+// sub_18707BC40 (RVA 0x707BC40) = CSceneObjectManager::CreateSingletons(ms_instance, a2). Ported from
+// WDLLauncher/main.cpp so the injected DLL can trace the same scene-singleton boot path. Enumerates the
+// indirect-call targets (registered scene objects' vtable[+0x10] and the old singleton slots a1[19..23])
+// and flags any that land in the .rsrc VM region (0xBC39000..0x21B12800) -> code-virtualized, hangs the VM.
+typedef __int64 (__fastcall* Sub707BC40_t)(void* a1, __int64 a2);
+static Sub707BC40_t g_sub707BC40Orig = nullptr;
+static const char* SceneVirtTag(unsigned long long fn, unsigned long long base)
+{
+    unsigned long long rva = fn - base;
+    return (rva >= 0xBC39000ull && rva < 0x21B12800ull) ? "   <== .rsrc VIRTUALIZED" : "";
+}
+// Rough structure dump for whatever CreateSingletons produces (return value + populated singleton slots).
+// Same spirit as DumpTokenObject: RPM-safe hexdump + vtable resolved to DuniaDemo+RVA. Clean up later.
+static void DumpSceneObject(void* obj, const char* label)
+{
+    if (!obj) { tprintf("[scene]   %s = NULL\n", label); return; }
+    unsigned long long base = (unsigned long long)GetModuleHandleW(L"DuniaDemo_clang_64_dx11.dll");
+    unsigned char raw[0x80] = {};
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), obj, raw, sizeof(raw), &got) || got < sizeof(void*))
+    { tprintf("[scene]   %s @ %p unreadable\n", label, obj); return; }
+
+    tprintf("[scene] === %s @ %p  (DuniaDemo base 0x%llX, %llu bytes) ===\n",
+            label, obj, base, (unsigned long long)got);
+    char line[192];
+    for (SIZE_T i = 0; i < got; i += 16)
+    {
+        int n = sprintf_s(line, sizeof(line), "[scene]   +0x%02llX: ", (unsigned long long)i);
+        for (SIZE_T j = 0; j < 16 && i + j < got; ++j)
+            n += sprintf_s(line + n, sizeof(line) - n, "%02X ", raw[i + j]);
+        n += sprintf_s(line + n, sizeof(line) - n, " | ");
+        for (SIZE_T j = 0; j < 16 && i + j < got; ++j)
+            n += sprintf_s(line + n, sizeof(line) - n, "%c", (raw[i + j] >= 32 && raw[i + j] < 127) ? raw[i + j] : '.');
+        tprintf("%s\n", line);
+    }
+    // vtable at +0x00 -> resolve each method slot to DuniaDemo+RVA, flag virtualized .rsrc targets.
+    unsigned long long vt = *(unsigned long long*)(raw + 0x00);
+    tprintf("[scene]   +0x00 vtbl = 0x%llX (DuniaDemo+0x%llX)\n", vt, vt ? vt - base : 0);
+    unsigned long long m[16];
+    if (vt && ReadProcessMemory(GetCurrentProcess(), (void*)vt, m, sizeof(m), &got))
+        for (int i = 0; i < (int)(got / sizeof(unsigned long long)); ++i)
+            tprintf("[scene]     vtbl[%d] = DuniaDemo+0x%llX%s\n", i, m[i] - base, SceneVirtTag(m[i], base));
+    tprintf("[scene] === end %s ===\n", label);
+}
+__int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
+{
+    tprintf("[scene] CSceneObjectManager::CreateSingletons(this=%p a2=0x%llX) ENTER\n",
+            a1, (unsigned long long)a2); fflush(stdout);
+    __try
+    {
+        unsigned long long base = (unsigned long long)GetModuleHandleW(L"DuniaDemo_clang_64_dx11.dll");
+        unsigned long long* aa = (unsigned long long*)a1;
+        unsigned long long v4 = aa[1];
+        unsigned int count = (unsigned int)(v4 >> 32) & 0x7FFFFFFFu;
+        unsigned long long* v7 = ((long long)v4 < 0) ? (aa + 2) : (unsigned long long*)aa[2];
+        tprintf("[scene]   %u registered scene objects (loop calls vtable[+0x10]):\n", count);
+        for (unsigned int i = 0; i < count && i < 256; ++i)
+        {
+            unsigned long long obj = v7[i];
+            if (!obj) continue;
+            unsigned long long vt = *(unsigned long long*)obj;
+            unsigned long long m10 = *(unsigned long long*)(vt + 0x10);
+            tprintf("[scene]     obj[%u]=0x%llX vtbl=0x%llX [+0x10]=DuniaDemo+0x%llX%s\n",
+                    i, obj, vt, m10 - base, SceneVirtTag(m10, base));
+        }
+        for (int s = 19; s <= 23; ++s)
+        {
+            unsigned long long old = aa[s];
+            if (!old) { tprintf("[scene]     a1[%d] = null (release skipped)\n", s); continue; }
+            unsigned long long vt = *(unsigned long long*)old;
+            unsigned long long m8 = *(unsigned long long*)(vt + 8);
+            unsigned long long m10 = *(unsigned long long*)(vt + 0x10);
+            tprintf("[scene]     a1[%d]=0x%llX vtbl[+8]=DuniaDemo+0x%llX%s vtbl[+0x10]=DuniaDemo+0x%llX%s\n",
+                    s, old, m8 - base, SceneVirtTag(m8, base), m10 - base, SceneVirtTag(m10, base));
+        }
+        fflush(stdout);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[scene]   (object enumeration faulted)\n"); fflush(stdout); }
+    __int64 r = g_sub707BC40Orig ? g_sub707BC40Orig(a1, a2) : 0;
+    tprintf("[scene] CSceneObjectManager::CreateSingletons RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    // Dump the object it just built (return value is the created singleton -- likely the SceneRendererFacade)
+    // plus the singleton slots a1[19..23] now that they've been (re)populated.
+    __try
+    {
+        DumpSceneObject((void*)r, "CreateSingletons result");
+        unsigned long long* aa = (unsigned long long*)a1;
+        for (int s = 19; s <= 23; ++s)
+        {
+            char lbl[48]; sprintf_s(lbl, sizeof(lbl), "a1[%d] singleton", s);
+            DumpSceneObject((void*)aa[s], lbl);
+        }
+        fflush(stdout);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[scene]   (post-call structure dump faulted)\n"); fflush(stdout); }
+    return r;
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -1235,6 +1332,10 @@ void Misc::Initialize()
     //HookOffset3(0x7ADEA90 + 0xA00, &GetInstalledLanguage_Detour,   reinterpret_cast<LPVOID*>(&g_gil_orig));   // sub_187ADF490
     HookOffset3(0x5A4D30  + 0xA00, &Str2Enum_Detour,               reinterpret_cast<LPVOID*>(&g_s2e_orig));   // sub_1805A5730
     HookOffset3(0x67C2B90 + 0xA00, &LoadSkuConfigPC_Detour,        reinterpret_cast<LPVOID*>(&g_lsc_orig));    // sub_1867C3590
+
+    // Scene-singleton boot trace (offset = RVA - 0xA00). CSceneObjectManager::CreateSingletons; flags the
+    // indirect-call target that lands in the .rsrc VM region (virtualized -> hangs the VM). WDLLauncher parity.
+    HookOffset3(0x707B240 + 0xA00, &Sub707BC40_Detour,            reinterpret_cast<LPVOID*>(&g_sub707BC40Orig)); // sub_18707BC40
 
     // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
     // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).
