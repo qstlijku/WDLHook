@@ -2083,51 +2083,136 @@ static __int64 __fastcall Sub75F8980_Detour(void* a1, int w, int h, void* a4, vo
 // park check: ENTER with no RETURNED (or a [veh] in its range) => this is the wall. Sig (_QWORD* a1, __int64 a2).
 typedef __int64 (__fastcall* Sub707BC40_t)(void* a1, __int64 a2);
 static Sub707BC40_t g_sub707BC40Orig = nullptr;
-// Flag a vtable-method target that lands in the .rsrc VM region (0xBC39000..0x21B12800) -> it's virtualized.
-static const char* SceneVirtTag(unsigned long long fn, unsigned long long base)
+// NMalloc size-capture, gated on a thread-local "current CreateSingleton iter". The [scene] diagnostic loop sets
+// g_scnIter = i around each vtable[+0x10] call; NMalloc_Detour logs size/align ONLY while it's >=0. This isolates
+// the allocs a (virtualized) CreateSingleton makes -- e.g. sizeof(CSceneRendererConfig) -- from the global flood.
+static thread_local int g_scnIter = -1;
+typedef void* (__fastcall* NMalloc_t)(unsigned long long size, unsigned long long align);
+static NMalloc_t g_nmallocOrig = nullptr;
+static void* __fastcall NMalloc_Detour(unsigned long long size, unsigned long long align)
+{
+    void* p = g_nmallocOrig(size, align);
+    if (g_scnIter >= 0)
+    {
+        tprintf("[nmsz] iter %d NMalloc(size=%llu (0x%llX), align=%llu) = %p\n",
+                g_scnIter, size, size, align, p); fflush(stdout);
+    }
+    return p;
+}
+// True if an address lands in the .rsrc VM region (0xBC39000..0x21B12800) -> it's a virtualized body.
+static bool SceneIsVirt(unsigned long long fn, unsigned long long base)
 {
     unsigned long long rva = fn - base;
-    return (rva >= 0xBC39000ull && rva < 0x21B12800ull) ? "   <== .rsrc VIRTUALIZED" : "";
+    return (rva >= 0xBC39000ull && rva < 0x21B12800ull);
 }
+// Follow one thunk hop: scene CreateSingleton vtable slots hold a .text/.rdata thunk (opt. `add rcx,N` then a
+// `jmp target`) -- the virtualization hides one jmp deeper (e.g. sub_1870BE220 -> sub_1A144EB70 in-VM). Resolve
+// the jmp target so we can classify the REAL body without calling it. Returns fn unchanged if no jmp in 16 bytes.
+static unsigned long long SceneFollowThunk(unsigned long long fn)
+{
+    __try
+    {
+        unsigned char* p = (unsigned char*)fn;
+        for (int off = 0; off < 16; )
+        {
+            if (p[off] == 0xE9)                                          // jmp rel32
+                return fn + off + 5 + *(int*)(p + off + 1);
+            if (p[off] == 0xFF && p[off + 1] == 0x25)                    // jmp [rip+disp32]
+                return *(unsigned long long*)(fn + off + 6 + *(int*)(p + off + 2));
+            if (p[off] == 0x48 && p[off + 1] == 0x83 && p[off + 2] == 0xC1) { off += 4; continue; }   // add rcx, imm8
+            if (p[off] == 0x48 && p[off + 1] == 0x81 && p[off + 2] == 0xC1) { off += 7; continue; }   // add rcx, imm32
+            ++off;
+        }
+        return fn;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return fn; }
+}
+// (Runtime RTTI read removed: these clang scene vtables carry no MSVC-style COL at vtable[-8] -> it faulted for
+// every object. Identify each object's class from its vtable RVA instead -- look it up in retail IDA, where
+// RTTI/PDB naming shows the CSceneObjectTypeInfoSingleton<T>::`vftable'.)
+// DIAGNOSTIC: when true, reimplement CreateSingletons' do..while loop ourselves -- log each v11 and call its
+// vtable[+0x10] (the scene object's Create/Init) with a bracketing print, so the LAST "calling..." with no
+// matching "returned" pinpoints the hanging object. Skips the node-alloc/push bookkeeping (irrelevant to
+// locating the hang) and does NOT call orig (avoids double-construct). Set false to restore the pass-through.
+static const bool kSceneReimplLoop = true;
 static __int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
 {
     tprintf("[scene] CSceneObjectManager::CreateSingletons(this=%p a2=0x%llX) ENTER\n",
             a1, (unsigned long long)a2); fflush(stdout);
-    // Enumerate the indirect-call targets so we can see WHICH one is virtualized (target in .rsrc) without a
-    // debugger. (1) each registered scene object's vtable[+0x10] (the do..while loop's call), and (2) the old
-    // singleton slots a1[19..23] with vtable[+8]/[+0x10] (the release path). The .rsrc one hangs the VM.
-    __try
+    if (kSceneReimplLoop)
     {
         unsigned long long base = (unsigned long long)GetModuleHandleW(kRendererDll);
         unsigned long long* aa = (unsigned long long*)a1;
         unsigned long long v4 = aa[1];
-        unsigned int count = (unsigned int)(v4 >> 32) & 0x7FFFFFFFu;
+        unsigned int count = (unsigned int)(v4 >> 32) & 0x7FFFFFFFu;                  // v6
         unsigned long long* v7 = ((long long)v4 < 0) ? (aa + 2) : (unsigned long long*)aa[2];
-        tprintf("[scene]   %u registered scene objects (loop calls vtable[+0x10]):\n", count);
-        for (unsigned int i = 0; i < count && i < 256; ++i)
+        // PHASE 1 -- survey the REAL singletons. Classify each via a one-hop thunk-follow; SKIP virtualized ones
+        // (avoid their VM hang) and call the rest (SEH-guarded so a dependent's fault doesn't stop the survey) with
+        // NMalloc size-capture armed. Per obj: SKIPPED (virt, needs reimpl) / returned OK (+[nmsz] sizes) /
+        // FAULTED (depends on a skipped singleton). Builds the reimpl worklist + a size table for the good ones.
+        tprintf("[scene] PHASE 1: survey %u singletons (classify; skip virtualized; capture real allocs)\n",
+                count); fflush(stdout);
+        for (unsigned int i = 0; i < count && i < 4096; ++i)
         {
-            unsigned long long obj = v7[i];
-            if (!obj) continue;
-            unsigned long long vt = *(unsigned long long*)obj;
+            unsigned long long v11 = v7[i];
+            unsigned long long vt = *(unsigned long long*)v11;
             unsigned long long m10 = *(unsigned long long*)(vt + 0x10);
-            tprintf("[scene]     obj[%u]=0x%llX vtbl=0x%llX [+0x10]=DuniaDemo+0x%llX%s\n",
-                    i, obj, vt, m10 - base, SceneVirtTag(m10, base));
+            unsigned long long tgt = SceneFollowThunk(m10);                          // follow thunk -> real body
+            bool virt = SceneIsVirt(tgt, base);
+            tprintf("[scene]   obj[%u] v11=0x%llX vtbl=DuniaDemo+0x%llX [+0x10]->DuniaDemo+0x%llX%s\n",
+                    i, v11, vt - base, tgt - base, virt ? "  <== VIRTUALIZED (needs reimpl)" : ""); fflush(stdout);
+            if (virt) { tprintf("[scene]     obj[%u] SKIPPED (virtualized)\n", i); fflush(stdout); continue; }
+            g_scnIter = (int)i;                                                       // arm NMalloc size-capture
+            __try
+            {
+                ((void (__fastcall*)(unsigned long long))m10)(v11);
+                tprintf("[scene]     obj[%u] returned OK\n", i); fflush(stdout);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                tprintf("[scene]     obj[%u] FAULTED 0x%lX (likely needs a SKIPPED singleton)\n",
+                        i, (unsigned long)GetExceptionCode()); fflush(stdout);
+            }
+            g_scnIter = -1;
         }
-        for (int s = 19; s <= 23; ++s)
-        {
-            unsigned long long old = aa[s];
-            if (!old) { tprintf("[scene]     a1[%d] = null (release skipped)\n", s); continue; }
-            unsigned long long vt = *(unsigned long long*)old;
-            unsigned long long m8 = *(unsigned long long*)(vt + 8);
-            unsigned long long m10 = *(unsigned long long*)(vt + 0x10);
-            tprintf("[scene]     a1[%d]=0x%llX vtbl[+8]=DuniaDemo+0x%llX%s vtbl[+0x10]=DuniaDemo+0x%llX%s\n",
-                    s, old, m8 - base, SceneVirtTag(m8, base), m10 - base, SceneVirtTag(m10, base));
-        }
+        // PHASE 2 -- fingerprint the virtualized singletons by their alloc size (RTTI failed; cross-ref the size
+        // against PDB sizeof). Call each virtualized one with capture armed: it allocs (-> [nmsz] size) then PARKS
+        // in the VM decoy loop -- expected, the size lands just before the hang. NOTE obj[2] is MinHook'd, so for
+        // its REAL alloc, Sub70BE220_Detour must NOT be stubbed (remove the `return 0;` so it forwards to orig).
+        tprintf("[scene] PHASE 2: call virtualized singleton(s) to capture NMalloc size (WILL HANG on the first)\n");
         fflush(stdout);
+        for (unsigned int i = 0; i < count && i < 4096; ++i)
+        {
+            unsigned long long v11 = v7[i];
+            unsigned long long vt = *(unsigned long long*)v11;
+            unsigned long long m10 = *(unsigned long long*)(vt + 0x10);
+            if (!SceneIsVirt(SceneFollowThunk(m10), base)) continue;
+            tprintf("[scene]   phase2 obj[%u] -- calling now (size logged just before it parks)\n", i); fflush(stdout);
+            g_scnIter = (int)i;
+            ((void (__fastcall*)(unsigned long long))m10)(v11);
+            g_scnIter = -1;
+        }
+        tprintf("[scene] survey complete (reached here => no virtualized singletons found)\n");
+        fflush(stdout);
+        return (__int64)a1;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[scene]   (object enumeration faulted)\n"); fflush(stdout); }
     __int64 r = g_sub707BC40Orig(a1, a2);
     tprintf("[scene] CSceneObjectManager::CreateSingletons RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// obj[2] = CSceneObjectTypeInfoSingleton<CSceneRendererConfig>::CreateSingleton (sub_1870BE220), vtable[+0x10]
+// (== ISceneObjectTypeInfo vtable index 2) -- the iter-2 hang from the [scene] diagnostic loop. Called as
+// (*(*v11+16))(v11), so only rcx=this is meaningful; forward 4 slots so rdx/r8/r9 pass through untouched
+// (avoids the arg-truncation trap). Break here in the debugger to step into the render-config hang.
+typedef __int64 (__fastcall* Sub70BE220_t)(void* a1, void* a2, void* a3, void* a4);
+static Sub70BE220_t g_sub70BE220Orig = nullptr;
+static __int64 __fastcall Sub70BE220_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[rcfg] CSceneRendererConfig::CreateSingleton(this=%p) ENTER  (obj[2] -- the hang)\n", a1); fflush(stdout);
+    __int64 r = g_sub70BE220Orig(a1, a2, a3, a4);
+    tprintf("[rcfg] CSceneRendererConfig::CreateSingleton RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
 
@@ -2285,6 +2370,16 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[scene] hooked CSceneObjectManager::CreateSingletons (sub_18707BC40) @ %p\n", scene);
     else
         tprintf("[scene] FAILED to hook sub_18707BC40 @ %p\n", scene);
+    void* obj2 = (void*)(base + 0x70BE220);   // obj[2]'s vtable[+0x10] Create -- iter-2 hang from the [scene] diag loop
+    if (MH_CreateHook(obj2, &Sub70BE220_Detour, (LPVOID*)&g_sub70BE220Orig) == MH_OK && MH_EnableHook(obj2) == MH_OK)
+        tprintf("[obj2] hooked sub_1870BE220 (obj[2] Create) @ %p\n", obj2);
+    else
+        tprintf("[obj2] FAILED to hook sub_1870BE220 @ %p\n", obj2);
+    void* nm = (void*)(base + 0x60F430);   // CMemMng::NMalloc -- size-log gated on g_scnIter ([scene] loop arms it)
+    if (MH_CreateHook(nm, &NMalloc_Detour, (LPVOID*)&g_nmallocOrig) == MH_OK && MH_EnableHook(nm) == MH_OK)
+        tprintf("[nmsz] hooked CMemMng::NMalloc (base+0x60F430) @ %p [logs only inside CreateSingleton iters]\n", nm);
+    else
+        tprintf("[nmsz] FAILED to hook NMalloc @ %p\n", nm);
     void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
     if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
         tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
