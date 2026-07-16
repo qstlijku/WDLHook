@@ -2134,7 +2134,8 @@ static unsigned long long SceneFollowThunk(unsigned long long fn)
 // vtable[+0x10] (the scene object's Create/Init) with a bracketing print, so the LAST "calling..." with no
 // matching "returned" pinpoints the hanging object. Skips the node-alloc/push bookkeeping (irrelevant to
 // locating the hang) and does NOT call orig (avoids double-construct). Set false to restore the pass-through.
-static const bool kSceneReimplLoop = true;
+static const bool kSceneReimplLoop = false;   // false = run the REAL CreateSingletons manager; the 7 [rsg] thunk
+                                              // reimpl hooks handle the virtualized singletons, other 92 run native
 static __int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
 {
     tprintf("[scene] CSceneObjectManager::CreateSingletons(this=%p a2=0x%llX) ENTER\n",
@@ -2201,20 +2202,44 @@ static __int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
     return r;
 }
 
-// obj[2] = CSceneObjectTypeInfoSingleton<CSceneRendererConfig>::CreateSingleton (sub_1870BE220), vtable[+0x10]
-// (== ISceneObjectTypeInfo vtable index 2) -- the iter-2 hang from the [scene] diagnostic loop. Called as
-// (*(*v11+16))(v11), so only rcx=this is meaningful; forward 4 slots so rdx/r8/r9 pass through untouched
-// (avoids the arg-truncation trap). Break here in the debugger to step into the render-config hang.
-typedef __int64 (__fastcall* Sub70BE220_t)(void* a1, void* a2, void* a3, void* a4);
-static Sub70BE220_t g_sub70BE220Orig = nullptr;
-static __int64 __fastcall Sub70BE220_Detour(void* a1, void* a2, void* a3, void* a4)
+// ---- Native reimpl of the 7 Denuvo-virtualized scene-singleton CreateSingleton<T> wrappers ----------------
+// Each virtualized thunk (obj2/9/47/64/68/74/91) is trivial glue in the clear PDB build:
+//     CPreCreatedSceneObject<T> v2,v3 = {m_object:0, m_ownership:Own};
+//     CSceneObjectContainer<T>::CreateObject(&this->m_objectList, &handle, 0, &v3, &v2);
+//     this->m_singletonHandle = handle;
+// CreateObject is NOT virtualized (proven: the sizeof(T) NMalloc's caller is real .text for all 7), so we call
+// the real one and store the handle -- replacing the VM body that hangs un-bootstrapped. Layout (PDB CreateSingleton
+// disasm; m_objectList@+8 confirmed against the retail runtime dump): m_objectList=this+0x08, m_singletonHandle=
+// this+0xF0 (qword), Own=1, CPreCreatedSceneObject = { void* m_object; int m_ownership; } (16 bytes).
+typedef void* (__fastcall* CreateObject_t)(void* container, void* outHandle, int byCmd, void* preObj, void* preBak);
+struct ScnPreCreated { void* m_object; int m_ownership; int _pad; };   // 16 bytes
+static const char*    kScnNames[7]        = { "obj2", "obj9", "obj47", "obj64", "obj68", "obj74", "obj91" };
+static const unsigned kScnThunkRva[7]     = { 0x70BE220, 0x70BAFA0, 0x709B7D0, 0x70BB220, 0x70958E0, 0x7093AA0, 0x70BE920 };
+static const unsigned kScnCreateObjRva[7] = { 0x70CA1D0, 0x70D8850, 0x7152ED0, 0x717A720, 0x7186090, 0x71A8CC0, 0x71D2670 };
+static void* g_scnReimplOrig[7] = {};   // MinHook trampolines (unused -- we never call the VM'd orig)
+static __int64 SceneSingletonReimpl(int idx, void* this_)
 {
+    unsigned long long base = (unsigned long long)GetModuleHandleW(kRendererDll);
+    ScnPreCreated v2 = { nullptr, 1 /*Own*/, 0 };
+    ScnPreCreated v3 = { nullptr, 1 /*Own*/, 0 };
+    unsigned long long v4 = 0;                                          // CSceneObjectHandle<T> out-param
+    unsigned long long* pHandle = (unsigned long long*)((char*)this_ + 0xF0);   // this->m_singletonHandle
+    unsigned long long before = *pHandle;
+    ((CreateObject_t)(base + kScnCreateObjRva[idx]))((char*)this_ + 0x08, &v4, 0, &v3, &v2);
+    *pHandle = v4;
+    tprintf("[rsg] %s reimpl: CreateObject(sub_18%X, this=%p) -> handle=0x%llX  this+0xF0: 0x%llX -> 0x%llX\n",
+            kScnNames[idx], kScnCreateObjRva[idx], this_, v4, before, v4); fflush(stdout);
     return 0;
-    tprintf("[rcfg] CSceneRendererConfig::CreateSingleton(this=%p) ENTER  (obj[2] -- the hang)\n", a1); fflush(stdout);
-    __int64 r = g_sub70BE220Orig(a1, a2, a3, a4);
-    tprintf("[rcfg] CSceneRendererConfig::CreateSingleton RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
-    return r;
 }
+// Thin per-thunk detours (called as (*(*this+0x10))(this) -> only rcx=this used; extra slots ignored).
+static __int64 __fastcall ScnReimpl0(void* a1, void*, void*, void*) { return SceneSingletonReimpl(0, a1); }
+static __int64 __fastcall ScnReimpl1(void* a1, void*, void*, void*) { return SceneSingletonReimpl(1, a1); }
+static __int64 __fastcall ScnReimpl2(void* a1, void*, void*, void*) { return SceneSingletonReimpl(2, a1); }
+static __int64 __fastcall ScnReimpl3(void* a1, void*, void*, void*) { return SceneSingletonReimpl(3, a1); }
+static __int64 __fastcall ScnReimpl4(void* a1, void*, void*, void*) { return SceneSingletonReimpl(4, a1); }
+static __int64 __fastcall ScnReimpl5(void* a1, void*, void*, void*) { return SceneSingletonReimpl(5, a1); }
+static __int64 __fastcall ScnReimpl6(void* a1, void*, void*, void*) { return SceneSingletonReimpl(6, a1); }
+static void* const g_scnReimplDetour[7] = { &ScnReimpl0, &ScnReimpl1, &ScnReimpl2, &ScnReimpl3, &ScnReimpl4, &ScnReimpl5, &ScnReimpl6 };
 
 static void InstallSkuTrace(uintptr_t base)
 {
@@ -2370,11 +2395,18 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[scene] hooked CSceneObjectManager::CreateSingletons (sub_18707BC40) @ %p\n", scene);
     else
         tprintf("[scene] FAILED to hook sub_18707BC40 @ %p\n", scene);
-    void* obj2 = (void*)(base + 0x70BE220);   // obj[2]'s vtable[+0x10] Create -- iter-2 hang from the [scene] diag loop
-    if (MH_CreateHook(obj2, &Sub70BE220_Detour, (LPVOID*)&g_sub70BE220Orig) == MH_OK && MH_EnableHook(obj2) == MH_OK)
-        tprintf("[obj2] hooked sub_1870BE220 (obj[2] Create) @ %p\n", obj2);
-    else
-        tprintf("[obj2] FAILED to hook sub_1870BE220 @ %p\n", obj2);
+    // Native reimpl of the 7 virtualized scene-singleton CreateSingleton<T> thunks -> real CreateObject + handle
+    // store. The real CreateSingletons manager (kSceneReimplLoop=false) drives the loop; these 7 detours replace
+    // the VM bodies that hang, the other 92 singletons run untouched.
+    for (int i = 0; i < 7; ++i)
+    {
+        void* t = (void*)(base + kScnThunkRva[i]);
+        if (MH_CreateHook(t, g_scnReimplDetour[i], &g_scnReimplOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[rsg] hooked %s CreateSingleton thunk (sub_18%X) -> reimpl via CreateObject sub_18%X\n",
+                    kScnNames[i], kScnThunkRva[i], kScnCreateObjRva[i]);
+        else
+            tprintf("[rsg] FAILED to hook %s thunk sub_18%X @ %p\n", kScnNames[i], kScnThunkRva[i], t);
+    }
     void* nm = (void*)(base + 0x60F430);   // CMemMng::NMalloc -- size-log gated on g_scnIter ([scene] loop arms it)
     if (MH_CreateHook(nm, &NMalloc_Detour, (LPVOID*)&g_nmallocOrig) == MH_OK && MH_EnableHook(nm) == MH_OK)
         tprintf("[nmsz] hooked CMemMng::NMalloc (base+0x60F430) @ %p [logs only inside CreateSingleton iters]\n", nm);

@@ -1259,6 +1259,132 @@ static void DumpSceneObject(void* obj, const char* label)
             tprintf("[scene]     vtbl[%d] = DuniaDemo+0x%llX%s\n", i, m[i] - base, SceneVirtTag(m[i], base));
     tprintf("[scene] === end %s ===\n", label);
 }
+
+// --- Per-singleton capture (NORMAL run) --------------------------------------------------------------------
+// The 7 virtualized CreateSingleton<T> that HANG in manual-load run fine here (Denuvo VM bootstrapped). For each
+// we capture (a) its NMalloc size, (b) the constructed instance bytes+vtbl, (c) the .data slot (ms_pInstance) it
+// is stored into -- everything a manual-load capture-and-replay reimpl needs (alloc size + bytes + where to store).
+static thread_local int                g_scnIter       = -1;   // >=0 while inside a hooked CreateSingleton
+static thread_local unsigned long long g_scnFirstAlloc = 0;    // 1st NMalloc during it = the instance ptr
+
+// CMemMng::NMalloc (RVA 0x60F430): log size/align only while a CreateSingleton is armed; record the first alloc.
+typedef void* (__fastcall* NMalloc_t)(unsigned long long size, unsigned long long align);
+static NMalloc_t g_nmallocOrig = nullptr;
+#include <intrin.h>
+#pragma intrinsic(_ReturnAddress)
+void* __fastcall NMalloc_Detour(unsigned long long size, unsigned long long align)
+{
+    void* ret = _ReturnAddress();                 // caller of NMalloc = CSceneObjectContainer<T>::CreateObject
+    void* p = g_nmallocOrig(size, align);
+    if (g_scnIter >= 0)
+    {
+        unsigned long long base = (unsigned long long)GetModuleHandleW(L"DuniaDemo_clang_64_dx11.dll");
+        tprintf("[nmsz]   NMalloc(size=%llu (0x%llX), align=%llu) = %p  caller=DuniaDemo+0x%llX%s\n",
+                size, size, align, p, (unsigned long long)ret - base, SceneVirtTag((unsigned long long)ret, base));
+        fflush(stdout);
+        if (!g_scnFirstAlloc)
+        {
+            g_scnFirstAlloc = (unsigned long long)p;
+            // First alloc = the sizeof(T) object alloc, so its caller IS CreateObject<T>. Walk a few frames to
+            // show CreateObject -> CreateSingleton and flag which land in the .rsrc VM band. If CreateObject (the
+            // NMalloc caller) is NOT flagged, the manual-load reimpl can just call the real CreateObject.
+            void* bt[10] = {};
+            USHORT n = RtlCaptureStackBackTrace(1, 10, bt, nullptr);
+            for (USHORT i = 0; i < n; ++i)
+            {
+                unsigned long long a = (unsigned long long)bt[i];
+                if (a - base < 0x40000000ull)     // DuniaDemo frames only
+                    tprintf("[nmsz]     frame[%u] = DuniaDemo+0x%llX%s\n", i, a - base, SceneVirtTag(a, base));
+            }
+            fflush(stdout);
+        }
+    }
+    return p;
+}
+
+// Scan the module's writable sections (.data etc.) for an 8-byte pointer value -> the global (ms_pInstance) slot
+// the singleton was stored into. Reports each hit as DuniaDemo+RVA so the manual-load reimpl can write the same slot.
+static void ScanDataForPtr(unsigned long long needle, const char* label)
+{
+    unsigned long long base = (unsigned long long)GetModuleHandleW(L"DuniaDemo_clang_64_dx11.dll");
+    if (!base || !needle) return;
+    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
+    IMAGE_NT_HEADERS64* nt = (IMAGE_NT_HEADERS64*)(base + dos->e_lfanew);
+    IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    int found = 0;
+    for (int s = 0; s < nt->FileHeader.NumberOfSections && found < 8; ++s)
+    {
+        if (!(sec[s].Characteristics & IMAGE_SCN_MEM_WRITE)) continue;   // globals live in writable sections
+        unsigned long long start = base + sec[s].VirtualAddress;
+        unsigned long long size  = sec[s].Misc.VirtualSize;
+        __try
+        {
+            for (unsigned long long off = 0; off + 8 <= size; off += 8)
+                if (*(unsigned long long*)(start + off) == needle)
+                {
+                    tprintf("[scnsg]     %s slot: DuniaDemo+0x%llX (in %.8s)\n",
+                            label, (start + off) - base, (char*)sec[s].Name); fflush(stdout);
+                    if (++found >= 8) break;
+                }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    if (!found) { tprintf("[scnsg]     %s: instance ptr not found in any writable section\n", label); fflush(stdout); }
+}
+
+// The 7 virtualized CreateSingleton<T> thunks (from the survey). Called as (*(*this+0x10))(this) -> only rcx is
+// meaningful; forward 4 slots so rdx/r8/r9 pass through. Each arms the NMalloc capture, calls orig (works here),
+// then dumps the constructed instance + finds its .data slot.
+typedef __int64 (__fastcall* ScnThunk_t)(void* a1, void* a2, void* a3, void* a4);
+static ScnThunk_t  g_scnThunkOrig[7] = {};
+static const char* g_scnThunkName[7] =
+    { "obj2_CSceneRendererConfig", "obj9", "obj47", "obj64", "obj68", "obj74", "obj91" };
+static __int64 ScnThunkCommon(int idx, void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[scnsg] %s::CreateSingleton(this=%p) ENTER\n", g_scnThunkName[idx], a1); fflush(stdout);
+    g_scnIter = idx;
+    g_scnFirstAlloc = 0;
+    __int64 r = g_scnThunkOrig[idx](a1, a2, a3, a4);
+    g_scnIter = -1;
+    tprintf("[scnsg] %s::CreateSingleton RETURNED = 0x%llX  (1st NMalloc @ 0x%llX)\n",
+            g_scnThunkName[idx], (unsigned long long)r, g_scnFirstAlloc); fflush(stdout);
+    __try
+    {
+        unsigned long long inst = g_scnFirstAlloc ? g_scnFirstAlloc : (unsigned long long)r;
+        if (inst)
+        {
+            char lbl[64]; sprintf_s(lbl, sizeof(lbl), "%s instance", g_scnThunkName[idx]);
+            DumpSceneObject((void*)inst, lbl);
+            ScanDataForPtr(inst, g_scnThunkName[idx]);
+            // The instance wasn't in .data -> check where it went. First the `this` type-info object (a module
+            // static): if it holds the ptr, that offset is the store slot the reimpl must write. `this` RVA is
+            // stable across runs (static), so DuniaDemo+0x<thisRVA>+off is the concrete global to reproduce.
+            unsigned long long modBase = (unsigned long long)GetModuleHandleW(L"DuniaDemo_clang_64_dx11.dll");
+            unsigned long long thisObj = (unsigned long long)a1;
+            tprintf("[scnsg]     this @ DuniaDemo+0x%llX -- scan first 0x100 bytes for the instance ptr:\n",
+                    thisObj - modBase);
+            bool inThis = false;
+            for (int off = 0; off < 0x100; off += 8)
+                if (*(unsigned long long*)(thisObj + off) == inst)
+                {
+                    tprintf("[scnsg]       -> this+0x%X holds it  (store slot = DuniaDemo+0x%llX)\n",
+                            off, (thisObj + off) - modBase); inThis = true;
+                }
+            if (!inThis) tprintf("[scnsg]       -> not in this; likely the 16-byte registration node / heap registry\n");
+            DumpSceneObject((void*)thisObj, "this (type-info)");
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[scnsg] %s post-dump faulted\n", g_scnThunkName[idx]); fflush(stdout); }
+    return r;
+}
+static __int64 __fastcall ScnThunk0_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(0, a1, a2, a3, a4); }
+static __int64 __fastcall ScnThunk1_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(1, a1, a2, a3, a4); }
+static __int64 __fastcall ScnThunk2_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(2, a1, a2, a3, a4); }
+static __int64 __fastcall ScnThunk3_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(3, a1, a2, a3, a4); }
+static __int64 __fastcall ScnThunk4_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(4, a1, a2, a3, a4); }
+static __int64 __fastcall ScnThunk5_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(5, a1, a2, a3, a4); }
+static __int64 __fastcall ScnThunk6_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(6, a1, a2, a3, a4); }
+
 __int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
 {
     tprintf("[scene] CSceneObjectManager::CreateSingletons(this=%p a2=0x%llX) ENTER\n",
@@ -1336,6 +1462,17 @@ void Misc::Initialize()
     // Scene-singleton boot trace (offset = RVA - 0xA00). CSceneObjectManager::CreateSingletons; flags the
     // indirect-call target that lands in the .rsrc VM region (virtualized -> hangs the VM). WDLLauncher parity.
     HookOffset3(0x707B240 + 0xA00, &Sub707BC40_Detour,            reinterpret_cast<LPVOID*>(&g_sub707BC40Orig)); // sub_18707BC40
+
+    // Per-singleton capture (normal run, VM bootstrapped): NMalloc size-gate + the 7 virtualized CreateSingleton<T>
+    // thunks. Each dumps its instance + finds its .data slot -- the reimpl recipe for manual-load (offsets = RVA-0xA00).
+    HookOffset3(0x60EA30  + 0xA00, &NMalloc_Detour,   reinterpret_cast<LPVOID*>(&g_nmallocOrig));      // CMemMng::NMalloc 0x60F430
+    HookOffset3(0x70BD820 + 0xA00, &ScnThunk0_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[0]));  // obj2  0x70BE220
+    HookOffset3(0x70BA5A0 + 0xA00, &ScnThunk1_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[1]));  // obj9  0x70BAFA0
+    HookOffset3(0x709ADD0 + 0xA00, &ScnThunk2_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[2]));  // obj47 0x709B7D0
+    HookOffset3(0x70BA820 + 0xA00, &ScnThunk3_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[3]));  // obj64 0x70BB220
+    HookOffset3(0x7094EE0 + 0xA00, &ScnThunk4_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[4]));  // obj68 0x70958E0
+    HookOffset3(0x70930A0 + 0xA00, &ScnThunk5_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[5]));  // obj74 0x7093AA0
+    HookOffset3(0x70BDF20 + 0xA00, &ScnThunk6_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[6]));  // obj91 0x70BE920
 
     // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
     // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).

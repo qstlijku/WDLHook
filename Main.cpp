@@ -17,7 +17,7 @@ void Main::Initialize() {
 	if (!g_logFile)
 	{
 		char logpath[MAX_PATH];
-		sprintf_s(logpath, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\wdlhook_log_%lu.txt", GetCurrentProcessId());
+		sprintf_s(logpath, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\logs\\wdlhook_log_%lu.txt", GetCurrentProcessId());
 		fopen_s(&g_logFile, logpath, "w");
 	}
 	Misc::InstallEarlyHooks();
@@ -45,7 +45,7 @@ void Main::ShowConsole() {
 	if (!g_logFile) // normally already open from Main::Initialize's early capture -- don't truncate it
 	{
 		char logpath[MAX_PATH];
-		sprintf_s(logpath, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\wdlhook_log_%lu.txt", GetCurrentProcessId());
+		sprintf_s(logpath, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\logs\\wdlhook_log_%lu.txt", GetCurrentProcessId());
 		fopen_s(&g_logFile, logpath, "w");
 	}
 	fopen_s(&g_logFile2, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\anim_pose.h", "w");
