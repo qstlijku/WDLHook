@@ -239,6 +239,104 @@ static void InstallCheckpoints(uintptr_t base)
 // which _ReturnAddress() reads. APPEND-ONLY, same rules as kChkRvasIE.
 static uintptr_t g_chkBase = 0;   // module base, set by InstallCheckpointsRA, for caller-RVA math
 
+// ===================================================================================================
+// Crash-bracket checkpoints: pass-through ENTER/RETURN log on every direct + virtual call between
+// CEngine::InitializeCore and CEngine::Initialize in CDuniaEngineInitBase::Init (sub_1800037A0), so the
+// post-InitializeCore Denuvo-VM crash localizes to "last ENTER without a RETURN" -- no debugger stepping.
+// Generic 4-ptr __fastcall thunk (correct for these int/ptr-arg fns). The 3 virtuals are a1's vtable
+// (off_189DBE560) resolved: +0x60/+0x78/+0x88. Excludes CMemMng::NMalloc + CGame::GetInstance (hot noise;
+// both are bracketed by neighbors anyway). Already-hooked (InitializeCore/CreateAndInitGamerProfileManager/
+// Initialize) are omitted here to avoid double-hooking.
+
+// OLD broad bracket (InitializeCore..Initialize) -- too noisy now (sub_189372994/A2C container loops etc.).
+// Commented out; kept for reference. Swap the two kChkRvas definitions to restore.
+/*
+static const uintptr_t kChkRvasOld[] = {
+    0x54F0,    // sub_1800054F0 = vtbl+120 -- FIRST call after InitializeCore (CreateEngineWindow)
+    0x6D7B20,  // sub_1806D7B20 (-profile_game_init check)
+    0x1217660, // sub_181217660 (game_init; only if -profile_game_init set -- may not fire)
+    0x56A0,    // sub_1800056A0 = vtbl+136
+    0x7EA95D0, // sub_187EA95D0
+    0x1202D60, // sub_181202D60
+    0x6BD4020, // sub_186BD4020
+    0x1DFE3E0, // sub_181DFE3E0
+    0x6BD4070, // sub_186BD4070
+    0x6980590, // sub_186980590
+    0x687F3C0, // sub_18687F3C0
+    0x6024B10, // sub_186024B10
+    0x1217BB0, // sub_181217BB0
+    0x1217CA0, // sub_181217CA0 = CDriverGameCmdLineParser::Init (also called by MyRunGame)
+    0x4E20,    // sub_180004E20 = vtbl+96
+    0x76337A0, // sub_1876337A0
+    0x6FC1920, // sub_186FC1920 -- last before CEngine::Initialize
+    0x76F89C0, // sub_1876F89C0 (1st call in InitializeEngineServices)
+    0x7AD1E90, // sub_187AD1E90
+    0x7AD6AC0, // sub_187AD6AC0 (returns bool -> branches)
+    0x7AD2110, // sub_187AD2110 (last direct before the indirect vtable calls)
+    0x3270,    // sub_180003270 -- runs at +0x38
+    0x67936F0, // sub_1867936F0 (1st call, takes CEngine::ms_instance)
+    0x6751EF0, // sub_186751EF0
+    0x7EA0D20, // sub_187EA0D20
+    0x686EFE0, // sub_18686EFE0
+    0x9EE0,    // sub_180009EE0
+    0xA890,    // sub_18000A890
+    0x8C0FD70, // sub_188C0FD70
+};
+*/
+// PASSED: the CEngineServices::Initialize (sub_1867C0300) singleton-ctor sequence after CScriptSystem::Init.
+// Initialize now RETURNS cleanly, so these are commented out; swap back if it regresses.
+/*
+static const uintptr_t kChkRvasCESInit[] = {
+    0x68C5AB0, // sub_1868C5AB0 (right after CScriptSystem::Init)
+    0x6812250, // sub_186812250
+    0x6876290, // sub_186876290
+    0x687DF00, // sub_18687DF00
+    0x68D53F0, // sub_1868D53F0 (last before CNomadDb ctor #1)
+    0x686F3E0, // sub_18686F3E0 = CNomadDb ctor #2 (into qword_18B481FE0)
+    0x686F5C0, // sub_18686F5C0 = CNomadDb ctor #3 (into qword_18B481FE8)
+    0x63CBF0,  // sub_18063CBF0 = CFreeAllPool::CFreeAllPool(0x4000,16)
+    0x688CCF0, // sub_18688CCF0
+    0x680AC00, // sub_18680AC00
+  //0x680AEF0, // sub_18680AEF0 = CBloombergClient::Initialize -- promoted to a standalone hook (BbgClientInit_Detour)
+    0x6880DC0, // sub_186880DC0
+    0x67C18B0, // sub_1867C18B0(a1)
+    0x6CE640,  // sub_1806CE640
+    0x7E97C20, // sub_187E97C20
+    0x68C16F0, // sub_1868C16F0
+    0x6C69C0,  // sub_1806C69C0
+    0x6CA570,  // sub_1806CA570
+    0x77F5010, // sub_1877F5010
+    0x7E879C0, // sub_187E879C0
+    0x7E88990, // sub_187E88990
+    0x7E885E0, // sub_187E885E0
+    0x7E8A090, // sub_187E8A090
+    0x6817760, // sub_186817760
+    0x68D9E60, // sub_1868D9E60
+    0x67CAA80, // sub_1867CAA80
+    0x6821DF0, // sub_186821DF0
+    0x6822B60, // sub_186822B60
+    0x68EB040, // sub_1868EB040
+    0x686B2D0, // sub_18686B2D0 (last -- near end of Initialize)
+};
+*/
+// ACTIVE: callees of CEngine::InitializeEngineServices (sub_1867936F0) AFTER its 2nd CConfig::LoadConfig
+// (call site 0x67938B9). Boot now completes Initialize + both LoadConfigs + the language resolution
+// (sub_1805C48C0 -> str2enum) then HANGS in a VM spin before CEngine::Initialize -- bracket these callees so
+// the last ENTER without a RETURNED names the stuck one. Order matches the disasm of sub_1867936F0;
+// sub_1805C48C0 is the last confirmed-reached call, sub_186875450 (right after) is the prime suspect.
+// CLEARED (historical): InitializeEngineServices callees -- all passed.
+static const uintptr_t kChkRvasIES[] = {
+    0x6874B40, // sub_186874B40 (1st call after the 2nd CConfig::LoadConfig)
+    0x67C2420, // sub_1867C2420
+    0x6875450, // sub_186875450 -- runs a big 196K-iter loop over sub_1805C48C0 (completes; slow only due to us)
+    0x9DBDBE0, // sub_189DBDBE0
+    0x6CFA30,  // sub_1806CFA30
+    0x6793C50, // sub_186793C50
+    0x77FB640, // sub_1877FB640
+    0x77FB740, // sub_1877FB740
+    0x686CBC0, // sub_18686CBC0 (last call before InitializeEngineServices returns)
+};
+
 static const uintptr_t kChkRvasRA[] = {
     0x68715C0, // sub_1868715C0  (CNomadDb library register cluster; also a sub_1875F8980 callee)
     0x686EFE0, // sub_18686EFE0
