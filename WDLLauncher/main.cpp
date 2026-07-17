@@ -2252,7 +2252,8 @@ static __int64 __fastcall Sub7D5E810_Detour(
         s_gate884Installed = true;
         uintptr_t rbase = (uintptr_t)GetModuleHandleW(kRendererDll);
         InstallGate884(rbase);
-        InstallChkPhys(rbase);   // [pcfg]: the 2 CPhysConfig config virtuals (installs even if kGate884=false)
+        InstallChkPhys(rbase);    // [pcfg]: the 2 CPhysConfig config virtuals (installs even if kGate884=false)
+        InstallGate884Ra(rbase);  // [g884ra]: call_once trio (sub_189372994/A2C/F90) with _ReturnAddress (the caller)
     }
     g_gate7d5 = true;   // arm the [g884] subtree trace for the duration of this call
     ++g_chkDepth;
@@ -2312,6 +2313,8 @@ static __int64 __fastcall Sub7E3A650_Detour(
     return r;
 }
 
+static bool isInRegSingle = false;
+
 // Dedicated hooks for sub_186884560 (a direct callee of sub_187D5E810) + its callee sub_186883920 (called from
 // 0x18684845A3 inside it). Both take 6 args; arg3 is a const char* (name/tag), arg5 is likely a const char* too
 // (not printed). Exact 6-arg signature (no 16-arg forward) so the calling convention stays intact. Pulled from
@@ -2320,6 +2323,7 @@ typedef __int64 (__fastcall* Sub6884560_t)(void*, void*, const char*, void*, con
 static Sub6884560_t g_sub6884560Orig = nullptr;
 static __int64 __fastcall Sub6884560_Detour(void* a1, void* a2, const char* a3, void* a4, const char* a5, void* a6)
 {
+    isInRegSingle = true;
     tprintf("[884] t%-5lu d%-2d sub_186884560 a1=%p a2=%p a3=%s a4=%p a6=%p ENTER\n",
             GetCurrentThreadId(), g_chkDepth, a1, a2, a3, a4, a6); fflush(stdout);
     ++g_chkDepth;
@@ -2343,8 +2347,14 @@ static __int64 __fastcall Sub6883920_Detour(void* a1, void* a2, const char* a3, 
     ++g_chkDepth;
     __int64 r = g_sub6883920Orig(a1, a2, a3, a4, a5, a6);
     --g_chkDepth;
-    tprintf("[883] t%-5lu d%-2d sub_186883920 RETURNED = 0x%llX\n",
-            GetCurrentThreadId(), g_chkDepth, (unsigned long long)r); fflush(stdout);
+    // r = v10 (the CPhysConfig). Read its vtable + slot [+0x38] at RUNTIME to confirm *(*v10+56) directly
+    // (vs static resolution to sub_1877FA110). SEH-guarded in case v10 is unexpected.
+    void* v10 = (void*)r;
+    uintptr_t vt = 0, slot38 = 0;
+    __try { vt = *(uintptr_t*)v10; slot38 = *(uintptr_t*)(vt + 0x38); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    tprintf("[883] t%-5lu d%-2d sub_186883920 RETURNED v10=%p  *v10(vtable)=DuniaDemo+0x%llX  *(*v10+56)=DuniaDemo+0x%llX\n",
+            GetCurrentThreadId(), g_chkDepth, v10, (unsigned long long)(vt - base), (unsigned long long)(slot38 - base)); fflush(stdout);
     return r;
 }
 
@@ -2385,6 +2395,24 @@ static void __fastcall Sub7D0BB30_Detour(__int64 a1)
     tprintf("CPhysConfig reset values called\n");
     //g_sub7D0BB30Orig(a1);
     tprintf("[pbb] sub_187D0BB30 skipped\n");
+}
+
+// Dedicated hook for sub_1877FA110 = CPhysConfig::vtable[+0x38] (runtime-confirmed = *(*v10+56)). A generic
+// broadcast method (~16k calls/boot from d0 onward) that fetches a collection via this->vtable[+0x58] and calls
+// each element's vtable[+8](elem, v13, this, v15); the 0x21B2B9F4 VM crash surfaces inside it. 3 __int64 args.
+// NOTE: noisy by nature -- lean lines (no tid/depth) per detour-logging-style.
+typedef __int64 (__fastcall* Sub7FA110_t)(__int64 a1, __int64 a2, __int64 a3);
+static Sub7FA110_t g_sub7FA110Orig = nullptr;
+static __int64 __fastcall Sub7FA110_Detour(__int64 a1, __int64 a2, __int64 a3)
+{
+    if (isInRegSingle)
+    {
+        tprintf("[fa1] sub_1877FA110(a1=0x%llX a2=0x%llX a3=0x%llX) ENTER\n",
+            (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3); fflush(stdout);
+    }
+    __int64 r = g_sub7FA110Orig(a1, a2, a3);
+    //tprintf("[fa1] sub_1877FA110 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
 }
 
 // Native reimpl of hkFreeListAllocator::setMemorySoftLimit -- retail thunk sub_188D067D0 -> virtualized
@@ -2621,6 +2649,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[pbb] hooked sub_187D0BB30 (VM thunk) @ %p\n", sbb);
     else
         tprintf("[pbb] FAILED to hook sub_187D0BB30 @ %p\n", sbb);
+    void* sfa1 = (void*)(base + 0x77FA110);   // CPhysConfig::vtable[+0x38] broadcast (runtime-confirmed *(*v10+56))
+    if (MH_CreateHook(sfa1, &Sub7FA110_Detour, (LPVOID*)&g_sub7FA110Orig) == MH_OK && MH_EnableHook(sfa1) == MH_OK)
+        tprintf("[fa1] hooked sub_1877FA110 @ %p\n", sfa1);
+    else
+        tprintf("[fa1] FAILED to hook sub_1877FA110 @ %p\n", sfa1);
     void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
     if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)
         tprintf("[phys] hooked sub_188D06EA0 (physics-world allocator init) @ %p\n", s8d0);

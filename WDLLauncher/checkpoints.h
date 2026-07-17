@@ -82,7 +82,7 @@ static const uintptr_t kChkRvasIE[] = {
     0x60AD8D0, 0x7802ED0, 0x60AD900, 0x60F90C0, 0x60D7A90, 0x6110E90, 0x6121760, 0x66098F0,
     0x6121220, 0x64B0A70, 0x677BAD0, 0x60278C0, 0x6794680, 0x6794A30, 0x6245A20, 0x6796300,
     0x677CA00, 0x657EEB0, 0x6371A40, 0x63B2C40, 0x63B56B0, 0x665E2D0, 0x64A2170, 0x64A7FF0,
-    0x2ABFD80, 0x5B89E0,  0x5A6FD80, 0x684E200, 0x60ADBC0, 0x7D1B6C0, 0x656E250, 0x6027190,
+    0x2ABFD80, 0x5A6FD80, 0x684E200, 0x60ADBC0, 0x7D1B6C0, 0x656E250, 0x6027190,
     0x671D890, 0x671E600, 0x6720730, 0x672FF20, 0x671B150, 0x6640DD0, 0x6641010,  // 0x6884560 -> dedicated [884] hook
     0x6640770, 0x63D5740, 0x60A5710, 0x6373BA0, 0x636FA80, 0x63CE370, 0x63CE910, 0x7256AE0,
     0x173220,  0xD6DE0,   0x60EC860, 0x673CF10, 0x7633530, 0x661E530, 0x643EA50, 0x6445590,
@@ -237,13 +237,13 @@ static void InstallCheckpoints(uintptr_t base)
 static volatile bool g_gate7d5 = false;   // armed while sub_187D5E810 runs (set by Sub7D5E810_Detour in main.cpp)
 static const uintptr_t kGate884Rvas[] = {
     0x20DB0,   0xCE950,   0x10A1D0,  0x162880,  0x1FD980,  0x5B56E0,  0x5B7430,  0x5BD700,
-    0x5C1C40,  0x5C1CA0,  0x5C3B80,  0x5C3DD0,  0x5E42D0,  0x5E9F10,
+    0x5C1CA0,  0x5C3DD0,  0x5E42D0,  0x5E9F10,
     0x60BCE0,  0x60BEC0,  0x60F430,  0x615AD0,  0x618340,  0x61D010,  0x63E0A0,  0x63E620,
-    0x675980,  0x675D10,  0x69AB10,  0x69CA50,  0x69CA90,  0x6D9250,  0x6D9750,
+    0x675980,  0x675D10,  0x69AB10,  0x69CA50,  0x69CA90,  0x6D9250,
     0x6F7180,  0x6F7210,  0x17FAA50, 0x17FAB80, 0x6883BC0, 0x6883FA0, 0x6884290,  // 0x6883920 -> dedicated [883] hook
     0x6898280, 0x689CBF0, 0x68B3D70, 0x68B3EF0, 0x68B40E0, 0x68B44B0, 0x68B4640,  // 0x6884560 -> dedicated [884] hook
     0x68B48C0, 0x68B4BD0, 0x68B51F0, 0x6921D60, 0x6921DB0, 0x69221C0, 0x77F47F0, 0x77F6E50,
-    0x77F72C0, 0x77F7C00, 0x8C18AA0, 0x9372994, 0x9372A2C, 0x9372F90, 0x94F3F68,
+    0x77F72C0, 0x77F7C00, 0x8C18AA0, 0x94F3F68,  // 0x9372994/A2C/F90 (call_once trio) -> [g884ra] gated-RA set below
     0x94F40AC, 0x94F4120,
 };
 static const int kNumGate884 = (int)(sizeof(kGate884Rvas) / sizeof(kGate884Rvas[0]));
@@ -338,6 +338,64 @@ static void InstallChkPhys(uintptr_t base)
             tprintf("[pcfg] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasPhys[i]), tgt);
         else
             tprintf("[pcfg] FAILED sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasPhys[i]), tgt);
+    }
+    fflush(stdout);
+}
+
+// ===================================================================================================
+// [g884ra] -- gated RA variant of [g884]: same silent-until-sub_187D5E810 gating, but ALSO prints _ReturnAddress
+// (the CALLER) for functions invoked from an unhooked site in the physics window where we need to know WHO calls
+// them. Moved the std::call_once trio (sub_189372994/A2C/F90) here -- they fire after sub_180675D10 returns from
+// some unhooked caller, and RA shows which. Separate array + pool. Lazy-installed with g884.
+static uintptr_t g_gate884RaBase = 0;
+static const uintptr_t kGate884RaRvas[] = {
+    0x9372994,  // std::call_once internal
+    0x9372A2C,  // std::call_once internal
+    0x9372F90,  // std::call_once internal
+};
+static const int kNumGate884Ra = (int)(sizeof(kGate884RaRvas) / sizeof(kGate884RaRvas[0]));
+static const int kGate884RaPool = 8;   // >= kNumGate884Ra
+static_assert(kGate884RaPool >= kNumGate884Ra, "kGate884RaPool too small for kGate884RaRvas");
+static ChkFn_t g_gate884RaOrig[kGate884RaPool];
+
+template<int N> static __int64 __fastcall Gate884RaThunk(
+    void* p0, void* p1, void* p2, void* p3, void* p4, void* p5, void* p6, void* p7,
+    void* p8, void* p9, void* p10, void* p11, void* p12, void* p13, void* p14, void* p15)
+{
+    void* ra = _ReturnAddress();   // MUST be first: the original caller
+    const bool g = g_gate7d5;
+    if (g)
+    {
+        const unsigned long long fn = 0x180000000ull + kGate884RaRvas[N];
+        tprintf("[g884ra] t%-5lu d%-2d %*ssub_%llX ENTER  caller=%p (DuniaDemo+0x%llX)\n",
+                GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn, ra, (unsigned long long)((uintptr_t)ra - g_gate884RaBase)); fflush(stdout);
+        ++g_chkDepth;
+    }
+    __int64 r = g_gate884RaOrig[N](p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15);
+    if (g)
+    {
+        --g_chkDepth;
+        const unsigned long long fn = 0x180000000ull + kGate884RaRvas[N];
+        tprintf("[g884ra] t%-5lu d%-2d %*ssub_%llX RETURNED\n", GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn); fflush(stdout);
+    }
+    return r;
+}
+
+template<size_t... I>
+static std::array<ChkFn_t, sizeof...(I)> MakeGate884RaThunks(std::index_sequence<I...>) { return {{ &Gate884RaThunk<I>... }}; }
+static const std::array<ChkFn_t, kGate884RaPool> g_gate884RaThunks = MakeGate884RaThunks(std::make_index_sequence<kGate884RaPool>{});
+
+static void InstallGate884Ra(uintptr_t base)
+{
+    g_gate884RaBase = base;
+    MH_Initialize();
+    for (int i = 0; i < kNumGate884Ra; ++i)
+    {
+        void* tgt = (void*)(base + kGate884RaRvas[i]);
+        if (MH_CreateHook(tgt, (LPVOID)g_gate884RaThunks[i], (LPVOID*)&g_gate884RaOrig[i]) == MH_OK && MH_EnableHook(tgt) == MH_OK)
+            tprintf("[g884ra] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kGate884RaRvas[i]), tgt);
+        else
+            tprintf("[g884ra] skip sub_%llX @ %p (already hooked / failed)\n", (unsigned long long)(0x180000000 + kGate884RaRvas[i]), tgt);
     }
     fflush(stdout);
 }
@@ -454,7 +512,7 @@ static const uintptr_t kChkRvasRA[] = {
     0x68715C0, // sub_1868715C0  (CNomadDb library register cluster; also a sub_1875F8980 callee)
     0x686EFE0, // sub_18686EFE0
     0x6870070, // sub_186870070
-    0x686E950, // sub_18686E950
+    //0x686E950, // sub_18686E950
     0x7F12760, // sub_187F12760  (fires on its own worker thread -- RA will show a different caller)
 };
 static const int kNumChkRA = (int)(sizeof(kChkRvasRA) / sizeof(kChkRvasRA[0]));

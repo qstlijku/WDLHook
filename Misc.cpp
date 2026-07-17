@@ -1472,6 +1472,16 @@ __int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
     return r;
 }
 
+typedef void(__fastcall* Sub7D0BB30_t)(__int64 a1);
+static Sub7D0BB30_t g_sub7D0BB30Orig = nullptr;
+static void __fastcall Sub7D0BB30_Detour(__int64 a1)
+{
+    // TODO: Reimpl CPhysConfig::ResetValues (this) (called at the very end of CPhysConfig ctor)
+    tprintf("CPhysConfig reset values called\n");
+    //g_sub7D0BB30Orig(a1);
+    tprintf("[pbb] sub_187D0BB30 skipped\n");
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -1496,6 +1506,7 @@ void Misc::Initialize()
     // Scene-singleton boot trace (offset = RVA - 0xA00). CSceneObjectManager::CreateSingletons; flags the
     // indirect-call target that lands in the .rsrc VM region (virtualized -> hangs the VM). WDLLauncher parity.
     HookOffset3(0x707B240 + 0xA00, &Sub707BC40_Detour,            reinterpret_cast<LPVOID*>(&g_sub707BC40Orig)); // sub_18707BC40
+    HookOffset3(0x707B240 + 0xA00, &Sub7D0BB30_Detour, reinterpret_cast<LPVOID*>(&g_sub7D0BB30Orig)); // sub_18707BC40
 
     // Per-singleton capture (normal run, VM bootstrapped): NMalloc size-gate + the 7 virtualized CreateSingleton<T>
     // thunks. Each dumps its instance + finds its .data slot -- the reimpl recipe for manual-load (offsets = RVA-0xA00).
