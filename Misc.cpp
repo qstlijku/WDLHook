@@ -1385,6 +1385,40 @@ static __int64 __fastcall ScnThunk4_Detour(void* a1, void* a2, void* a3, void* a
 static __int64 __fastcall ScnThunk5_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(5, a1, a2, a3, a4); }
 static __int64 __fastcall ScnThunk6_Detour(void* a1, void* a2, void* a3, void* a4) { return ScnThunkCommon(6, a1, a2, a3, a4); }
 
+// hkFreeListAllocator::setMemorySoftLimit passthrough (NORMAL run) -- verify the launcher reimpl's field offset
+// live + illuminate the allocator. MI: hkFreeListAllocator : hkMemoryAllocator, hkMemoryAllocator::ExtendedInterface
+// (sizeof 0x1578); setMemorySoftLimit is an ExtendedInterface method so its 'this' = allocator_base + 8. Struct
+// offsets below are from the BASE (this-8): m_softLimit @ 0x1568 == this+0x1560 (what the reimpl writes).
+typedef int* (__fastcall* SetSoftLimit_t)(void* this_, int* maxMemory, unsigned long long a3);
+static SetSoftLimit_t g_ssl_orig = nullptr;
+int* __fastcall SetMemorySoftLimit_Passthru(void* this_, int* maxMemory, unsigned long long a3)
+{
+    char* base = (char*)this_ - 8;
+    static const struct { const char* name; int off; } F[] = {
+        { "m_totalBytesInFreeLists", 0x38 }, { "m_peakInUse", 0x40 }, { "m_allocator", 0x48 },
+        { "m_allocatorExtended", 0x50 }, { "m_numFreeLists(i32)", 0x360 }, { "m_topFreeList", 0x368 },
+        { "m_lastFreeList", 0x370 }, { "m_softLimit", 0x1568 }, { "m_incrementalFreeListIndex(i32)", 0x1570 },
+    };
+    unsigned long long before[16] = {};
+    __try { for (int i = 0; i < 9; ++i) before[i] = *(unsigned long long*)(base + F[i].off); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    int* r = g_ssl_orig ? g_ssl_orig(this_, maxMemory, a3) : nullptr;
+    tprintf("[ssl] setMemorySoftLimit(base=%p a3=0x%llX)  field  before -> after\n", base, a3);
+    __try
+    {
+        for (int i = 0; i < 9; ++i)
+        {
+            unsigned long long aft = *(unsigned long long*)(base + F[i].off);
+            const char* tag = (before[i] != aft && aft == a3) ? "  <== set to a3 (this+0x1560 CONFIRMED)"
+                            : (before[i] != aft) ? "  <== CHANGED" : "";
+            tprintf("[ssl]   +0x%-6X %-32s 0x%016llX -> 0x%016llX%s\n", F[i].off, F[i].name, before[i], aft, tag);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    fflush(stdout);
+    return r;
+}
+
 __int64 __fastcall Sub707BC40_Detour(void* a1, __int64 a2)
 {
     tprintf("[scene] CSceneObjectManager::CreateSingletons(this=%p a2=0x%llX) ENTER\n",
@@ -1473,6 +1507,10 @@ void Misc::Initialize()
     HookOffset3(0x7094EE0 + 0xA00, &ScnThunk4_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[4]));  // obj68 0x70958E0
     HookOffset3(0x70930A0 + 0xA00, &ScnThunk5_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[5]));  // obj74 0x7093AA0
     HookOffset3(0x70BDF20 + 0xA00, &ScnThunk6_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[6]));  // obj91 0x70BE920
+
+    // hkFreeListAllocator::setMemorySoftLimit thunk sub_188D067D0 (RVA 0x8D067D0) -- confirm the launcher reimpl's
+    // this+0x1560 write matches the real VM-bootstrapped function's, and dump the allocator fields around the call.
+    HookOffset3(0x8D05DD0 + 0xA00, &SetMemorySoftLimit_Passthru, reinterpret_cast<LPVOID*>(&g_ssl_orig));  // sub_188D067D0
 
     // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
     // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).

@@ -4,14 +4,14 @@
 // and transparently forwards to the original (16 args, so >4-arg targets are safe). Trace how far a boot
 // phase gets and pin the function that hangs/crashes (an ENTER with no matching RETURNED).
 //
-// >>> TO ADD CHECKPOINTS: append the RVA to kChkRvasIE below -- that is all. The 160-thunk pool has
+// >>> TO ADD CHECKPOINTS: append the RVA to kChkRvasIE below -- that is all. The kChkThunkPool has
 // >>> headroom, kNumChk auto-derives from the array size, and InstallCheckpoints installs the first kNumChk.
 // >>> APPEND-ONLY: do not rename / swap / replace these structures (past churn came from swapping arrays in
 // >>> place). RVA = IDA VA - 0x180000000 (the hex after "sub_18"). If you exceed the pool, bump
 // >>> kChkThunkPool (one constant) -- g_chkOrig and g_chkThunks resize automatically.
 //
-// DEPENDENCIES (why main.cpp #includes this mid-file, not at the top): it uses tprintf(), MinHook (MH_*),
-// and the kCheckpoints flag -- all declared above the include point in main.cpp.
+// SELF-CONTAINED: this header owns tprintf()/g_logFile + the kCheckpoints flag (moved here from main.cpp), so
+// main.cpp #includes it near the top. Only external dependency is MinHook -- include minhook.h before this.
 #pragma once
 #include <array>
 #include <utility>
@@ -23,8 +23,15 @@ static FILE* g_logFile = nullptr;
 static void tprintf(const char* fmt, ...)
 {
     va_list args;
-    va_start(args, fmt); vprintf(fmt, args); va_end(args);
-    if (g_logFile) { va_start(args, fmt); vfprintf(g_logFile, fmt, args); va_end(args); fflush(g_logFile); }
+    __try   // a caller passing a bad %s pointer AVs inside vprintf/vfprintf -- catch it, log WHICH fmt faulted
+    {       // (identifies the culprit call), and keep boot alive instead of dying here.
+        va_start(args, fmt); vprintf(fmt, args); va_end(args);
+        if (g_logFile) { va_start(args, fmt); vfprintf(g_logFile, fmt, args); va_end(args); fflush(g_logFile); }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        if (g_logFile) { fprintf(g_logFile, "[tprintf] FAULT while formatting: %.120s\n", fmt); fflush(g_logFile); }
+    }
 };
 
 // ACTIVE crash-window set: FuncA = CDuniaEngineInitBase::InitializeEngineServices (retail 0x3270..0x36A5).
@@ -93,15 +100,34 @@ static const uintptr_t kChkRvasIE[] = {
     0x7214F60, 0x8C13CD0, 0x727C940, 0x726E3E0, 0x6CEF40,  0x727C980, 0x67BBFA0, 0x727CD00,
     0x726E6B0, 0x760B5C0, 0x73982C0, 0x73982F0,   // 0x73982F0 back as a checkpoint (its 16-arg thunk forwards
     // a3 safely); the dedicated [rndr] hook now targets its callee sub_1875F8980 (the real park) instead.
-    // --- CEngine::Initialize direct callees that were still un-hooked (completes that level's coverage;
-    //     HasParameter 0x6D7B20 + InitializeOnlineInterface 0x6798E80 excluded -- already hooked [eng]/[hang]) ---
-    0x6793540, 0x67936F0, 0x6659F00, 0x5A5B80, 0x9372994, 0x9372F90, 0x9372A2C,
+    // --- CEngine::Initialize direct callees that were still un-hooked (completes that level's coverage).
+    //     Excluded, already hooked separately (would double-hook -> [chk] FAILED): InitializeCore 0x6793540 +
+    //     InitializeEngineServices 0x67936F0 (dedicated hooks), HasParameter 0x6D7B20 + InitializeOnlineInterface
+    //     0x6798E80 ([eng]/[hang]); 0x5A5B80 + the 0x18937 trio 0x9372994/F90/A2C removed -- flood. ---
+    0x6659F00,
     // --- sub_187D5E810 direct callees: depth probe for the new frozen frontier. Last one to ENTER with no
-    //     RETURN under sub_187D5E810 = the hanging call. NMalloc 0x60F430 excluded (flood); 0x5B89E0/0x6884560/
-    //     0x6CEF40/0x8C13CD0 already in set; 0x9372DE0 excluded too (called too many times -> flood); 2 vtable-
-    //     dispatch sites in sub_187D5E810 are unhookable by address (if none of these hang, the culprit is one) ---
-    0x8C369A0, 0x5C2280, 0x7D5E9D6, 0x7E6CB90, 0x7D35900, 0x1B285A0, 0x7D35980, 0x67A3530,
-    0x6885410, 0x7DC4E40, 0x7D296F0, 0x7D5EFB0, 0x9DBCC90, 0x7E534B0, 0x5C3FE0,
+    //     RETURN under sub_187D5E810 = the hanging call. Excluded as flood: NMalloc 0x60F430, 0x9372DE0,
+    //     0x5C3FE0 (17.6k), 0x9DBCC90 (821), 0x5C2280 (435); 0x5B89E0/0x6884560/0x6CEF40/0x8C13CD0 already in
+    //     set; 2 vtable-dispatch sites in sub_187D5E810 are unhookable by address (if none hang, culprit is one) ---
+    0x8C369A0, 0x7D5E9D6, 0x7E6CB90, 0x7D35900, 0x1B285A0, 0x7D35980, 0x67A3530,
+    0x6885410, 0x7DC4E40, 0x7D296F0, 0x7D5EFB0, 0x7E534B0,
+    // --- next frontier: freeze was in sub_187E6CB90 (0x20-byte wrapper) -> sub_187E3A650 (physwind sub-object
+    //     ctor, ~12664 bytes; not a spin itself). Hook sub_187E3A650 + its direct callees to find which hangs.
+    //     Excluded: NMalloc 0x60F430, 0x5C2280 (flood), 0x8C1B250 (list-init, called 3x here -> floods). The
+    //     0x8D0xxxx cluster (worker/job setup) is the prime suspect. ---
+    /* 0x7E3A650 -> dedicated [phys] hook (CPhysWorldImplBase::CPhysWorldImplBase ctor) */
+    0x7D826B0, 0x8BE6350, 0x8BC7690, 0x7D7C0E0, 0x8D09C00, 0x8D05DC0, 0x8D07520, 0x8C18AA0,
+    // --- callees of sub_188D05DC0 (Havok hkFreeListAllocator init): 3 distinct (sub_189541080 is the +96 init
+    //     plus a 41x loop over the hkFixedSizeAllocator array, so it fires ~42x per call). ---
+    0x8D164A0, /* 0x9541080 ~42x/call; 0x8D06EA0 -> dedicated [phys] hook (prints its vtable[+0x18] setMemorySoftLimit call) */
+    // --- sub_188D06EA0 subtree (2-3 layers deep). No spin/wait found in its 20-func closure; the ONLY vtable
+    //     dispatch is sub_188D06EA0's own vtable[+24] call, which fires FIRST (before these).
+    //     REMOVED 0x8D07010: NOT a fn-start -- it is the TAIL of the chunked sub_188D06EA0 itself, so hooking it
+    //     planted a jmp mid-body and corrupted the function (that was the manufactured "+0x160 AV", not a real bug).
+    //     0x8D07030 / 0x8D05C60 / 0x8D05CC0 are VALID entries but are `jmp rel32` THUNKS into the VM band
+    //     (-> sub_1A1807530 / sub_1A1805E30 / VM) -- i.e. MORE virtualized allocator helpers on this path, each a
+    //     candidate for native reimpl like setMemorySoftLimit. Kept as checkpoints to see which fire in manual-load. ---
+    0x8D06D80, 0x95427E0, 0x8D07100, 0x8D07030, 0x8D05C60, 0x8D05CC0,
 };
 static const int kNumChk = (int)(sizeof(kChkRvasIE) / sizeof(kChkRvasIE[0]));
 // Checkpoints must forward ALL args transparently: several targets take >4 args (e.g. sub_1805B89E0 takes 8),

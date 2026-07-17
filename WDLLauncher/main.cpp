@@ -343,7 +343,7 @@ static void InstallKillLogger()
 // instruction pointer of every thread. When boot HANGS the samples converge: a thread stuck at a stable
 // DuniaDemo+RVA is SPINNING there (map the RVA -> function); one stuck at ntdll!NtWaitForSingleObject /
 // NtDelayExecution is BLOCKED on a worker/event/sleep. No debugger needed -- the hang shows up in the log.
-static const bool kWatchdog = true;    // re-enable when we need thread RIP sampling for a hang (ON: InitializeOnlineInterface hang hunt)
+static const bool kWatchdog = false;    // re-enable when we need thread RIP sampling for a hang (ON: InitializeOnlineInterface hang hunt)
 static DWORD g_mainTid = 0;   // the WinMain/boot thread (marked "(BOOT)" in samples)
 static DWORD WINAPI WatchdogThread(LPVOID)
 {
@@ -2234,9 +2234,9 @@ static void* const g_scnReimplDetour[7] = { &ScnReimpl0, &ScnReimpl1, &ScnReimpl
 
 // Dedicated hook for sub_187D5E810 (the frozen frontier) -- its own detour (not the generic ChkThunk) so we can
 // dump args / set a clean breakpoint / later enumerate its 2 vtable-dispatch sites. Pulled from kChkRvasIE to
-// avoid a double-hook. Forwards 16 slots (unknown arity, like ChkThunk). The [chk] direct-callees fire between
-// this ENTER and RETURN, so callee order still pinpoints the hang (this is defined before checkpoints.h is
-// #included, so it can't touch g_chkDepth for indenting -- no nesting indent, but the sequence is what matters).
+// avoid a double-hook. Forwards 16 slots (unknown arity, like ChkThunk) and manages g_chkDepth (checkpoints.h is
+// now #included at the top) so the [chk] direct-callees nest one level under it; the last callee to ENTER with
+// no matching RETURN pinpoints the hang.
 typedef __int64 (__fastcall* Sub7D5E810_t)(void*, void*, void*, void*, void*, void*, void*, void*,
                                            void*, void*, void*, void*, void*, void*, void*, void*);
 static Sub7D5E810_t g_sub7D5E810Orig = nullptr;
@@ -2252,6 +2252,70 @@ static __int64 __fastcall Sub7D5E810_Detour(
     tprintf("[7d5] t%-5lu d%-2d sub_187D5E810 RETURNED = 0x%llX\n",
             GetCurrentThreadId(), g_chkDepth, (unsigned long long)r); fflush(stdout);
     return r;
+}
+
+// Dedicated hook for sub_188D06EA0 (physics-world / hkFreeListAllocator init) -- pulled from kChkRvasIE. Its very
+// first act is (*(*(a1+8)+0x18))(a1+8, &out, 0x7FFFFFFF) = hkFreeListAllocator::setMemorySoftLimit (per PDB),
+// which does EnterCriticalSection on the allocator's critsec. Resolve + print that target's RVA and log whether
+// we RETURN -- if we ENTER but never RETURN, the freeze is that EnterCriticalSection (uninit/held critsec ->
+// deadlock). Manages g_chkDepth so any remaining [chk] callees still nest under it.
+typedef __int64* (__fastcall* Sub8D06EA0_t)(void* a1, void* a2, void* a3, void* a4);
+static Sub8D06EA0_t g_sub8D06EA0Orig = nullptr;
+static __int64* __fastcall Sub8D06EA0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    unsigned long long base = (unsigned long long)GetModuleHandleW(kRendererDll);
+    unsigned long long v2 = 0, target = 0;
+    __try
+    {
+        v2 = *(unsigned long long*)((char*)a1 + 8);        // a1+8 holds the hkFreeListAllocator vtable ptr
+        target = *(unsigned long long*)(v2 + 0x18);        // vtable[+0x18] (==+24) = setMemorySoftLimit
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    tprintf("[phys] t%-5lu d%-2d sub_188D06EA0(this=%p) ENTER -- 1st call = vtable[+0x18] = DuniaDemo+0x%llX (setMemorySoftLimit -> EnterCriticalSection)\n",
+            GetCurrentThreadId(), g_chkDepth, a1, target ? target - base : 0); fflush(stdout);
+    ++g_chkDepth;
+    __int64* r = g_sub8D06EA0Orig(a1, a2, a3, a4);
+    --g_chkDepth;
+    tprintf("[phys] t%-5lu d%-2d sub_188D06EA0 RETURNED = %p (setMemorySoftLimit did NOT deadlock)\n",
+            GetCurrentThreadId(), g_chkDepth, (void*)r); fflush(stdout);
+    return r;
+}
+
+// Dedicated hook for sub_187E3A650 = CPhysWorldImplBase::CPhysWorldImplBase ctor (pulled from kChkRvasIE). It
+// constructs the physics world's hkFreeListAllocator (via sub_188D05DC0) among other members, so it sits directly
+// above the [phys] allocator-init chain. Forward all 16 args (it is a chunked, many-arg ctor); manages g_chkDepth
+// so the remaining [chk] callees still nest under it.
+typedef __int64 (__fastcall* Sub7E3A650_t)(void*, void*, void*, void*, void*, void*, void*, void*,
+                                           void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub7E3A650_t g_sub7E3A650Orig = nullptr;
+static __int64 __fastcall Sub7E3A650_Detour(
+    void* a1, void* a2, void* a3, void* a4, void* a5, void* a6, void* a7, void* a8,
+    void* a9, void* a10, void* a11, void* a12, void* a13, void* a14, void* a15, void* a16)
+{
+    tprintf("[phys] t%-5lu d%-2d CPhysWorldImplBase::CPhysWorldImplBase(this=%p a2=%p) ENTER (sub_187E3A650)\n",
+            GetCurrentThreadId(), g_chkDepth, a1, a2); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_sub7E3A650Orig(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16);
+    --g_chkDepth;
+    tprintf("[phys] t%-5lu d%-2d CPhysWorldImplBase ctor RETURNED = 0x%llX\n",
+            GetCurrentThreadId(), g_chkDepth, (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// Native reimpl of hkFreeListAllocator::setMemorySoftLimit -- retail thunk sub_188D067D0 -> virtualized
+// sub_1A1806360 (RVA 0x21806360, in the VM band) hangs un-bootstrapped. From the PDB disasm the real body is:
+//   EnterCriticalSection(this+8); *(u64*)(this+0x1560) = a3; *maxMemory = 0; LeaveCriticalSection(this+8); return maxMemory;
+// We SKIP the lock: physics-world init here is single-threaded (its worker pool isn't up yet), and if the critsec
+// were uninitialized the EnterCriticalSection would itself deadlock. Set the soft-limit field + zero the out-param.
+typedef int* (__fastcall* SetSoftLimit_t)(void* this_, int* maxMemory, unsigned long long a3);
+static SetSoftLimit_t g_setSoftLimitOrig = nullptr;   // trampoline (unused -- we replace the VM'd body)
+static int* __fastcall SetMemorySoftLimit_Reimpl(void* this_, int* maxMemory, unsigned long long a3)
+{
+    *(unsigned long long*)((char*)this_ + 0x1560) = a3;   // m_freeListMemory[40].m_numFreeElements = a3
+    if (maxMemory) *maxMemory = 0;
+    static bool logged = false;
+    if (!logged) { logged = true; tprintf("[phys] setMemorySoftLimit reimpl active (this=%p a3=0x%llX) [bypasses VM]\n", this_, a3); fflush(stdout); }
+    return maxMemory;
 }
 
 static void InstallSkuTrace(uintptr_t base)
@@ -2425,6 +2489,21 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[7d5] hooked sub_187D5E810 (frozen frontier) @ %p\n", s7d5);
     else
         tprintf("[7d5] FAILED to hook sub_187D5E810 @ %p\n", s7d5);
+    void* s7e3 = (void*)(base + 0x7E3A650);   // dedicated hook for CPhysWorldImplBase::CPhysWorldImplBase ctor (pulled from kChkRvasIE)
+    if (MH_CreateHook(s7e3, &Sub7E3A650_Detour, (LPVOID*)&g_sub7E3A650Orig) == MH_OK && MH_EnableHook(s7e3) == MH_OK)
+        tprintf("[phys] hooked CPhysWorldImplBase::CPhysWorldImplBase (sub_187E3A650) @ %p\n", s7e3);
+    else
+        tprintf("[phys] FAILED to hook sub_187E3A650 @ %p\n", s7e3);
+    void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
+    if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)
+        tprintf("[phys] hooked sub_188D06EA0 (physics-world allocator init) @ %p\n", s8d0);
+    else
+        tprintf("[phys] FAILED to hook sub_188D06EA0 @ %p\n", s8d0);
+    void* ssl = (void*)(base + 0x8D067D0);   // hkFreeListAllocator::setMemorySoftLimit thunk -> VM'd sub_1A1806360 (reimpl)
+    if (MH_CreateHook(ssl, &SetMemorySoftLimit_Reimpl, (LPVOID*)&g_setSoftLimitOrig) == MH_OK && MH_EnableHook(ssl) == MH_OK)
+        tprintf("[phys] hooked setMemorySoftLimit thunk (sub_188D067D0) -> native reimpl [bypasses VM]\n");
+    else
+        tprintf("[phys] FAILED to hook setMemorySoftLimit thunk @ %p\n", ssl);
     void* nm = (void*)(base + 0x60F430);   // CMemMng::NMalloc -- size-log gated on g_scnIter ([scene] loop arms it)
     if (MH_CreateHook(nm, &NMalloc_Detour, (LPVOID*)&g_nmallocOrig) == MH_OK && MH_EnableHook(nm) == MH_OK)
         tprintf("[nmsz] hooked CMemMng::NMalloc (base+0x60F430) @ %p [logs only inside CreateSingleton iters]\n", nm);
@@ -2549,9 +2628,6 @@ static const uintptr_t kChkRvasIES[] = {
     0x77FB740, // sub_1877FB740
     0x686CBC0, // sub_18686CBC0 (last call before InitializeEngineServices returns)
 };
-
-// --- checkpoint / thunk-hook machinery lives in checkpoints.h (append RVAs there; APPEND-ONLY -- see its
-//     header). Included here (not at top of file) because it depends on tprintf/MinHook/kCheckpoints above. ---
 
 // ===================================================================================================
 // Denuvo-VM stub: G4::Platform::RetrieveClassicalCPUCacheDetails (sub_188C10530).
