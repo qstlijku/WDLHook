@@ -2318,6 +2318,28 @@ static int* __fastcall SetMemorySoftLimit_Reimpl(void* this_, int* maxMemory, un
     return maxMemory;
 }
 
+// Native reimpl of hkMemorySystem::LockedMemoryAllocator::LockedMemoryAllocator -- retail thunk sub_188CF7BD0 ->
+// virtualized sub_1A179AF00 (RVA 0x2179AF00, VM band) hangs un-bootstrapped (the sub_188D07520 /
+// hkFreeListMemorySystem ctor freeze). From the PDB the real body is 3 ops:
+//   this->m_chainedAllocator = chainedAlloc;                   // this+0x08
+//   this->__vftable = &LockedMemoryAllocator::vftable;         // this+0x00  (retail vtable RVA 0xA6C4510, RTTI-confirmed)
+//   hkCriticalSection::hkCriticalSection(&this->m_section, 0); // this+0x10  (retail sub_188D164A0, non-VM -> call directly)
+// sub_188D164A0 already runs fine in manual-load (the same ctor calls it for m_threadDataLock just above this), so
+// we invoke it straight rather than trampolining.
+typedef void* (__fastcall* LockedMemAlloc_t)(void* this_, void* chainedAlloc);
+typedef void* (__fastcall* HkCritSecCtor_t)(void* this_, unsigned int spinCount);
+static LockedMemAlloc_t g_lockedMemAllocOrig = nullptr;   // trampoline (unused -- we replace the VM'd body)
+static void* __fastcall LockedMemoryAllocator_Reimpl(void* this_, void* chainedAlloc)
+{
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    *(void**)((char*)this_ + 0x08) = chainedAlloc;                    // m_chainedAllocator
+    *(void**)this_ = (void*)(base + 0xA6C4510);                       // __vftable
+    ((HkCritSecCtor_t)(base + 0x8D164A0))((char*)this_ + 0x10, 0);    // hkCriticalSection::hkCriticalSection(&m_section, 0)
+    static bool logged = false;
+    if (!logged) { logged = true; tprintf("[phys] LockedMemoryAllocator ctor reimpl active (this=%p chained=%p) [bypasses VM]\n", this_, chainedAlloc); fflush(stdout); }
+    return this_;
+}
+
 static void InstallSkuTrace(uintptr_t base)
 {
     if (!kTraceSku) return;
@@ -2504,6 +2526,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[phys] hooked setMemorySoftLimit thunk (sub_188D067D0) -> native reimpl [bypasses VM]\n");
     else
         tprintf("[phys] FAILED to hook setMemorySoftLimit thunk @ %p\n", ssl);
+    void* lma = (void*)(base + 0x8CF7BD0);   // hkMemorySystem::LockedMemoryAllocator ctor thunk -> VM'd sub_1A179AF00 (reimpl)
+    if (MH_CreateHook(lma, &LockedMemoryAllocator_Reimpl, (LPVOID*)&g_lockedMemAllocOrig) == MH_OK && MH_EnableHook(lma) == MH_OK)
+        tprintf("[phys] hooked LockedMemoryAllocator ctor thunk (sub_188CF7BD0) -> native reimpl [bypasses VM]\n");
+    else
+        tprintf("[phys] FAILED to hook LockedMemoryAllocator ctor thunk @ %p\n", lma);
     void* nm = (void*)(base + 0x60F430);   // CMemMng::NMalloc -- size-log gated on g_scnIter ([scene] loop arms it)
     if (MH_CreateHook(nm, &NMalloc_Detour, (LPVOID*)&g_nmallocOrig) == MH_OK && MH_EnableHook(nm) == MH_OK)
         tprintf("[nmsz] hooked CMemMng::NMalloc (base+0x60F430) @ %p [logs only inside CreateSingleton iters]\n", nm);
