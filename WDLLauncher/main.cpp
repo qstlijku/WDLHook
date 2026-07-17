@@ -2246,9 +2246,19 @@ static __int64 __fastcall Sub7D5E810_Detour(
 {
     tprintf("[7d5] t%-5lu d%-2d sub_187D5E810(this=%p a2=%p a3=%p) ENTER\n",
             GetCurrentThreadId(), g_chkDepth, a1, a2, a3); fflush(stdout);
+    static bool s_gate884Installed = false;   // lazy-install the [g884] + [pcfg] hooks here (NOT at boot) so early
+    if (!s_gate884Installed)                  // init -- which crashed with them globally active -- stays unhooked
+    {
+        s_gate884Installed = true;
+        uintptr_t rbase = (uintptr_t)GetModuleHandleW(kRendererDll);
+        InstallGate884(rbase);
+        InstallChkPhys(rbase);   // [pcfg]: the 2 CPhysConfig config virtuals (installs even if kGate884=false)
+    }
+    g_gate7d5 = true;   // arm the [g884] subtree trace for the duration of this call
     ++g_chkDepth;
     __int64 r = g_sub7D5E810Orig(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16);
     --g_chkDepth;
+    g_gate7d5 = false;  // disarm -- scope the [g884] flood to just the sub_187D5E810 window
     tprintf("[7d5] t%-5lu d%-2d sub_187D5E810 RETURNED = 0x%llX\n",
             GetCurrentThreadId(), g_chkDepth, (unsigned long long)r); fflush(stdout);
     return r;
@@ -2300,6 +2310,81 @@ static __int64 __fastcall Sub7E3A650_Detour(
     tprintf("[phys] t%-5lu d%-2d CPhysWorldImplBase ctor RETURNED = 0x%llX\n",
             GetCurrentThreadId(), g_chkDepth, (unsigned long long)r); fflush(stdout);
     return r;
+}
+
+// Dedicated hooks for sub_186884560 (a direct callee of sub_187D5E810) + its callee sub_186883920 (called from
+// 0x18684845A3 inside it). Both take 6 args; arg3 is a const char* (name/tag), arg5 is likely a const char* too
+// (not printed). Exact 6-arg signature (no 16-arg forward) so the calling convention stays intact. Pulled from
+// kChkRvasIE / kGate884Rvas to avoid double-hooks. Manage g_chkDepth so nested [chk]/[g884] lines still indent.
+typedef __int64 (__fastcall* Sub6884560_t)(void*, void*, const char*, void*, const char*, void*);
+static Sub6884560_t g_sub6884560Orig = nullptr;
+static __int64 __fastcall Sub6884560_Detour(void* a1, void* a2, const char* a3, void* a4, const char* a5, void* a6)
+{
+    tprintf("[884] t%-5lu d%-2d sub_186884560 a1=%p a2=%p a3=%s a4=%p a6=%p ENTER\n",
+            GetCurrentThreadId(), g_chkDepth, a1, a2, a3, a4, a6); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_sub6884560Orig(a1, a2, a3, a4, a5, a6);
+    --g_chkDepth;
+    tprintf("[884] t%-5lu d%-2d sub_186884560 RETURNED = 0x%llX\n",
+            GetCurrentThreadId(), g_chkDepth, (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub6883920_t)(void*, void*, const char*, void*, const char*, void*);
+static Sub6883920_t g_sub6883920Orig = nullptr;
+static __int64 __fastcall Sub6883920_Detour(void* a1, void* a2, const char* a3, void* a4, const char* a5, void* a6)
+{
+    // a2 is a FACTORY fn-ptr: sub_186883920 does v13 = a2(), then calls v13->vtable[+0x60](v13,v22) and
+    // v13->vtable[+0xb0](v13,name) -- one of those hangs on a WaitAndPop. Print a2 as an RVA so we can
+    // disassemble the factory and resolve v13's vtable[+0x60]/[+0xb0] targets (they differ per registration a3).
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    tprintf("[883] t%-5lu d%-2d sub_186883920 a1=%p a2(factory)=DuniaDemo+0x%llX a3=%s a4=%p a6=%p ENTER\n",
+            GetCurrentThreadId(), g_chkDepth, a1, (unsigned long long)((uintptr_t)a2 - base), a3, a4, a6); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_sub6883920Orig(a1, a2, a3, a4, a5, a6);
+    --g_chkDepth;
+    tprintf("[883] t%-5lu d%-2d sub_186883920 RETURNED = 0x%llX\n",
+            GetCurrentThreadId(), g_chkDepth, (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// Probe hook for the CPhysConfig ctor sub_187D0BD30 (this = v13, the object sub_186883920 creates via a2()).
+// The [pcfg] vtable hooks (sub_1877F4520/sub_186921AC0) never fired, so either the runtime v13 vtable differs
+// from the statically-resolved 0xA5EDBC0, or the stall is in this ctor. Read v13's ACTUAL vtable + slots [+0x60]
+// and [+0xB0] right after construction and print them as RVAs -- confirms *(*v13+96)/*(*v13+176) directly.
+// If this ENTERs but never prints the vtable line, the ctor itself is the stall.
+typedef void* (__fastcall* Sub7D0BD30_t)(void* this_);
+static Sub7D0BD30_t g_sub7D0BD30Orig = nullptr;
+static void* __fastcall Sub7D0BD30_Detour(void* this_)
+{
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    tprintf("[pcfg] t%-5lu d%-2d CPhysConfig::ctor(v13=%p) ENTER (sub_187D0BD30)\n",
+            GetCurrentThreadId(), g_chkDepth, this_); fflush(stdout);
+    void* r = g_sub7D0BD30Orig(this_);
+    __try
+    {
+        unsigned long long vt  = *(unsigned long long*)this_;          // *v13 = vtable
+        unsigned long long s60 = *(unsigned long long*)(vt + 0x60);    // *(*v13 + 96)
+        unsigned long long sB0 = *(unsigned long long*)(vt + 0xB0);    // *(*v13 + 176)
+        tprintf("[pcfg] CPhysConfig v13=%p vtable=DuniaDemo+0x%llX  [+0x60]=DuniaDemo+0x%llX  [+0xB0]=DuniaDemo+0x%llX\n",
+                this_, (unsigned long long)(vt - base), (unsigned long long)(s60 - base), (unsigned long long)(sB0 - base));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[pcfg] CPhysConfig ctor: fault reading v13 vtable\n"); }
+    fflush(stdout);
+    return r;
+}
+
+// Dedicated hook for sub_187D0BB30 -- the LAST call in the CPhysConfig ctor (sub_187D0BD30). It is a jmp thunk
+// into the VM band (-> sub_1A15E4E60, RVA 0x215E4E60), so un-bootstrapped it decoy-loops = the ctor hang.
+// Single __int64 arg. ENTER with no RETURN confirms this VM thunk is the stall (next: native reimpl of the body).
+typedef void (__fastcall* Sub7D0BB30_t)(__int64 a1);
+static Sub7D0BB30_t g_sub7D0BB30Orig = nullptr;
+static void __fastcall Sub7D0BB30_Detour(__int64 a1)
+{
+    // TODO: Reimpl CPhysConfig::ResetValues (this) (called at the very end of CPhysConfig ctor)
+    tprintf("CPhysConfig reset values called\n");
+    //g_sub7D0BB30Orig(a1);
+    tprintf("[pbb] sub_187D0BB30 skipped\n");
 }
 
 // Native reimpl of hkFreeListAllocator::setMemorySoftLimit -- retail thunk sub_188D067D0 -> virtualized
@@ -2516,6 +2601,26 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[phys] hooked CPhysWorldImplBase::CPhysWorldImplBase (sub_187E3A650) @ %p\n", s7e3);
     else
         tprintf("[phys] FAILED to hook sub_187E3A650 @ %p\n", s7e3);
+    void* s884 = (void*)(base + 0x6884560);   // dedicated hook for sub_186884560 (pulled from kChkRvasIE + kGate884Rvas)
+    if (MH_CreateHook(s884, &Sub6884560_Detour, (LPVOID*)&g_sub6884560Orig) == MH_OK && MH_EnableHook(s884) == MH_OK)
+        tprintf("[884] hooked sub_186884560 @ %p\n", s884);
+    else
+        tprintf("[884] FAILED to hook sub_186884560 @ %p\n", s884);
+    void* s883 = (void*)(base + 0x6883920);   // dedicated hook for sub_186883920 (callee of sub_186884560; pulled from kGate884Rvas)
+    if (MH_CreateHook(s883, &Sub6883920_Detour, (LPVOID*)&g_sub6883920Orig) == MH_OK && MH_EnableHook(s883) == MH_OK)
+        tprintf("[883] hooked sub_186883920 @ %p\n", s883);
+    else
+        tprintf("[883] FAILED to hook sub_186883920 @ %p\n", s883);
+    void* sctor = (void*)(base + 0x7D0BD30);   // CPhysConfig ctor probe -- prints v13's runtime vtable[+0x60]/[+0xB0]
+    if (MH_CreateHook(sctor, &Sub7D0BD30_Detour, (LPVOID*)&g_sub7D0BD30Orig) == MH_OK && MH_EnableHook(sctor) == MH_OK)
+        tprintf("[pcfg] hooked CPhysConfig ctor (sub_187D0BD30) @ %p\n", sctor);
+    else
+        tprintf("[pcfg] FAILED to hook sub_187D0BD30 @ %p\n", sctor);
+    void* sbb = (void*)(base + 0x7D0BB30);   // CPhysConfig ctor's last call -- VM thunk (-> sub_1A15E4E60), the ctor hang
+    if (MH_CreateHook(sbb, &Sub7D0BB30_Detour, (LPVOID*)&g_sub7D0BB30Orig) == MH_OK && MH_EnableHook(sbb) == MH_OK)
+        tprintf("[pbb] hooked sub_187D0BB30 (VM thunk) @ %p\n", sbb);
+    else
+        tprintf("[pbb] FAILED to hook sub_187D0BB30 @ %p\n", sbb);
     void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
     if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)
         tprintf("[phys] hooked sub_188D06EA0 (physics-world allocator init) @ %p\n", s8d0);
@@ -2838,6 +2943,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
     InstallVmStubs((uintptr_t)dll);       // replace virtualized sub_188C10530 (cache detail) -- VM not bootstrapped
     InstallCheckpoints((uintptr_t)dll);   // bracket every call between InitializeCore and Initialize
     InstallCheckpointsRA((uintptr_t)dll); // [chkra]: multi-call-site fns that also log _ReturnAddress (caller)
+    // [g884] is NOT installed here: its 66 targets include pervasive engine primitives (WaitAndPop, string/
+    // container utils, std::call_once) hooked GLOBALLY, which corrupt EARLY init (crashed at the SKU/LoadSkuConfigPC
+    // point). Instead it lazy-installs on the FIRST sub_187D5E810 ENTER (Sub7D5E810_Detour) -- which runs long after
+    // early init -- so the fragile early path stays completely unhooked.
 
     int rc;
     if (kUseCustomRunGame)

@@ -83,7 +83,7 @@ static const uintptr_t kChkRvasIE[] = {
     0x6121220, 0x64B0A70, 0x677BAD0, 0x60278C0, 0x6794680, 0x6794A30, 0x6245A20, 0x6796300,
     0x677CA00, 0x657EEB0, 0x6371A40, 0x63B2C40, 0x63B56B0, 0x665E2D0, 0x64A2170, 0x64A7FF0,
     0x2ABFD80, 0x5B89E0,  0x5A6FD80, 0x684E200, 0x60ADBC0, 0x7D1B6C0, 0x656E250, 0x6027190,
-    0x671D890, 0x671E600, 0x6720730, 0x672FF20, 0x671B150, 0x6884560, 0x6640DD0, 0x6641010,
+    0x671D890, 0x671E600, 0x6720730, 0x672FF20, 0x671B150, 0x6640DD0, 0x6641010,  // 0x6884560 -> dedicated [884] hook
     0x6640770, 0x63D5740, 0x60A5710, 0x6373BA0, 0x636FA80, 0x63CE370, 0x63CE910, 0x7256AE0,
     0x173220,  0xD6DE0,   0x60EC860, 0x673CF10, 0x7633530, 0x661E530, 0x643EA50, 0x6445590,
     0x7804B80, 0x6891E50, 0x60DE210, 0x6177E40, 0x63BA960, 0x65B2620, 0x65BACF0, 0x65F2D00,
@@ -92,14 +92,7 @@ static const uintptr_t kChkRvasIE[] = {
     0x64F6C50, 0x6423210, 0x641CC50, 0x6420F20, 0x668B370, 0x6664C10, 0x66831A0, 0x63B7A80,
     0x62472C0, 0x6247780, 0x603FBB0, 0x64C4D70, 0x65B2450, 0x6319D00, 0x6821C60, 0x68252B0,
     0x6648B90, 0x7E879C0, 0x7E8CD10, 0x7E8F060,
-    // --- C3DEngine::C3DEngine (sub_1872141F0) callees -- render-engine ctor where the main thread parks after
-    //     the window comes up (reached via C3DEngine::CreateInstance sub_187216BF0, already checkpointed above).
-    //     Appended to bracket INSIDE the ctor: the last unbalanced ENTER = the stuck render fn. Skipped its
-    //     NMalloc (0x60F430) and sub_1805B89E0 (already listed). All real .rdata call targets.
-    0x7072EA0, 0x758D8E0, 0x7285820, 0x72861F0, 0x7664750, 0x76649A0, 0x7668D00, 0x7518C90,
-    0x7214F60, 0x8C13CD0, 0x727C940, 0x726E3E0, 0x6CEF40,  0x727C980, 0x67BBFA0, 0x727CD00,
-    0x726E6B0, 0x760B5C0, 0x73982C0, 0x73982F0,   // 0x73982F0 back as a checkpoint (its 16-arg thunk forwards
-    // a3 safely); the dedicated [rndr] hook now targets its callee sub_1875F8980 (the real park) instead.
+    // C3DEngine::C3DEngine (sub_1872141F0) callees MOVED to kChkRvasIEOld below (render-park frontier resolved).
     // --- CEngine::Initialize direct callees that were still un-hooked (completes that level's coverage).
     //     Excluded, already hooked separately (would double-hook -> [chk] FAILED): InitializeCore 0x6793540 +
     //     InitializeEngineServices 0x67936F0 (dedicated hooks), HasParameter 0x6D7B20 + InitializeOnlineInterface
@@ -111,25 +104,29 @@ static const uintptr_t kChkRvasIE[] = {
     //     set; 2 vtable-dispatch sites in sub_187D5E810 are unhookable by address (if none hang, culprit is one) ---
     0x8C369A0, 0x7D5E9D6, 0x7E6CB90, 0x7D35900, 0x1B285A0, 0x7D35980, 0x67A3530,
     0x6885410, 0x7DC4E40, 0x7D296F0, 0x7D5EFB0, 0x7E534B0,
-    // --- next frontier: freeze was in sub_187E6CB90 (0x20-byte wrapper) -> sub_187E3A650 (physwind sub-object
-    //     ctor, ~12664 bytes; not a spin itself). Hook sub_187E3A650 + its direct callees to find which hangs.
-    //     Excluded: NMalloc 0x60F430, 0x5C2280 (flood), 0x8C1B250 (list-init, called 3x here -> floods). The
-    //     0x8D0xxxx cluster (worker/job setup) is the prime suspect. ---
-    /* 0x7E3A650 -> dedicated [phys] hook (CPhysWorldImplBase::CPhysWorldImplBase ctor) */
-    0x7D826B0, 0x8BE6350, 0x8BC7690, 0x7D7C0E0, 0x8D09C00, 0x8D05DC0, 0x8D07520, 0x8C18AA0,
-    // --- callees of sub_188D05DC0 (Havok hkFreeListAllocator init): 3 distinct (sub_189541080 is the +96 init
-    //     plus a 41x loop over the hkFixedSizeAllocator array, so it fires ~42x per call). ---
-    0x8D164A0, /* 0x9541080 ~42x/call; 0x8D06EA0 -> dedicated [phys] hook (prints its vtable[+0x18] setMemorySoftLimit call) */
-    // --- sub_188D06EA0 subtree (2-3 layers deep). No spin/wait found in its 20-func closure; the ONLY vtable
-    //     dispatch is sub_188D06EA0's own vtable[+24] call, which fires FIRST (before these).
-    //     REMOVED 0x8D07010: NOT a fn-start -- it is the TAIL of the chunked sub_188D06EA0 itself, so hooking it
-    //     planted a jmp mid-body and corrupted the function (that was the manufactured "+0x160 AV", not a real bug).
-    //     0x8D07030 / 0x8D05C60 / 0x8D05CC0 are VALID entries but are `jmp rel32` THUNKS into the VM band
-    //     (-> sub_1A1807530 / sub_1A1805E30 / VM) -- i.e. MORE virtualized allocator helpers on this path, each a
-    //     candidate for native reimpl like setMemorySoftLimit. Kept as checkpoints to see which fire in manual-load. ---
-    0x8D06D80, 0x95427E0, 0x8D07100, 0x8D07030, 0x8D05C60, 0x8D05CC0,
+    // sub_187E3A650 (CPhysWorldImplBase ctor) physwind subtree + sub_188D06EA0 allocator-init subtree +
+    // 0x8D164A0 MOVED to kChkRvasIEOld below (physics-world init frontier resolved).
 };
 static const int kNumChk = (int)(sizeof(kChkRvasIE) / sizeof(kChkRvasIE[0]));
+
+// ARCHIVE (dormant -- NOT installed; InstallCheckpoints only iterates kChkRvasIE). Resolved-frontier subtrees
+// relocated out of the active set to keep it lean, kept verbatim for reference / easy re-arming if a regression
+// sends boot back into one of these subtrees.
+static const uintptr_t kChkRvasIEOld[] = {
+    // --- C3DEngine::C3DEngine (sub_1872141F0) callees -- render-engine ctor park. RESOLVED: the 7 virtualized
+    //     scene-singleton CreateSingleton reimpls cleared it (reached via C3DEngine::CreateInstance sub_187216BF0).
+    //     0x73982F0 forwards a3 safely via the 16-arg thunk; the real park was its callee sub_1875F8980. ---
+    0x7072EA0, 0x758D8E0, 0x7285820, 0x72861F0, 0x7664750, 0x76649A0, 0x7668D00, 0x7518C90,
+    0x7214F60, 0x8C13CD0, 0x727C940, 0x726E3E0, 0x6CEF40,  0x727C980, 0x67BBFA0, 0x727CD00,
+    0x726E6B0, 0x760B5C0, 0x73982C0, 0x73982F0,
+    // --- CPhysWorldImplBase::CPhysWorldImplBase (sub_187E3A650) physwind subtree + sub_188D06EA0 allocator-init
+    //     subtree + hkCriticalSection ctor 0x8D164A0 -- physics-world init. RESOLVED: setMemorySoftLimit
+    //     (sub_188D067D0) + LockedMemoryAllocator ctor (sub_188CF7BD0) VM-thunk native reimpls cleared it;
+    //     CPhysWorldImplBase now constructs fully. 0x8D07030/0x8D05C60/0x8D05CC0 are jmp-thunks into the VM band
+    //     that turned out to EXECUTE (not deadlock). ---
+    0x7D826B0, 0x8BE6350, 0x8BC7690, 0x7D7C0E0, 0x8D09C00, 0x8D05DC0, 0x8D07520, 0x8C18AA0,
+    0x8D164A0, 0x8D06D80, 0x95427E0, 0x8D07100, 0x8D07030, 0x8D05C60, 0x8D05CC0,
+};
 // Checkpoints must forward ALL args transparently: several targets take >4 args (e.g. sub_1805B89E0 takes 8),
 // and a 4-arg thunk drops the stack args -> the callee derefs garbage -> AV. Forward 16 register+stack slots.
 // For functions with fewer args the extra slots are read from the caller frame (committed stack, harmless) and
@@ -227,6 +224,122 @@ static void InstallCheckpoints(uintptr_t base)
             tprintf("[chk] FAILED sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasIE[i]), tgt);
     }
     tprintf("[chk] %d checkpoint hooks installed\n", kNumChk); fflush(stdout);
+}
+
+// ===================================================================================================
+// GATED subtree trace ([g884]) -- hooks every valid .pdata function-start transitively reachable from
+// sub_186884560 (a direct callee of sub_187D5E810). SILENT until sub_187D5E810 is running: main.cpp's
+// Sub7D5E810_Detour sets g_gate7d5=true on ENTER, false on RETURN, so the flood is scoped to that window.
+// Separate array + pool from kChkRvasIE (doesn't eat the 192-cap); shares g_chkDepth for unified nesting.
+// ONLY .pdata function-starts are hooked (66 of 151 reachable) -- the 85 no-.pdata reachable addrs are excluded:
+// hooking a non-fn-start plants a jmp mid-body and corrupts code (cf. the 0x8D07010 incident). Double-hooks
+// (e.g. NMalloc 0x60F430, 0x6884560 which is already in kChkRvasIE) fail gracefully -> logged as "skip".
+static volatile bool g_gate7d5 = false;   // armed while sub_187D5E810 runs (set by Sub7D5E810_Detour in main.cpp)
+static const uintptr_t kGate884Rvas[] = {
+    0x20DB0,   0xCE950,   0x10A1D0,  0x162880,  0x1FD980,  0x5B56E0,  0x5B7430,  0x5BD700,
+    0x5C1C40,  0x5C1CA0,  0x5C3B80,  0x5C3DD0,  0x5E42D0,  0x5E9F10,
+    0x60BCE0,  0x60BEC0,  0x60F430,  0x615AD0,  0x618340,  0x61D010,  0x63E0A0,  0x63E620,
+    0x675980,  0x675D10,  0x69AB10,  0x69CA50,  0x69CA90,  0x6D9250,  0x6D9750,
+    0x6F7180,  0x6F7210,  0x17FAA50, 0x17FAB80, 0x6883BC0, 0x6883FA0, 0x6884290,  // 0x6883920 -> dedicated [883] hook
+    0x6898280, 0x689CBF0, 0x68B3D70, 0x68B3EF0, 0x68B40E0, 0x68B44B0, 0x68B4640,  // 0x6884560 -> dedicated [884] hook
+    0x68B48C0, 0x68B4BD0, 0x68B51F0, 0x6921D60, 0x6921DB0, 0x69221C0, 0x77F47F0, 0x77F6E50,
+    0x77F72C0, 0x77F7C00, 0x8C18AA0, 0x9372994, 0x9372A2C, 0x9372F90, 0x94F3F68,
+    0x94F40AC, 0x94F4120,
+};
+static const int kNumGate884 = (int)(sizeof(kGate884Rvas) / sizeof(kGate884Rvas[0]));
+static const int kGate884Pool = 80;   // >= kNumGate884
+static_assert(kGate884Pool >= kNumGate884, "kGate884Pool too small for kGate884Rvas");
+static ChkFn_t g_gate884Orig[kGate884Pool];
+
+template<int N> static __int64 __fastcall Gate884Thunk(
+    void* p0, void* p1, void* p2, void* p3, void* p4, void* p5, void* p6, void* p7,
+    void* p8, void* p9, void* p10, void* p11, void* p12, void* p13, void* p14, void* p15)
+{
+    const bool g = g_gate7d5;   // latch at entry so ENTER/RETURNED stay balanced even if the gate flips mid-call
+    if (g)
+    {
+        const unsigned long long fn = 0x180000000ull + kGate884Rvas[N];
+        tprintf("[g884] t%-5lu d%-2d %*ssub_%llX ENTER\n", GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn); fflush(stdout);
+        ++g_chkDepth;
+    }
+    __int64 r = g_gate884Orig[N](p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15);
+    if (g)
+    {
+        --g_chkDepth;
+        const unsigned long long fn = 0x180000000ull + kGate884Rvas[N];
+        tprintf("[g884] t%-5lu d%-2d %*ssub_%llX RETURNED\n", GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn); fflush(stdout);
+    }
+    return r;
+}
+
+template<size_t... I>
+static std::array<ChkFn_t, sizeof...(I)> MakeGate884Thunks(std::index_sequence<I...>) { return {{ &Gate884Thunk<I>... }}; }
+static const std::array<ChkFn_t, kGate884Pool> g_gate884Thunks = MakeGate884Thunks(std::make_index_sequence<kGate884Pool>{});
+
+static bool kGate884 = true;
+static void InstallGate884(uintptr_t base)
+{
+    if (!kGate884) return;
+    MH_Initialize();
+    int ok = 0;
+    for (int i = 0; i < kNumGate884; ++i)
+    {
+        void* tgt = (void*)(base + kGate884Rvas[i]);
+        if (MH_CreateHook(tgt, (LPVOID)g_gate884Thunks[i], (LPVOID*)&g_gate884Orig[i]) == MH_OK && MH_EnableHook(tgt) == MH_OK)
+            ++ok;
+        else
+            tprintf("[g884] skip sub_%llX @ %p (already hooked / failed)\n", (unsigned long long)(0x180000000 + kGate884Rvas[i]), tgt);
+    }
+    tprintf("[g884] %d/%d gated hooks installed (silent until sub_187D5E810 runs)\n", ok, kNumGate884); fflush(stdout);
+}
+
+// ===================================================================================================
+// [pcfg] -- the two CPhysConfig config virtuals reached from sub_186883920 (v13 = CPhysConfig, vtable 0xA5EDBC0):
+//   vtable[+0x60] = sub_1877F4520 (setter; makes a nested virtual [rax+0x68] call -- possible real stall)
+//   vtable[+0xb0] = sub_186921AC0 (name->id setter)
+// Bracket both to see which (if either) ENTERs without RETURNing. Separate array + pool so they don't mix with
+// kChkRvasIE / kGate884Rvas. Both are 2-ptr-arg methods (no float), safe for the generic 16-arg thunk. These are
+// hooked by ADDRESS, so the vtable-dispatched calls in sub_186883920 are caught too. Shares g_chkDepth.
+static const uintptr_t kChkRvasPhys[] = {
+    0x77F4520,  // CPhysConfig::vtable[+0x60] (v13+96 call)
+    0x6921AC0,  // CPhysConfig::vtable[+0xb0] (v13+176 call)
+};
+static const int kNumChkPhys = (int)(sizeof(kChkRvasPhys) / sizeof(kChkRvasPhys[0]));
+static const int kChkPhysPool = 8;   // >= kNumChkPhys
+static_assert(kChkPhysPool >= kNumChkPhys, "kChkPhysPool too small for kChkRvasPhys");
+static ChkFn_t g_chkPhysOrig[kChkPhysPool];
+
+template<int N> static __int64 __fastcall PhysThunk(
+    void* p0, void* p1, void* p2, void* p3, void* p4, void* p5, void* p6, void* p7,
+    void* p8, void* p9, void* p10, void* p11, void* p12, void* p13, void* p14, void* p15)
+{
+    const unsigned long long fn = 0x180000000ull + kChkRvasPhys[N];
+    tprintf("[pcfg] t%-5lu d%-2d %*ssub_%llX ENTER\n",    GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_chkPhysOrig[N](p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15);
+    --g_chkDepth;
+    tprintf("[pcfg] t%-5lu d%-2d %*ssub_%llX RETURNED\n", GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", fn); fflush(stdout);
+    return r;
+}
+
+template<size_t... I>
+static std::array<ChkFn_t, sizeof...(I)> MakePhysThunks(std::index_sequence<I...>) { return {{ &PhysThunk<I>... }}; }
+static const std::array<ChkFn_t, kChkPhysPool> g_physThunks = MakePhysThunks(std::make_index_sequence<kChkPhysPool>{});
+
+static bool kChkPhys = true;
+static void InstallChkPhys(uintptr_t base)
+{
+    if (!kChkPhys) return;
+    MH_Initialize();
+    for (int i = 0; i < kNumChkPhys; ++i)
+    {
+        void* tgt = (void*)(base + kChkRvasPhys[i]);
+        if (MH_CreateHook(tgt, (LPVOID)g_physThunks[i], (LPVOID*)&g_chkPhysOrig[i]) == MH_OK && MH_EnableHook(tgt) == MH_OK)
+            tprintf("[pcfg] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasPhys[i]), tgt);
+        else
+            tprintf("[pcfg] FAILED sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kChkRvasPhys[i]), tgt);
+    }
+    fflush(stdout);
 }
 
 // ===================================================================================================
