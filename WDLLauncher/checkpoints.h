@@ -16,6 +16,17 @@
 #include <array>
 #include <utility>
 
+// printf to both the console and a per-PID log file. The console window dies when the process is
+// killed (as the relaunch does); the file survives, so it captures the last thing that happened.
+// Same idiom as ACMHook / WDLE3Hook.
+static FILE* g_logFile = nullptr;
+static void tprintf(const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt); vprintf(fmt, args); va_end(args);
+    if (g_logFile) { va_start(args, fmt); vfprintf(g_logFile, fmt, args); va_end(args); fflush(g_logFile); }
+};
+
 // ACTIVE crash-window set: FuncA = CDuniaEngineInitBase::InitializeEngineServices (retail 0x3270..0x36A5).
 // Its distinct calls AFTER CEngine::InitializeEngineServices (FuncA+0x3288) -- the streaming/IO-layer stack
 // build. The 0x21B2B9F4 un-bootstrapped-VM crash fires in here (after IES returns, before FuncA returns to
@@ -60,7 +71,7 @@ static const uintptr_t kChkRvasIE[] = {
     // call sites (incl. from inside sub_1875F8980); the RA variant logs _ReturnAddress to show WHERE each is from.
     // 0x5C3F60, 0x5A81C0, 0x5E6EC0 REMOVED -- hot generic string/container helpers, called everywhere
     // (thousands of hits), useless as CEngine::Initialize progress markers and flooded the log.
-    0x7D5E810, 0x6035400, 0x7D633E0, 0x686F8D0, 0x6799130, 0x7F60DC0, 0x603E650,
+    0x6035400, 0x7D633E0, 0x686F8D0, 0x6799130, 0x7F60DC0, 0x603E650,   // 0x7D5E810 pulled -> dedicated [7d5] hook
     0x60AD8D0, 0x7802ED0, 0x60AD900, 0x60F90C0, 0x60D7A90, 0x6110E90, 0x6121760, 0x66098F0,
     0x6121220, 0x64B0A70, 0x677BAD0, 0x60278C0, 0x6794680, 0x6794A30, 0x6245A20, 0x6796300,
     0x677CA00, 0x657EEB0, 0x6371A40, 0x63B2C40, 0x63B56B0, 0x665E2D0, 0x64A2170, 0x64A7FF0,
@@ -82,6 +93,15 @@ static const uintptr_t kChkRvasIE[] = {
     0x7214F60, 0x8C13CD0, 0x727C940, 0x726E3E0, 0x6CEF40,  0x727C980, 0x67BBFA0, 0x727CD00,
     0x726E6B0, 0x760B5C0, 0x73982C0, 0x73982F0,   // 0x73982F0 back as a checkpoint (its 16-arg thunk forwards
     // a3 safely); the dedicated [rndr] hook now targets its callee sub_1875F8980 (the real park) instead.
+    // --- CEngine::Initialize direct callees that were still un-hooked (completes that level's coverage;
+    //     HasParameter 0x6D7B20 + InitializeOnlineInterface 0x6798E80 excluded -- already hooked [eng]/[hang]) ---
+    0x6793540, 0x67936F0, 0x6659F00, 0x5A5B80, 0x9372994, 0x9372F90, 0x9372A2C,
+    // --- sub_187D5E810 direct callees: depth probe for the new frozen frontier. Last one to ENTER with no
+    //     RETURN under sub_187D5E810 = the hanging call. NMalloc 0x60F430 excluded (flood); 0x5B89E0/0x6884560/
+    //     0x6CEF40/0x8C13CD0 already in set; 0x9372DE0 excluded too (called too many times -> flood); 2 vtable-
+    //     dispatch sites in sub_187D5E810 are unhookable by address (if none of these hang, the culprit is one) ---
+    0x8C369A0, 0x5C2280, 0x7D5E9D6, 0x7E6CB90, 0x7D35900, 0x1B285A0, 0x7D35980, 0x67A3530,
+    0x6885410, 0x7DC4E40, 0x7D296F0, 0x7D5EFB0, 0x9DBCC90, 0x7E534B0, 0x5C3FE0,
 };
 static const int kNumChk = (int)(sizeof(kChkRvasIE) / sizeof(kChkRvasIE[0]));
 // Checkpoints must forward ALL args transparently: several targets take >4 args (e.g. sub_1805B89E0 takes 8),
@@ -90,7 +110,7 @@ static const int kNumChk = (int)(sizeof(kChkRvasIE) / sizeof(kChkRvasIE[0]));
 // ignored by the callee. Covers any target with <=16 args.
 typedef __int64 (__fastcall* ChkFn_t)(void*, void*, void*, void*, void*, void*, void*, void*,
                                       void*, void*, void*, void*, void*, void*, void*, void*);
-static const int kChkThunkPool = 160;   // detour-pool size; must be >= kNumChk. One place to grow.
+static const int kChkThunkPool = 192;   // detour-pool size; must be >= kNumChk. One place to grow.
 static_assert(kChkThunkPool >= kNumChk, "kChkThunkPool too small for kChkRvasIE");
 static ChkFn_t g_chkOrig[kChkThunkPool];
 
@@ -161,6 +181,8 @@ static void ChkThunkDebug(int N)
 template<size_t... I>
 static std::array<ChkFn_t, sizeof...(I)> MakeChkThunks(std::index_sequence<I...>) { return {{ &ChkThunk<I>... }}; }
 static const std::array<ChkFn_t, kChkThunkPool> g_chkThunks = MakeChkThunks(std::make_index_sequence<kChkThunkPool>{});
+
+static bool kCheckpoints = true;
 
 // ---------------------------------------------------------------------------------------------------
 // Installer: hooks the first kNumChk entries. Call once, after MinHook is initialized and the module

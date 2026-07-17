@@ -19,19 +19,10 @@
 #include <cstdarg>
 #include "minhook.h"
 
+#include "checkpoints.h"
+
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "User32.lib")
-
-// printf to both the console and a per-PID log file. The console window dies when the process is
-// killed (as the relaunch does); the file survives, so it captures the last thing that happened.
-// Same idiom as ACMHook / WDLE3Hook.
-static FILE* g_logFile = nullptr;
-static void tprintf(const char* fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt); vprintf(fmt, args); va_end(args);
-    if (g_logFile) { va_start(args, fmt); vfprintf(g_logFile, fmt, args); va_end(args); fflush(g_logFile); }
-}
 
 // Pick the renderer variant to load. All four retail main DLLs export the same
 // RunGame symbol; the stock launcher chooses dx11 vs dx12 from a runtime probe.
@@ -2241,6 +2232,28 @@ static __int64 __fastcall ScnReimpl5(void* a1, void*, void*, void*) { return Sce
 static __int64 __fastcall ScnReimpl6(void* a1, void*, void*, void*) { return SceneSingletonReimpl(6, a1); }
 static void* const g_scnReimplDetour[7] = { &ScnReimpl0, &ScnReimpl1, &ScnReimpl2, &ScnReimpl3, &ScnReimpl4, &ScnReimpl5, &ScnReimpl6 };
 
+// Dedicated hook for sub_187D5E810 (the frozen frontier) -- its own detour (not the generic ChkThunk) so we can
+// dump args / set a clean breakpoint / later enumerate its 2 vtable-dispatch sites. Pulled from kChkRvasIE to
+// avoid a double-hook. Forwards 16 slots (unknown arity, like ChkThunk). The [chk] direct-callees fire between
+// this ENTER and RETURN, so callee order still pinpoints the hang (this is defined before checkpoints.h is
+// #included, so it can't touch g_chkDepth for indenting -- no nesting indent, but the sequence is what matters).
+typedef __int64 (__fastcall* Sub7D5E810_t)(void*, void*, void*, void*, void*, void*, void*, void*,
+                                           void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub7D5E810_t g_sub7D5E810Orig = nullptr;
+static __int64 __fastcall Sub7D5E810_Detour(
+    void* a1, void* a2, void* a3, void* a4, void* a5, void* a6, void* a7, void* a8,
+    void* a9, void* a10, void* a11, void* a12, void* a13, void* a14, void* a15, void* a16)
+{
+    tprintf("[7d5] t%-5lu d%-2d sub_187D5E810(this=%p a2=%p a3=%p) ENTER\n",
+            GetCurrentThreadId(), g_chkDepth, a1, a2, a3); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_sub7D5E810Orig(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16);
+    --g_chkDepth;
+    tprintf("[7d5] t%-5lu d%-2d sub_187D5E810 RETURNED = 0x%llX\n",
+            GetCurrentThreadId(), g_chkDepth, (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 static void InstallSkuTrace(uintptr_t base)
 {
     if (!kTraceSku) return;
@@ -2407,6 +2420,11 @@ static void InstallSkuTrace(uintptr_t base)
         else
             tprintf("[rsg] FAILED to hook %s thunk sub_18%X @ %p\n", kScnNames[i], kScnThunkRva[i], t);
     }
+    void* s7d5 = (void*)(base + 0x7D5E810);   // dedicated hook for the frozen frontier (pulled from kChkRvasIE)
+    if (MH_CreateHook(s7d5, &Sub7D5E810_Detour, (LPVOID*)&g_sub7D5E810Orig) == MH_OK && MH_EnableHook(s7d5) == MH_OK)
+        tprintf("[7d5] hooked sub_187D5E810 (frozen frontier) @ %p\n", s7d5);
+    else
+        tprintf("[7d5] FAILED to hook sub_187D5E810 @ %p\n", s7d5);
     void* nm = (void*)(base + 0x60F430);   // CMemMng::NMalloc -- size-log gated on g_scnIter ([scene] loop arms it)
     if (MH_CreateHook(nm, &NMalloc_Detour, (LPVOID*)&g_nmallocOrig) == MH_OK && MH_EnableHook(nm) == MH_OK)
         tprintf("[nmsz] hooked CMemMng::NMalloc (base+0x60F430) @ %p [logs only inside CreateSingleton iters]\n", nm);
@@ -2442,7 +2460,7 @@ static void InstallSkuTrace(uintptr_t base)
 // (off_189DBE560) resolved: +0x60/+0x78/+0x88. Excludes CMemMng::NMalloc + CGame::GetInstance (hot noise;
 // both are bracketed by neighbors anyway). Already-hooked (InitializeCore/CreateAndInitGamerProfileManager/
 // Initialize) are omitted here to avoid double-hooking.
-static const bool kCheckpoints = true;
+
 // OLD broad bracket (InitializeCore..Initialize) -- too noisy now (sub_189372994/A2C container loops etc.).
 // Commented out; kept for reference. Swap the two kChkRvas definitions to restore.
 /*
@@ -2534,7 +2552,7 @@ static const uintptr_t kChkRvasIES[] = {
 
 // --- checkpoint / thunk-hook machinery lives in checkpoints.h (append RVAs there; APPEND-ONLY -- see its
 //     header). Included here (not at top of file) because it depends on tprintf/MinHook/kCheckpoints above. ---
-#include "checkpoints.h"
+
 // ===================================================================================================
 // Denuvo-VM stub: G4::Platform::RetrieveClassicalCPUCacheDetails (sub_188C10530).
 // Retail's copy is virtualized -- its entry jmp's into the VM, which under manual load was never
