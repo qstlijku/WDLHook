@@ -36,6 +36,12 @@
     <ClCompile Include="Checkpoints.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Physics.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Engine.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\ext\minhook\buffer.c">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -143,6 +143,8 @@
     <ClCompile Include="Upc.cpp" />
     <ClCompile Include="BindImports.cpp" />
     <ClCompile Include="Checkpoints.cpp" />
+    <ClCompile Include="Physics.cpp" />
+    <ClCompile Include="Engine.cpp" />
     <ClCompile Include="..\ext\minhook\buffer.c" />
     <ClCompile Include="..\ext\minhook\hook.c" />
     <ClCompile Include="..\ext\minhook\trampoline.c" />
