@@ -798,10 +798,10 @@ static __int64 __fastcall Sub951F500_Detour(void* a1, void* a2, void* a3, void* 
 // Dropped the per-node/per-type floods: hkMemHeapAllocator 0x8D3CEC0, TypeRegNode::getNext 0x8CFDBC0,
 // s_updateAlignment 0x9520E70 (each fired 100s-1000s of times per boot). fireCallbacks 0x951FE80 -> [hrs] skip.
 static const uintptr_t kRegTypeCallees[] = {
-    0x8D277C0, 0x951FAD0, 0x955A770, 0x8CFDC00, 0x8D18D40,
+    0x8D277C0, 0x955A770, 0x8CFDC00, 0x8D18D40,   // rebuildEverything 0x951FAD0 -> dedicated [re] detour (vcall resolve)
 };
 static const char* const kRegTypeNames[] = {
-    "hkArrayUtil::_reserveMore", "BuiltinTypeReg::rebuildEverything", "TypeDetail::fixupUnknownSpecialMethods",
+    "hkArrayUtil::_reserveMore", "TypeDetail::fixupUnknownSpecialMethods",
     "TypeRegNode::typeIsDuplicate", "hkMemoryAllocator::bufFree2",
 };
 static const int kNumRegTypeCallees = (int)(sizeof(kRegTypeCallees) / sizeof(kRegTypeCallees[0]));
@@ -845,15 +845,39 @@ static __int64 __fastcall Sub9520420_Detour(void* a, void* b, void* c, void* dd)
     return r;
 }
 
-// sub_18951FE80 -- IDA had this mislabeled as BuiltinTypeReg::fireCallbacks (user removed the label). Keep the
-// passthru; it's the call near the end of rebuildEverything (&v24, &v31), AFTER the crash site -> not the culprit.
-static HkReflect_t g_sub951FE80Orig;
-static __int64 __fastcall Sub951FE80_Detour(void* a, void* b, void* c, void* dd)
+// sub_18951FE80 = BuiltinTypeReg::fireCallbacks -- REIMPL'D (retail body is VM-obfuscated -> faults un-bootstrapped).
+// Broadcasts a type-change to each registered subscription: for each SubscriptionImpl* s, call s->m_func(args, s->m_data).
+// The original makes a defensive HEAP copy of m_subscriptions then iterates it (so a callback can (un)subscribe mid-fire);
+// we snapshot into a stack buffer instead -- same reentrancy safety, no heap / no VM helpers. Empty list (the boot case)
+// -> pure no-op. Layout (DuniaDemo.h): BuiltinTypeReg::m_subscriptions @ 0x58 (hkArray m_data@+0/m_size@+8);
+// SubscriptionImpl: m_func @ 0x28, m_data @ 0x30.
+typedef void (__fastcall* SubFunc_t)(const void* args, void* data);
+static HkReflect_t g_sub951FE80Orig;   // MinHook trampoline out-param (unused -- VM body faults)
+static __int64 __fastcall Sub951FE80_Detour(void* thisReg, void* args, void* c, void* dd)
 {
-    tprintf("[hrs] sub_18951FE80 (ex-fireCallbacks)(%p, %p, %p, %p) ENTER\n", a, b, c, dd); fflush(stdout);
-    __int64 r = g_sub951FE80Orig(a, b, c, dd);
-    tprintf("[hrs] sub_18951FE80 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
-    return r;
+    void** data = *(void***)((char*)thisReg + 0x58);   // m_subscriptions.m_data
+    int n = *(int*)((char*)thisReg + 0x60);            // m_subscriptions.m_size
+    tprintf("[hrs] fireCallbacks reimpl(this=%p args=%p) m_subscriptions.m_size=%d\n", thisReg, args, n); fflush(stdout);
+    enum { CAP = 256 };
+    void* snap[CAP];
+    int cnt = (n > 0) ? ((n < CAP) ? n : CAP) : 0;
+    if (n > CAP)
+    {
+        tprintf("[hrs] fireCallbacks: m_size %d exceeds snapshot CAP %d -- TRUNCATED\n", n, CAP); fflush(stdout);
+    }
+    for (int i = 0; i < cnt; ++i)
+        snap[i] = data[i];
+    for (int i = 0; i < cnt; ++i)
+    {
+        char* s = (char*)snap[i];
+        if (s)
+        {
+            SubFunc_t fn = *(SubFunc_t*)(s + 0x28);    // m_func
+            void* d = *(void**)(s + 0x30);             // m_data
+            fn(args, d);
+        }
+    }
+    return 0;
 }
 
 // [re] Passthru-trace EVERY remaining distinct callee inside rebuildEverything (sub_18951FAD0) not already
@@ -870,16 +894,15 @@ static const uintptr_t kReCallees[] = {
     0x9521520,  // sub_189521520   (sort, after first loop)
     0x8D27670,  // sub_188D27670   (array reserve on off_18B21B138)
     //0x8D0DB40,  // sub_188D0DB40   (v31 hkMap init, m_freeChainStart=-1)
-    0x8D342E0,  // sub_188D342E0   (compare in second loop)
-    0x8CFDC10,  // sub_188CFDC10   (setDuplicate flag)
+    //0x8D342E0,  // sub_188D342E0   (compare in second loop) -- commented: log flood
+    //0x8CFDC10,  // sub_188CFDC10   (setDuplicate flag) -- commented: log flood
     //0x8D0D7B0,  // sub_188D0D7B0   (v31 map insert, dup branch)
     0x9520FF0,  // sub_189520FF0   (*(a1+24) = ...(&v24, 0, v25-1) build call)
     0x9521280,  // sub_189521280   (the (&v24, &v31) TAIL call -- what IDA mislabeled as fireCallbacks; SUSPECT)
     0x8D0DAE0,  // sub_188D0DAE0   (v31 map teardown; AFTER the tail call -- included for completeness)
 };
 static const char* const kReNames[] = {
-    "hkMemHeapAllocator", "sub_188D34D70", "sub_188CFDBB0", "sub_189521520(sort)", "sub_188D27670(reserve)",
-    "sub_188D0DB40(mapInit)", "sub_188D342E0(cmp)", "sub_188CFDC10(setDup)", "sub_188D0D7B0(mapInsert)",
+    "hkMemHeapAllocator", "sub_188CFDBB0", "sub_189521520(sort)", "sub_188D27670(reserve)",
     "sub_189520FF0(build)", "sub_189521280(tail!SUSPECT)", "sub_188D0DAE0(mapFree)",
 };
 static const int kNumRe = (int)(sizeof(kReCallees) / sizeof(kReCallees[0]));
@@ -900,6 +923,77 @@ template<int N> static __int64 __fastcall ReThunk(void* a, void* b, void* c, voi
 }
 template<size_t... I> static std::array<Re_t, sizeof...(I)> MakeReThunks(std::index_sequence<I...>) { return {{ &ReThunk<I>... }}; }
 static const std::array<Re_t, kNumRe> g_reThunks = MakeReThunks(std::make_index_sequence<kNumRe>{});
+
+// [re] rebuildEverything (sub_18951FAD0) dedicated detour -- pulled out of the [rtc] pool so we can resolve the
+// virtual call `(*(*a1 + 64LL))(a1)` that runs immediately AFTER sub_189521280 returns (= the current crash site,
+// per the log: 189521280 RETURNED then no further progress). The vtable (*a1) is constant across the call, so we
+// read vtable[+0x40] at ENTER and print its target RVA to identify (and next, hook) the crashing virtual.
+static HkReflect_t g_sub951FAD0Orig;
+static __int64 __fastcall Sub951FAD0_Detour(void* a, void* b, void* c, void* dd)
+{
+    uintptr_t vtbl = *(uintptr_t*)a;
+    uintptr_t vfn = *(uintptr_t*)(vtbl + 64);
+    tprintf("[re] rebuildEverything ENTER this=%p  vtbl-rva=0x%llX  vcall[+0x40]=sub_18%llX\n",
+        a, (unsigned long long)(vtbl - g_reBase), (unsigned long long)(vfn - g_reBase)); fflush(stdout);
+    __int64 r = g_sub951FAD0Orig(a, b, c, dd);
+    tprintf("[re] rebuildEverything RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_18951F9D0 = rebuildEverything's vtable[+0x40] virtual, called as `(*(*a1+64))(a1)` right after
+// sub_189521280 returns -- resolved live (vcall[+0x40]=sub_18951F9D0) and confirmed as the crash site (log ends
+// at 189521280 RETURNED, no rebuildEverything RETURNED). Standalone. Passthru first -- observe, don't skip;
+// expect ENTER then fault, which pins it. Then get its decompile to reimpl/skip.
+static HkReflect_t g_sub951F9D0Orig;
+static __int64 __fastcall Sub951F9D0_Detour(void* a, void* b, void* c, void* dd)
+{
+    tprintf("[v40] notifyTypesMutated (sub_18951F9D0, rebuildEverything vcall[+0x40])(%p, %p, %p, %p) ENTER\n", a, b, c, dd); fflush(stdout);
+    __int64 r = g_sub951F9D0Orig(a, b, c, dd);
+    tprintf("[v40] notifyTypesMutated (sub_18951F9D0) RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// [v9d] The 2 VM'd (Denuvo-obfuscated) calls inside sub_18951F9D0 = BuiltinTypeReg::notifyTypesMutated, now
+// REIMPL'D verbatim from the PDB (their retail VM bodies are obfuscated garbage -> fault un-bootstrapped). The 3rd
+// VM call in notifyTypesMutated, getNext (0x9520530), has a READABLE native body -> left unhooked (runs native).
+// hkSerializeMultiMap layout: m_valueChain @+0x00 ({value@0, next@8}, 16B); m_indexMap (hkPointerMap wrapping a
+// hkMapBase) @+0x10, so m_elem = *(Pair**)(map+0x10) and m_hashMod = *(int*)(map+0x1c); Pair = 16B {key@0, val@8}.
+
+// getIterator(map) -- verbatim port of the PDB decompile: scan m_indexMap for the first used slot (key != -1),
+// returning its index (or m_hashMod+1 if the map is empty -> isValid() then reports done).
+static HkReflect_t g_sub95204F0Orig;   // MinHook trampoline out-param (unused -- VM body faults)
+static __int64 __fastcall Sub95204F0_Detour(void* map, void* b, void* c, void* dd)
+{
+    int m_hashMod = *(int*)((char*)map + 0x1C);
+    __int64 result = 0;
+    if (m_hashMod >= 0)
+    {
+        const char* m_elem = *(const char**)((char*)map + 0x10);
+        for (__int64 i = 0; i <= m_hashMod; ++i)
+        {
+            if (*(const __int64*)m_elem != -1LL) break;
+            ++result;
+            m_elem += 16;
+        }
+    }
+    tprintf("[v9d] getIterator reimpl(map=%p) -> 0x%llX\n", map, (unsigned long long)result); fflush(stdout);
+    return result;
+}
+
+// getFirstIndex(map, key) = *getWithDefault(&m_indexMap, &key, &(-1)). getWithDefault IS the readable-native find
+// helper sub_1895183F0 (golden-ratio hash + linear probe; returns &slot.val on hit or &def(-1) on miss) -- call it
+// directly rather than re-derive the hash.
+typedef void* (__fastcall* GetWithDefault_t)(void* indexMap, const void* pKey, const void* pDef);
+static HkReflect_t g_sub95203F0Orig;   // MinHook trampoline out-param (unused -- VM body faults)
+static __int64 __fastcall Sub95203F0_Detour(void* map, void* k, void* c, void* dd)
+{
+    unsigned __int64 key = (unsigned __int64)k;
+    __int64 def = -1LL;
+    void* p = ((GetWithDefault_t)(g_reBase + 0x95183F0))((char*)map + 0x10, &key, &def);
+    __int64 idx = *(__int64*)p;
+    tprintf("[v9d] getFirstIndex reimpl(map=%p key=%p) -> %lld\n", map, k, (long long)idx); fflush(stdout);
+    return idx;
+}
 
 // Install all physics-init hooks/reimpls (carved from the former InstallSkuTrace). NOT gated on kTraceSku:
 // the reimpls (threadInit / setMemorySoftLimit / LockedMemoryAllocator) are boot-critical for the offline path.
@@ -1051,9 +1145,9 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[hrs] FAILED to hook hkSerializeMultiMap::insert @ %p\n", s20420);
     void* s1FE80 = (void*)(base + 0x951FE80);
     if (MH_CreateHook(s1FE80, &Sub951FE80_Detour, (LPVOID*)&g_sub951FE80Orig) == MH_OK && MH_EnableHook(s1FE80) == MH_OK)
-        tprintf("[hrs] hooked sub_18951FE80 (ex-fireCallbacks) @ %p\n", s1FE80);
+        tprintf("[hrs] hooked fireCallbacks reimpl (sub_18951FE80) @ %p\n", s1FE80);
     else
-        tprintf("[hrs] FAILED to hook sub_18951FE80 @ %p\n", s1FE80);
+        tprintf("[hrs] FAILED to hook fireCallbacks reimpl (sub_18951FE80) @ %p\n", s1FE80);
     // [re] passthru-trace all remaining rebuildEverything (sub_18951FAD0) callees to pin the pre-crash function
     g_reBase = base;
     for (int i = 0; i < kNumRe; ++i)
@@ -1064,6 +1158,28 @@ void InstallPhysicsHooks(uintptr_t base)
         else
             tprintf("[re] FAILED to hook %s (sub_18%llX) @ %p\n", kReNames[i], (unsigned long long)kReCallees[i], t);
     }
+    void* sfad0 = (void*)(base + 0x951FAD0);   // rebuildEverything -- dedicated detour resolves vcall[+0x40] (crash site)
+    if (MH_CreateHook(sfad0, &Sub951FAD0_Detour, (LPVOID*)&g_sub951FAD0Orig) == MH_OK && MH_EnableHook(sfad0) == MH_OK)
+        tprintf("[re] hooked rebuildEverything (sub_18951FAD0) @ %p\n", sfad0);
+    else
+        tprintf("[re] FAILED to hook rebuildEverything (sub_18951FAD0) @ %p\n", sfad0);
+    void* sf9d0 = (void*)(base + 0x951F9D0);   // rebuildEverything's vcall[+0x40] target = current crash site
+    if (MH_CreateHook(sf9d0, &Sub951F9D0_Detour, (LPVOID*)&g_sub951F9D0Orig) == MH_OK && MH_EnableHook(sf9d0) == MH_OK)
+        tprintf("[v40] hooked notifyTypesMutated (sub_18951F9D0, vcall[+0x40]) @ %p\n", sf9d0);
+    else
+        tprintf("[v40] FAILED to hook notifyTypesMutated (sub_18951F9D0) @ %p\n", sf9d0);
+    // [v9d] the 2 VM'd calls inside notifyTypesMutated (sub_18951F9D0) -- REIMPL'D (getIterator + getFirstIndex).
+    // getNext (0x9520530) has a readable native body -> left UNHOOKED (runs native).
+    void* s3f0 = (void*)(base + 0x95203F0);   // getFirstIndex reimpl
+    if (MH_CreateHook(s3f0, &Sub95203F0_Detour, (LPVOID*)&g_sub95203F0Orig) == MH_OK && MH_EnableHook(s3f0) == MH_OK)
+        tprintf("[v9d] hooked getFirstIndex reimpl (sub_1895203F0) @ %p\n", s3f0);
+    else
+        tprintf("[v9d] FAILED to hook sub_1895203F0 @ %p\n", s3f0);
+    void* s4f0 = (void*)(base + 0x95204F0);   // getIterator reimpl
+    if (MH_CreateHook(s4f0, &Sub95204F0_Detour, (LPVOID*)&g_sub95204F0Orig) == MH_OK && MH_EnableHook(s4f0) == MH_OK)
+        tprintf("[v9d] hooked getIterator reimpl (sub_1895204F0) @ %p\n", s4f0);
+    else
+        tprintf("[v9d] FAILED to hook sub_1895204F0 @ %p\n", s4f0);
     void* s50b = (void*)(base + 0x8D050B0);   // 2nd VM thunk in Init (-> sub_1A17D9940)
     if (MH_CreateHook(s50b, &Sub8D050B0_Detour, (LPVOID*)&g_sub8D050B0Orig) == MH_OK && MH_EnableHook(s50b) == MH_OK)
         tprintf("[50b] hooked sub_188D050B0 (VM thunk) @ %p\n", s50b);
