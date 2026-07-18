@@ -2778,6 +2778,20 @@ static __int64 __fastcall Sub8D293F0_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
+// Direct passthru hook on the VM body sub_1A18150D0 (RVA 0x218150D0) -- hooked at the body itself (NOT the parent/
+// thunk sub_188D3C030, which complicated debugging last time). Expected to FAULT inside orig: the body does an
+// indirect call through an un-bootstrapped VM global, so ENTER-then-no-RETURN confirms we reached it with nothing
+// failing earlier. 1 arg (a1).
+typedef __int64 (__fastcall* Sub18150D0_t)(void*);
+static Sub18150D0_t g_sub18150D0Orig = nullptr;
+static __int64 __fastcall Sub18150D0_Detour(void* a1)
+{
+    tprintf("[15d] sub_1A18150D0(%p) ENTER\n", a1); fflush(stdout);
+    __int64 r = g_sub18150D0Orig(a1);
+    tprintf("[15d] sub_1A18150D0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 // Native reimpl of hkFreeListAllocator::setMemorySoftLimit -- retail thunk sub_188D067D0 -> virtualized
 // sub_1A1806360 (RVA 0x21806360, in the VM band) hangs un-bootstrapped. From the PDB disasm the real body is:
 //   EnterCriticalSection(this+8); *(u64*)(this+0x1560) = a3; *maxMemory = 0; LeaveCriticalSection(this+8); return maxMemory;
@@ -3099,6 +3113,11 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[293] hooked sub_188D293F0 (VM thunk) @ %p\n", s293);
     else
         tprintf("[293] FAILED to hook sub_188D293F0 @ %p\n", s293);
+    void* s15d = (void*)(base + 0x218150D0);  // VM body sub_1A18150D0 -- direct passthru (expected to fault in orig)
+    if (MH_CreateHook(s15d, &Sub18150D0_Detour, (LPVOID*)&g_sub18150D0Orig) == MH_OK && MH_EnableHook(s15d) == MH_OK)
+        tprintf("[15d] hooked sub_1A18150D0 @ %p\n", s15d);
+    else
+        tprintf("[15d] FAILED to hook sub_1A18150D0 @ %p\n", s15d);
     InstallInitTrace(base);   // [itr]: bracket the 6 direct calls in Init's first stretch (gated on g_inInit)
     void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
     if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)
