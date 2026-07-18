@@ -20,7 +20,7 @@
 #include "minhook.h"
 
 #include "Log.h"
-#include "checkpoints.h"
+#include "Checkpoints.h"
 #include "Util.h"
 
 // Entry points defined in the split modules (Diagnostics.cpp / Upc.cpp / BindImports.cpp).

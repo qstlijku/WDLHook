@@ -33,6 +33,9 @@
     <ClCompile Include="BindImports.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Checkpoints.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\ext\minhook\buffer.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -59,7 +62,7 @@
     <ClInclude Include="upc_emu.h">
       <Filter>Source Files</Filter>
     </ClInclude>
-    <ClInclude Include="checkpoints.h">
+    <ClInclude Include="Checkpoints.h">
       <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>

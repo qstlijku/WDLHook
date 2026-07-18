@@ -127,7 +127,7 @@ static ChkFn_t g_chkOrig[kChkThunkPool];
 // balance can't. thread_local lives in WDLLauncher.exe's static TLS, so every thread (incl. game workers that
 // call hooked fns) gets its own independent counter. To find the park: filter to the boot tid and read the
 // DEEPEST checkpoint whose ENTER has no matching RETURNED.
-static thread_local int g_chkDepth = 0;
+extern thread_local int g_chkDepth;
 
 template<int N> static __int64 __fastcall ChkThunk(
     void* p0, void* p1, void* p2, void* p3, void* p4, void* p5, void* p6, void* p7,
@@ -219,7 +219,7 @@ static void InstallCheckpoints(uintptr_t base)
 // ONLY .pdata function-starts are hooked (66 of 151 reachable) -- the 85 no-.pdata reachable addrs are excluded:
 // hooking a non-fn-start plants a jmp mid-body and corrupts code (cf. the 0x8D07010 incident). Double-hooks
 // (e.g. NMalloc 0x60F430, 0x6884560 which is already in kChkRvasIE) fail gracefully -> logged as "skip".
-static volatile bool g_gate7d5 = false;   // armed while sub_187D5E810 runs (set by Sub7D5E810_Detour in main.cpp)
+extern volatile bool g_gate7d5;   // armed while sub_187D5E810 runs (set by Sub7D5E810_Detour in main.cpp)
 static const uintptr_t kGate884Rvas[] = {
     0x20DB0,   0xCE950,   0x10A1D0,  0x162880,  0x1FD980,  0x5B56E0,  0x5B7430,  0x5BD700,
     0x5C1CA0,  0x5C3DD0,  0x5E42D0,  0x5E9F10,
@@ -391,7 +391,7 @@ static void InstallGate884Ra(uintptr_t base)
 // LAST [itr] RETURN before the fault pins which gap faulted. Gated on g_inInit (set by the [init] hook in
 // main.cpp) so these generic helpers only trace inside Init. sub_188D07770 is the "false-positive" VM thunk
 // (@Init+0xAD) -- if it ENTERs but never RETURNs it wasn't a false positive after all.
-static volatile bool g_inInit = false;
+extern volatile bool g_inInit;
 static const uintptr_t kInitTrace[] = {
     0x8CF7BC0, 0x8CF8140, 0x8D3BF10, 0x8D049E0, 0x8D16080,  // 0x8D07770 (mainInit) -> dedicated reimpl hook
 };
