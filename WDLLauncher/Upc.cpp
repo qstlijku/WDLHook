@@ -1,0 +1,479 @@
+// Upc.cpp -- UPC / token capture + offline emu, uplay_aux / uplay_r2 AOB patchers, and the
+// LoadLibrary / relaunch defense. Split out of main.cpp. Entry point: InstallUplayAuxDefense().
+// Shared helpers (FindText/PatchAob/AnsiToWide/HookApi) live in Util.cpp.
+#include <Windows.h>
+#include <shellapi.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <intrin.h>
+#include "minhook.h"
+
+#include "Log.h"
+#include "Util.h"
+
+// ---- uplay_aux_r164.dll gate patch (ported from ACMHook — retail WDL uses the identical DLL) ----
+// The kill we captured (uplay_aux_r164.dll+0x5425, via dbdata.dll) is Ubisoft's "am I launched by
+// the proper Connect client?" gate: when dbdata's getGameTokenInterface loads uplay_aux and calls
+// its UPLAY_GetActivate, uplay_aux relaunches the game exe and TerminateProcesses us. We hook the
+// LoadLibrary family so the moment dbdata maps uplay_aux (before UPLAY_GetActivate runs) we AOB-patch
+// two spots in its .text, in memory only — the signed DLL on disk is never touched:
+//   - relaunch je  (84 DB 74 07 ...):  74 07 -> 90 90   don't spawn the WatchDogsLegion.exe relaunch.
+//   - gate test    (85 C0 74 1E ...):  85 C0 -> 31 C0   force the INIT path instead of TerminateProcess
+//     (Shadows lesson: blocking the terminate outright skipped the IGameToken init -> null-crit crash;
+//      xor eax,eax makes the `je init` always taken while sub_180005560 still populates its out-params).
+//
+// CAPTURE MODE (ACMHook parity): forcing the gate's init path offline still faults (log pid 596:
+// AV @ uplay_aux+0x20FD9) because the real token is missing. So first CAPTURE the real token: don't
+// patch — let the real getGameTokenInterface run, hook it, dump the returned IGameTokenInterface, and
+// WRAP it so every method the engine calls is logged (args + return + token blobs -> token_slot<N>.bin).
+// Needs a token-producing environment (Connect running in OFFLINE mode + a recent online activation)
+// so the gate returns verdict 0 and the real object is built. That capture gives us WDL's real token
+// layout + values to build the offline emu later (Shadows' captured values don't apply to WDL).
+// When true, kCaptureMode takes precedence: the patches below are SKIPPED.
+//
+// NOTE: capture CANNOT work from the standalone launcher — the gate lives inside getGameTokenInterface
+// and self-terminates before it returns a real object (log pid 50156: killed at uplay_aux+0x5425 while
+// we were in _orig, no object built). Capture now lives in WDLHook (the dinput8-injected DLL), which
+// runs inside the real Connect-launched game where the gate passes. So keep kCaptureMode=false here;
+// the launcher is the OFFLINE path (patches, and eventually the emu built from WDLHook's capture).
+static const bool kCaptureMode   = false;
+// OFFLINE EMU: hook getGameTokenInterface and return OUR emulated IGameTokenInterface WITHOUT calling
+// _orig -- so the gate that lives inside _orig never runs (no relaunch, no terminate, no +0x20FD9
+// crash). Built from the DE_Hook capture (wdl_token_slot4.bin + the object dump). This REPLACES the
+// uplay_aux patches, which crashed forcing the init path with no real token. Kept as its own flag so we
+// can fall back to patches if the emu is bypassed.
+static const bool kEmulateToken  = false;
+static const bool kPatchUplayAux = false; // not needed in emu mode (we skip _orig, so the gate never runs)
+
+// ---- Relaunch catcher -------------------------------------------------------
+// The kill (log pid 51692) is WinMain's OWN final TerminateProcess -- real RunGame relaunched
+// WatchDogsLegion.exe and RETURNED, upstream of the token gate, so the emu never ran. Hook
+// CreateProcessW/ShellExecuteExW to log WHO relaunches (module+offset + cmdline) and BLOCK the
+// WatchDogsLegion.exe / Ubisoft-launcher spawn, so RunGame can't bail and (hopefully) proceeds into
+// the boot + token path where the emu is waiting.
+static const bool kBlockRelaunch = false;
+
+static const unsigned char kRelaunchSig[] = { 0x84,0xDB, 0x74,0x07, 0x32,0xDB, 0xE9,0x81,0x00,0x00,0x00 };
+static const size_t        kRelaunchJeOff = 2; // the `74 07` within the signature
+static const unsigned char kGateSig[]     = { 0x85,0xC0, 0x74,0x1E, 0x83,0xF8,0x02, 0x75,0x11, 0xFF,0x15 };
+
+// ---- uplay_r264.dll relaunch-gate patch (the Connect-launched check) ---------
+// uplay_r264!sub_18004C230 decides whether to relaunch through Ubisoft Connect: it tests bit 2 of its
+// r9 flags ("already launched by Connect / -upc_exe_path present"). Set -> `jne 0x4C532` SKIPS the
+// relaunch and proceeds in-process; clear -> it spawns UbisoftGameLauncher.exe -upc_exe_path=<us> (via
+// sub_4C000) and RunGame bails with 0x80000000. We force bit 2 by turning `test r9b,4` into `or r9b,4`
+// (same 4 bytes -> ZF=0 -> jne always taken; leaves the jump/rel32 intact). IN-MEMORY ONLY: uplay_r264
+// is Ubisoft-signed (VerifyEmbeddedSignature hard-kills a modified file on disk). Pair with kEmulateToken
+// for the downstream token gate. Patch site 0x4C28F: `41 F6 C1 04 0F 85 ..` -> `41 80 C9 04`.
+static const bool kPatchUplayR2Relaunch = false;
+static const unsigned char kR2RelaunchSig[]  = { 0x41,0xF6,0xC1,0x04, 0x0F,0x85 }; // test r9b,4 ; jne
+static const unsigned char kR2RelaunchRepl[] = { 0x41,0x80,0xC9,0x04 };            // or r9b,4
+
+static void TryPatchUplayAux(LPCWSTR name, HMODULE mod)
+{
+    if (!name || !mod) return;
+    wchar_t low[1024]; low[0] = 0;
+    wcsncpy_s(low, _countof(low), name, _TRUNCATE);
+    _wcslwr_s(low, _countof(low));
+    if (!wcsstr(low, L"uplay_aux_r164.dll")) return;
+    if (kCaptureMode)
+    {
+        tprintf("[capture] uplay_aux loaded (%ls) - patches SKIPPED (capture mode)\n", name);
+        return; // let the real gate run so getGameTokenInterface builds a real token to capture
+    }
+    if (!kPatchUplayAux) return;
+    tprintf("[patch] uplay_aux_r164.dll loaded (%ls) -> applying relaunch + gate patches (tid %lu)\n",
+            name, GetCurrentThreadId());
+    static const unsigned char nop2[] = { 0x90, 0x90 };
+    static const unsigned char xor2[] = { 0x31, 0xC0 };
+    PatchAob(mod, kRelaunchSig, sizeof(kRelaunchSig), kRelaunchJeOff, nop2, 2, "relaunch-je");
+    PatchAob(mod, kGateSig,     sizeof(kGateSig),     0,              xor2, 2, "gate");
+    fflush(stdout);
+}
+
+static void TryPatchUplayR2(LPCWSTR name, HMODULE mod)
+{
+    if (!name || !mod || !kPatchUplayR2Relaunch) return;
+    wchar_t low[1024]; low[0] = 0;
+    wcsncpy_s(low, _countof(low), name, _TRUNCATE);
+    _wcslwr_s(low, _countof(low));
+    if (!wcsstr(low, L"uplay_r264.dll")) return;
+    tprintf("[patch] uplay_r264.dll loaded (%ls) -> force skip-relaunch (test r9b,4 -> or r9b,4 @ 0x4C28F) (tid %lu)\n",
+            name, GetCurrentThreadId());
+    PatchAob(mod, kR2RelaunchSig, sizeof(kR2RelaunchSig), 0, kR2RelaunchRepl, sizeof(kR2RelaunchRepl), "r2-relaunch");
+    fflush(stdout);
+}
+
+// ---- CAPTURE: getGameTokenInterface (dbdata.dll's only export) ---------------------------------
+// IGameTokenInterface* getGameTokenInterface(void* arg0, unsigned __int64 arg1)
+//   mangled: ?getGameTokenInterface@@YAPEAVIGameTokenInterface@@PEAX_K@Z  (same as Shadows).
+// On a token-producing run we call the real one, DUMP the returned object, then return a WRAPPER
+// whose vtables are our thunks: each logs the call (args + real return + out-param) and forwards to
+// the real method on the real object — capturing exactly what the engine asks of the token so we can
+// replicate it offline. Object layout is the SAME uplay_aux as Shadows (dual vtable at +0x00/+0x38).
+typedef void* (*getGameTokenInterface_t)(void*, unsigned __int64);
+static getGameTokenInterface_t g_getToken_orig = nullptr;
+static bool g_tokenHooked = false;
+
+static void DumpTokenObject(void* obj)
+{
+    if (!obj) { tprintf("[dump] token object is NULL (no valid object built)\n"); return; }
+    uintptr_t base = (uintptr_t)GetModuleHandleW(L"uplay_aux_r164.dll");
+    unsigned char raw[0x48] = {};
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), obj, raw, sizeof(raw), &got) || got < 0x40)
+    { tprintf("[dump] object %p unreadable\n", obj); return; }
+
+    tprintf("[dump] === IGameTokenInterface @ %p  (uplay_aux base %p) ===\n", obj, (void*)base);
+    char line[160];
+    for (SIZE_T i = 0; i < got; i += 16)
+    {
+        int n = sprintf_s(line, sizeof(line), "[dump]   +0x%02llX: ", (unsigned long long)i);
+        for (SIZE_T j = 0; j < 16 && i + j < got; ++j)
+            n += sprintf_s(line + n, sizeof(line) - n, "%02X ", raw[i + j]);
+        tprintf("%s\n", line);
+    }
+    auto rel = [&](uintptr_t p) -> unsigned long long { return base && p > base ? (unsigned long long)(p - base) : 0; };
+    uintptr_t vt1 = *(uintptr_t*)(raw + 0x00);
+    uintptr_t vt2 = *(uintptr_t*)(raw + 0x38);
+    tprintf("[dump]  +0x00 vtbl1 = %p (uplay_aux+0x%llX; Shadows was 0xF2CC0)\n", (void*)vt1, rel(vt1));
+    tprintf("[dump]  +0x08 = 0x%llX   +0x10 = 0x%llX\n", *(unsigned long long*)(raw + 0x08), *(unsigned long long*)(raw + 0x10));
+    tprintf("[dump]  +0x24 = 0x%08X (dword)   +0x28 = 0x%llX   +0x30 = 0x%llX\n",
+        *(unsigned int*)(raw + 0x24), *(unsigned long long*)(raw + 0x28), *(unsigned long long*)(raw + 0x30));
+    tprintf("[dump]  +0x38 vtbl2 = %p (uplay_aux+0x%llX; Shadows was 0xF3090)\n", (void*)vt2, rel(vt2));
+    uintptr_t m[10];
+    if (vt1 && ReadProcessMemory(GetCurrentProcess(), (void*)vt1, m, sizeof(m), &got))
+        for (int i = 0; i < 10; ++i) tprintf("[dump]  vtbl1[%d] = uplay_aux+0x%llX\n", i, rel(m[i]));
+    if (vt2 && ReadProcessMemory(GetCurrentProcess(), (void*)vt2, m, 6 * sizeof(uintptr_t), &got))
+        for (int i = 0; i < 6; ++i) tprintf("[dump]  vtbl2[%d] = uplay_aux+0x%llX\n", i, rel(m[i]));
+
+    uintptr_t bufBegin = *(uintptr_t*)(raw + 0x08);
+    uintptr_t bufEnd   = *(uintptr_t*)(raw + 0x10);
+    if (bufBegin && bufEnd > bufBegin)
+    {
+        size_t bufLen = (size_t)(bufEnd - bufBegin);
+        if (bufLen > 0x200) bufLen = 0x200;
+        unsigned char buf[0x200] = {};
+        if (ReadProcessMemory(GetCurrentProcess(), (void*)bufBegin, buf, bufLen, &got) && got)
+        {
+            tprintf("[dump]  token blob @ %p  (%llu bytes, from +0x08..+0x10):\n", (void*)bufBegin, (unsigned long long)got);
+            for (SIZE_T i = 0; i < got; i += 16)
+            {
+                int n = sprintf_s(line, sizeof(line), "[dump]    %04llX: ", (unsigned long long)i);
+                for (SIZE_T j = 0; j < 16 && i + j < got; ++j)
+                    n += sprintf_s(line + n, sizeof(line) - n, "%02X ", buf[i + j]);
+                n += sprintf_s(line + n, sizeof(line) - n, " | ");
+                for (SIZE_T j = 0; j < 16 && i + j < got; ++j)
+                    n += sprintf_s(line + n, sizeof(line) - n, "%c", (buf[i + j] >= 32 && buf[i + j] < 127) ? buf[i + j] : '.');
+                tprintf("%s\n", line);
+            }
+        }
+    }
+    tprintf("[dump] === end ===\n");
+    fflush(stdout);
+}
+
+// The vtable-wrapping capture: on each token method call, log + forward to the real method.
+static void*    g_realObj   = nullptr;
+static void**   g_realVtbl1 = nullptr;
+static void**   g_realVtbl2 = nullptr;
+static uint64_t g_wrapObj[9];
+static void*    g_wrapVtbl1[10];
+static void*    g_wrapVtbl2[6];
+typedef __int64 (*TokenMethod_t)(void*, void*, void*, void*);
+
+static void WrapPeek(const char* tag, void* p, size_t n = 0x20)
+{
+    if (!p || (uintptr_t)p < 0x10000) return;
+    unsigned char b[0x50]; if (n > sizeof(b)) n = sizeof(b);
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), p, b, n, &got) || !got) return;
+    char line[512]; int m = sprintf_s(line, sizeof(line), "[wrap]     %s @%p:", tag, p);
+    for (SIZE_T i = 0; i < got; ++i) m += sprintf_s(line + m, sizeof(line) - m, " %02X", b[i]);
+    m += sprintf_s(line + m, sizeof(line) - m, "  | ");
+    for (SIZE_T i = 0; i < got; ++i) m += sprintf_s(line + m, sizeof(line) - m, "%c", (b[i] >= 32 && b[i] < 127) ? b[i] : '.');
+    tprintf("%s\n", line);
+}
+
+static void WrapPeekBig(const char* tag, void* p, size_t n)
+{
+    if (!p || (uintptr_t)p < 0x10000) return;
+    static unsigned char buf[0x800]; if (n > sizeof(buf)) n = sizeof(buf);
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), p, buf, n, &got) || !got) return;
+    tprintf("[wrap]     %s @%p  (%llu bytes):\n", tag, p, (unsigned long long)got);
+    char line[160];
+    for (SIZE_T i = 0; i < got; i += 16)
+    {
+        int m = sprintf_s(line, sizeof(line), "[wrap]      %04llX: ", (unsigned long long)i);
+        SIZE_T j = 0;
+        for (; j < 16 && i + j < got; ++j) m += sprintf_s(line + m, sizeof(line) - m, "%02X ", buf[i + j]);
+        for (; j < 16; ++j)                m += sprintf_s(line + m, sizeof(line) - m, "   ");
+        m += sprintf_s(line + m, sizeof(line) - m, " | ");
+        for (j = 0; j < 16 && i + j < got; ++j) { unsigned char c = buf[i + j]; m += sprintf_s(line + m, sizeof(line) - m, "%c", (c >= 32 && c < 127) ? c : '.'); }
+        tprintf("%s\n", line);
+    }
+}
+
+// Write a captured blob byte-perfect next to the log so the emu can replay it verbatim.
+static void DumpBlobToFile(int slot, void* p, size_t len)
+{
+    if (!p || (uintptr_t)p < 0x10000 || !len || len > 0x20000) return;
+    char path[MAX_PATH];
+    sprintf_s(path, sizeof(path), "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\wdl_token_slot%d.bin", slot);
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { tprintf("[wrap]     (blob file open failed for slot %d)\n", slot); return; }
+    DWORD wrote = 0; WriteFile(h, p, (DWORD)len, &wrote, NULL); CloseHandle(h);
+    tprintf("[wrap]     wrote %lu bytes -> wdl_token_slot%d.bin\n", wrote, slot);
+}
+
+template<int SLOT>
+static __int64 WrapThunk(void* self, void* a2, void* a3, void* a4)
+{
+    const bool v2 = SLOT >= 100;
+    const int  idx = v2 ? SLOT - 100 : SLOT;
+    TokenMethod_t real = (TokenMethod_t)(v2 ? g_realVtbl2[idx] : g_realVtbl1[idx]);
+    tprintf("[wrap] %s[%d] CALL  a2=%p a3=%p a4=%p\n", v2 ? "vtbl2" : "vtbl1", idx, a2, a3, a4);
+    WrapPeek("a2 in ", a2);
+    __int64 ret = real(g_realObj, a2, a3, a4);   // forward to REAL method on REAL object
+    tprintf("[wrap] %s[%d] RET = 0x%llX\n", v2 ? "vtbl2" : "vtbl1", idx, (unsigned long long)ret);
+    WrapPeek("ret*  ", (void*)ret, 0x40);
+    WrapPeek("a2 out", a2);
+    WrapPeek("this  ", g_realObj, 0x48);
+    // Shadows' token slots (4/7/8) wrote a length/count to *a2 and returned a blob ptr — dump those
+    // as a starting heuristic; WDL's slot usage will show in the log and we adjust from there.
+    if (!v2 && (idx == 4 || idx == 7 || idx == 8))
+    {
+        unsigned long long len = 0;
+        if (a2 && (uintptr_t)a2 > 0x10000) len = *(unsigned int*)a2;
+        tprintf("[wrap]     out-param *a2 = %llu (0x%llX)\n", len, len);
+        size_t bytes = (idx == 8) ? (size_t)len * 4 : (size_t)len;
+        WrapPeekBig("ret-blob", (void*)ret, bytes < 0x80 ? bytes + 16 : 0x80);
+        DumpBlobToFile(idx, (void*)ret, bytes);
+    }
+    fflush(stdout);
+    return ret;
+}
+
+static void* BuildWrapper(void* realObj)
+{
+    if (!realObj) return realObj;
+    g_realObj   = realObj;
+    g_realVtbl1 = *(void***)((char*)realObj + 0x00);
+    g_realVtbl2 = *(void***)((char*)realObj + 0x38);
+    memcpy(g_wrapObj, realObj, sizeof(g_wrapObj));   // copy the fields the engine reads directly
+    g_wrapVtbl1[0]=(void*)&WrapThunk<0>; g_wrapVtbl1[1]=(void*)&WrapThunk<1>;
+    g_wrapVtbl1[2]=(void*)&WrapThunk<2>; g_wrapVtbl1[3]=(void*)&WrapThunk<3>;
+    g_wrapVtbl1[4]=(void*)&WrapThunk<4>; g_wrapVtbl1[5]=(void*)&WrapThunk<5>;
+    g_wrapVtbl1[6]=(void*)&WrapThunk<6>; g_wrapVtbl1[7]=(void*)&WrapThunk<7>;
+    g_wrapVtbl1[8]=(void*)&WrapThunk<8>; g_wrapVtbl1[9]=(void*)&WrapThunk<9>;
+    g_wrapVtbl2[0]=(void*)&WrapThunk<100>; g_wrapVtbl2[1]=(void*)&WrapThunk<101>;
+    g_wrapVtbl2[2]=(void*)&WrapThunk<102>; g_wrapVtbl2[3]=(void*)&WrapThunk<103>;
+    g_wrapVtbl2[4]=(void*)&WrapThunk<104>; g_wrapVtbl2[5]=(void*)&WrapThunk<105>;
+    g_wrapObj[0] = (uint64_t)&g_wrapVtbl1[0];   // +0x00 our vtbl1
+    g_wrapObj[7] = (uint64_t)&g_wrapVtbl2[0];   // +0x38 our vtbl2
+    return g_wrapObj;
+}
+
+// ---- Offline token emulation (built from the DE_Hook capture) ------------------------------------
+// The captured real object (DE_Hook, Connect-launched): dual vtable (uplay_aux+0xF2CC0 / +0xF3090),
+// +0x08..+0x10 = a 23-entry owned-products buffer, +0x24 = 1 (activated), +0x40 = 3; and the engine
+// (caller DuniaDemo+0x1CC3D2B5) calls ONLY vtbl1[0] (->1), vtbl1[2] (session init; takes an ephemeral
+// per-session key, populates +0x24/+0x28/+0x30), and vtbl1[4] (the access token, *a2 = length). We
+// rebuild all of that with our own thunks and return it in place of the real object.
+static const uint32_t g_tokenIds[] = { // owned products, verbatim from the real +0x08..+0x10 buffer
+    0x1443,0x1444,0x1445,0x1446,0x1447,0x1448,0x1449,0x144A,0x144B,0x144C,
+    0x2A25,0x2A26,0x2A27,0x2A28,0x2A29,0x2BDC,0x457F,0x45E0,0x4624,
+    0xE28E,0xE291,0xE292,0xE5ED };
+
+static char*  g_tok4    = nullptr; // access token (vtbl1[4]); loaded from the capture file at first use
+static size_t g_tok4Len = 0;
+static void LoadAccessToken()
+{
+    if (g_tok4) return;
+    FILE* f = nullptr;
+    fopen_s(&f, "C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\wdl_token_slot4.bin", "rb");
+    if (!f) { tprintf("[emu] WARNING: wdl_token_slot4.bin not found -> vtbl1[4] returns empty\n"); return; }
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n > 0) { g_tok4 = (char*)malloc((size_t)n + 1); if (g_tok4) { fread(g_tok4, 1, (size_t)n, f); g_tok4[n] = 0; g_tok4Len = (size_t)n; } }
+    fclose(f);
+    tprintf("[emu] loaded access token: %zu bytes\n", g_tok4Len);
+}
+
+static uint64_t g_sessObj[16] = { 0 }; // vtbl1[2]'s return + the +0x28/+0x30 pointees (dummy, iterate if deref'd)
+static void*    g_emuVtbl1[10];
+static void*    g_emuVtbl2[6];
+static uint64_t g_emuObj[16] = { 0 };   // 0x48-byte object + slack in case the engine reads past +0x40
+
+template<int SLOT>
+static __int64 EmuThunk(void* self, void* a2, void* a3, void* a4)
+{
+    __int64 ret = 0;
+    switch (SLOT)
+    {
+    case 0: ret = *(uint32_t*)((char*)self + 0x24); break;                    // activated flag -> 1
+    case 2: ret = (__int64)&g_sessObj[0]; break;                              // session ptr (object pre-populated)
+    case 4: if (a2) *(uint64_t*)a2 = g_tok4Len; ret = (__int64)g_tok4; break; // access token (len 2408)
+    default: ret = 0; break;
+    }
+    tprintf("[emu] %s[%d] self=%p a2=%p a3=%p a4=%p -> 0x%llX\n",
+        SLOT >= 100 ? "vtbl2" : "vtbl1", SLOT >= 100 ? SLOT - 100 : SLOT, self, a2, a3, a4, (unsigned long long)ret);
+    return ret;
+}
+
+static void* BuildEmuToken()
+{
+    static bool built = false;
+    if (!built)
+    {
+        LoadAccessToken();
+        g_emuVtbl1[0]=(void*)&EmuThunk<0>; g_emuVtbl1[1]=(void*)&EmuThunk<1>;
+        g_emuVtbl1[2]=(void*)&EmuThunk<2>; g_emuVtbl1[3]=(void*)&EmuThunk<3>;
+        g_emuVtbl1[4]=(void*)&EmuThunk<4>; g_emuVtbl1[5]=(void*)&EmuThunk<5>;
+        g_emuVtbl1[6]=(void*)&EmuThunk<6>; g_emuVtbl1[7]=(void*)&EmuThunk<7>;
+        g_emuVtbl1[8]=(void*)&EmuThunk<8>; g_emuVtbl1[9]=(void*)&EmuThunk<9>;
+        g_emuVtbl2[0]=(void*)&EmuThunk<100>; g_emuVtbl2[1]=(void*)&EmuThunk<101>;
+        g_emuVtbl2[2]=(void*)&EmuThunk<102>; g_emuVtbl2[3]=(void*)&EmuThunk<103>;
+        g_emuVtbl2[4]=(void*)&EmuThunk<104>; g_emuVtbl2[5]=(void*)&EmuThunk<105>;
+        uintptr_t buf = (uintptr_t)&g_tokenIds[0];
+        g_emuObj[0] = (uint64_t)&g_emuVtbl1[0];   // +0x00 vtbl1
+        g_emuObj[1] = buf;                        // +0x08 products begin
+        g_emuObj[2] = buf + sizeof(g_tokenIds);   // +0x10 products end (23*4 = 92 bytes)
+        g_emuObj[3] = buf + sizeof(g_tokenIds);   // +0x18 capacity end
+        g_emuObj[4] = 0x0000000100000000ULL;      // +0x20 = 0, +0x24 = 1 (activated)
+        g_emuObj[5] = (uint64_t)&g_sessObj[0];    // +0x28 ptr
+        g_emuObj[6] = (uint64_t)&g_sessObj[0];    // +0x30 ptr
+        g_emuObj[7] = (uint64_t)&g_emuVtbl2[0];   // +0x38 vtbl2
+        g_emuObj[8] = 3;                          // +0x40 count/status
+        built = true;
+    }
+    return g_emuObj;
+}
+
+static void* getGameTokenInterface_Detour(void* arg0, unsigned __int64 arg1)
+{
+    void* ra = _ReturnAddress();
+    tprintf("[token] getGameTokenInterface(arg0=%p, arg1=0x%llX) called from %p (tid %lu)\n",
+        arg0, (unsigned long long)arg1, ra, GetCurrentThreadId());
+    fflush(stdout);
+    if (kEmulateToken)
+    {
+        void* emu = BuildEmuToken();
+        tprintf("[emu] returning emulated IGameTokenInterface* %p (skipped _orig -> gate never runs)\n", emu);
+        fflush(stdout);
+        return emu; // DON'T call _orig: the relaunch/terminate gate lives inside it
+    }
+    void* result = g_getToken_orig(arg0, arg1);   // capture path (kept for reference; not used in the launcher)
+    tprintf("[token] -> real IGameTokenInterface* %p\n", result);
+    DumpTokenObject(result);
+    void* wrap = BuildWrapper(result);
+    tprintf("[token] -> WRAPPED as %p (logging every method call)\n", wrap);
+    fflush(stdout);
+    return wrap;
+}
+
+static void TryHookGameToken(LPCWSTR name, HMODULE mod)
+{
+    if ((!kCaptureMode && !kEmulateToken) || g_tokenHooked || !name || !mod) return;
+    wchar_t low[1024]; low[0] = 0;
+    wcsncpy_s(low, _countof(low), name, _TRUNCATE);
+    _wcslwr_s(low, _countof(low));
+    if (!wcsstr(low, L"dbdata")) return; // "dbdata" / "dbdata.dll", any path/case
+    void* tgt = (void*)GetProcAddress(mod, "?getGameTokenInterface@@YAPEAVIGameTokenInterface@@PEAX_K@Z");
+    if (!tgt) { tprintf("[token] getGameTokenInterface export not found in dbdata\n"); return; }
+    if (MH_CreateHook(tgt, &getGameTokenInterface_Detour, reinterpret_cast<LPVOID*>(&g_getToken_orig)) == MH_OK
+        && MH_EnableHook(tgt) == MH_OK)
+    {
+        g_tokenHooked = true;
+        tprintf("[token] hooked getGameTokenInterface @ %p (dbdata %p)\n", tgt, (void*)mod);
+    }
+    else tprintf("[token] FAILED to hook getGameTokenInterface @ %p\n", tgt);
+    fflush(stdout);
+}
+
+// LoadLibrary family hooks (MinHook) — patch uplay_aux the instant dbdata maps it, before its gate.
+typedef HMODULE (WINAPI* LoadLibraryW_t)(LPCWSTR);
+typedef HMODULE (WINAPI* LoadLibraryExW_t)(LPCWSTR, HANDLE, DWORD);
+typedef HMODULE (WINAPI* LoadLibraryA_t)(LPCSTR);
+typedef HMODULE (WINAPI* LoadLibraryExA_t)(LPCSTR, HANDLE, DWORD);
+static LoadLibraryW_t   g_LL_W   = nullptr;
+static LoadLibraryExW_t g_LL_ExW = nullptr;
+static LoadLibraryA_t   g_LL_A   = nullptr;
+static LoadLibraryExA_t g_LL_ExA = nullptr;
+static const DWORD kDataOnly = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | LOAD_LIBRARY_AS_IMAGE_RESOURCE;
+
+static void OnDllLoaded(LPCWSTR name, HMODULE m) { TryPatchUplayAux(name, m); TryPatchUplayR2(name, m); TryHookGameToken(name, m); }
+
+static HMODULE WINAPI LL_W_Detour(LPCWSTR n)                       { HMODULE m = g_LL_W(n);         if (m) OnDllLoaded(n, m); return m; }
+static HMODULE WINAPI LL_ExW_Detour(LPCWSTR n, HANDLE f, DWORD fl) { HMODULE m = g_LL_ExW(n, f, fl); if (m && !(fl & kDataOnly)) OnDllLoaded(n, m); return m; }
+static HMODULE WINAPI LL_A_Detour(LPCSTR n)                        { HMODULE m = g_LL_A(n);         if (m) { wchar_t w[1024]; AnsiToWide(n, w, 1024); OnDllLoaded(w, m); } return m; }
+static HMODULE WINAPI LL_ExA_Detour(LPCSTR n, HANDLE f, DWORD fl)  { HMODULE m = g_LL_ExA(n, f, fl); if (m && !(fl & kDataOnly)) { wchar_t w[1024]; AnsiToWide(n, w, 1024); OnDllLoaded(w, m); } return m; }
+
+typedef BOOL (WINAPI* CreateProcessW_t)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES,
+    BOOL, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION);
+typedef BOOL (WINAPI* ShellExecuteExW_t)(SHELLEXECUTEINFOW*);
+static CreateProcessW_t  g_CreateProcessW_orig  = nullptr;
+static ShellExecuteExW_t g_ShellExecuteExW_orig = nullptr;
+
+static bool IsRelaunchTarget(LPCWSTR a, LPCWSTR b)
+{
+    wchar_t buf[2600]; buf[0] = 0;
+    if (a) wcsncat_s(buf, _countof(buf), a, _TRUNCATE);
+    if (b) { wcsncat_s(buf, _countof(buf), L" ", _TRUNCATE); wcsncat_s(buf, _countof(buf), b, _TRUNCATE); }
+    _wcslwr_s(buf, _countof(buf));
+    return wcsstr(buf, L"watchdogslegion") || wcsstr(buf, L"uplayservice") || wcsstr(buf, L"ubisoftconnect")
+        || wcsstr(buf, L"ubisoft game launcher") || wcsstr(buf, L"upc.exe");
+}
+
+static void LogRelaunch(const char* api, void* ra, LPCWSTR app, LPCWSTR cmd)
+{
+    HMODULE m = nullptr; char nm[MAX_PATH] = "?"; const char* b = nm; unsigned long long off = 0;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)ra, &m) && m)
+    { GetModuleFileNameA(m, nm, MAX_PATH); const char* s = strrchr(nm, '\\'); b = s ? s + 1 : nm; off = (unsigned long long)((uintptr_t)ra - (uintptr_t)m); }
+    tprintf("[relaunch] %s %s  caller %p = %s+0x%llX (tid %lu)\n", kBlockRelaunch ? "BLOCKED" : "SEEN", api, ra, b, off, GetCurrentThreadId());
+    if (app) tprintf("[relaunch]   app: %ls\n", app);
+    if (cmd) tprintf("[relaunch]   cmd: %ls\n", cmd);
+    fflush(stdout);
+}
+
+static BOOL WINAPI CreateProcessW_Detour(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
+    BOOL inh, DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi)
+{
+    void* ra = _ReturnAddress();
+    if (IsRelaunchTarget(app, cmd))
+    {
+        LogRelaunch("CreateProcessW", ra, app, cmd);
+        if (kBlockRelaunch) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    }
+    return g_CreateProcessW_orig(app, cmd, pa, ta, inh, flags, env, dir, si, pi);
+}
+
+static BOOL WINAPI ShellExecuteExW_Detour(SHELLEXECUTEINFOW* p)
+{
+    void* ra = _ReturnAddress();
+    if (p && IsRelaunchTarget(p->lpFile, p->lpParameters))
+    {
+        LogRelaunch("ShellExecuteExW", ra, p->lpFile, p->lpParameters);
+        if (kBlockRelaunch) { p->hInstApp = (HINSTANCE)(INT_PTR)SE_ERR_ACCESSDENIED; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    }
+    return g_ShellExecuteExW_orig(p);
+}
+
+void InstallUplayAuxDefense()
+{
+    // Needed in all modes: emu/capture hook dbdata's getGameTokenInterface on load; patch mode patches uplay_aux/uplay_r264.
+    if (!kPatchUplayAux && !kCaptureMode && !kEmulateToken && !kPatchUplayR2Relaunch) return;
+    MH_Initialize();
+    HookApi(L"kernel32.dll", "LoadLibraryW",   &LL_W_Detour,   reinterpret_cast<LPVOID*>(&g_LL_W));
+    HookApi(L"kernel32.dll", "LoadLibraryExW", &LL_ExW_Detour, reinterpret_cast<LPVOID*>(&g_LL_ExW));
+    HookApi(L"kernel32.dll", "LoadLibraryA",   &LL_A_Detour,   reinterpret_cast<LPVOID*>(&g_LL_A));
+    HookApi(L"kernel32.dll", "LoadLibraryExA", &LL_ExA_Detour, reinterpret_cast<LPVOID*>(&g_LL_ExA));
+    HookApi(L"kernel32.dll", "CreateProcessW",  &CreateProcessW_Detour,  reinterpret_cast<LPVOID*>(&g_CreateProcessW_orig));
+    HookApi(L"shell32.dll",  "ShellExecuteExW", &ShellExecuteExW_Detour, reinterpret_cast<LPVOID*>(&g_ShellExecuteExW_orig));
+    // In case they're already mapped (shouldn't be this early, but harmless).
+    if (HMODULE m = GetModuleHandleW(L"uplay_aux_r164.dll")) TryPatchUplayAux(L"uplay_aux_r164.dll", m);
+    if (HMODULE m = GetModuleHandleW(L"uplay_r264.dll"))     TryPatchUplayR2(L"uplay_r264.dll", m);
+    if (HMODULE m = GetModuleHandleW(L"dbdata.dll"))         TryHookGameToken(L"dbdata.dll", m);
+    tprintf("[uplay] uplay_aux/token defense installed (emu=%d, capture=%d, patch=%d)\n", (int)kEmulateToken, (int)kCaptureMode, (int)kPatchUplayAux);
+    fflush(stdout);
+}
