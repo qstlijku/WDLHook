@@ -795,13 +795,14 @@ static __int64 __fastcall Sub951F500_Detour(void* a1, void* a2, void* a3, void* 
 // [rtc] Trace every callee of sub_18951F500 = hkReflect::Detail::BuiltinTypeReg::addBatch (the "Register Types"
 // worker: adds a batch of reflection types to the builtin registry, rebuilds, fires callbacks). PDB names below.
 // NOTE: TypeRegNode::getNext + hkMemHeapAllocator fire per node / per registered type -> can flood.
+// Dropped the per-node/per-type floods: hkMemHeapAllocator 0x8D3CEC0, TypeRegNode::getNext 0x8CFDBC0,
+// s_updateAlignment 0x9520E70 (each fired 100s-1000s of times per boot). fireCallbacks 0x951FE80 -> [hrs] skip.
 static const uintptr_t kRegTypeCallees[] = {
-    0x8D3CEC0, 0x8D277C0, 0x8CFDBC0, 0x9520E70, 0x951FAD0, 0x955A770, 0x8CFDC00, 0x8D18D40,   // fireCallbacks 0x951FE80 -> [hrs] skip
+    0x8D277C0, 0x951FAD0, 0x955A770, 0x8CFDC00, 0x8D18D40,
 };
 static const char* const kRegTypeNames[] = {
-    "hkMemHeapAllocator", "hkArrayUtil::_reserveMore", "TypeRegNode::getNext", "s_updateAlignment",
-    "BuiltinTypeReg::rebuildEverything", "TypeDetail::fixupUnknownSpecialMethods", "TypeRegNode::typeIsDuplicate",
-    "hkMemoryAllocator::bufFree2",
+    "hkArrayUtil::_reserveMore", "BuiltinTypeReg::rebuildEverything", "TypeDetail::fixupUnknownSpecialMethods",
+    "TypeRegNode::typeIsDuplicate", "hkMemoryAllocator::bufFree2",
 };
 static const int kNumRegTypeCallees = (int)(sizeof(kRegTypeCallees) / sizeof(kRegTypeCallees[0]));
 typedef __int64 (__fastcall* RegTypeCallee_t)(void*, void*, void*, void*);
@@ -816,20 +817,89 @@ template<int N> static __int64 __fastcall RegTypeCalleeThunk(void* a, void* b, v
 template<size_t... I> static std::array<RegTypeCallee_t, sizeof...(I)> MakeRegTypeThunks(std::index_sequence<I...>) { return {{ &RegTypeCalleeThunk<I>... }}; }
 static const std::array<RegTypeCallee_t, kNumRegTypeCallees> g_regTypeThunks = MakeRegTypeThunks(std::make_index_sequence<kNumRegTypeCallees>{});
 
-// [hrs] Skip-stubs for the 3 GENUINELY-VIRTUALIZED (Denuvo-obfuscated, un-runnable) hkReflect calls in the
-// "Register Types" path (BuiltinTypeReg::addBatch -> rebuildEverything). All safe to no-op on the first/boot pass:
-//   sub_1895204C0 = hkSerializeMultiMap::clear(&m_duplicates)  -- no-op on the freshly-constructed (empty) map
-//   sub_189520420 = hkSerializeMultiMap::insert(&m_duplicates) -- only hit on duplicate type names (rare early)
-//   sub_18951FE80 = BuiltinTypeReg::fireCallbacks             -- no listeners registered this early
-// PDB clear() = {m_valueChain.m_size=0; hkMapBase::clear(&m_indexMap); m_freeChainStart=-1}; hkMapBase::clear
-// = reset each Pair.key(-1) over m_hashMod+1 slots, m_numElems &= 0x80000000. Reimpl if repeated batches need them.
-static const struct { uintptr_t rva; const char* nm; } kHkReflectSkips[] = {
-    { 0x95204C0, "hkSerializeMultiMap::clear (m_duplicates)" },
-    { 0x9520420, "hkSerializeMultiMap::insert (m_duplicates)" },
-    { 0x951FE80, "BuiltinTypeReg::fireCallbacks" },
+// [hrs] Passthru trace on the 3 hkReflect calls in the "Register Types" path (BuiltinTypeReg::addBatch ->
+// rebuildEverything). Call the REAL body -- NO blind no-op skip -- so we can SEE whether/where each actually
+// faults un-bootstrapped before deciding to skip or reimpl. Separate functions so each can be edited/reimpl'd
+// independently. PDB clear() = {m_valueChain.m_size=0; hkMapBase::clear(&m_indexMap); m_freeChainStart=-1};
+// hkMapBase::clear = reset each Pair.key(-1) over m_hashMod+1 slots, m_numElems &= 0x80000000.
+typedef __int64 (__fastcall* HkReflect_t)(void*, void*, void*, void*);
+
+// sub_1895204C0 = hkSerializeMultiMap::clear(&m_duplicates)
+static HkReflect_t g_sub95204C0Orig;
+static __int64 __fastcall Sub95204C0_Detour(void* a, void* b, void* c, void* dd)
+{
+    return 0;
+    tprintf("[hrs] hkSerializeMultiMap::clear (sub_1895204C0)(%p, %p, %p, %p) ENTER\n", a, b, c, dd); fflush(stdout);
+    __int64 r = g_sub95204C0Orig(a, b, c, dd);
+    tprintf("[hrs] hkSerializeMultiMap::clear RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_189520420 = hkSerializeMultiMap::insert(&m_duplicates)
+static HkReflect_t g_sub9520420Orig;
+static __int64 __fastcall Sub9520420_Detour(void* a, void* b, void* c, void* dd)
+{
+    tprintf("[hrs] hkSerializeMultiMap::insert (sub_189520420)(%p, %p, %p, %p) ENTER\n", a, b, c, dd); fflush(stdout);
+    __int64 r = g_sub9520420Orig(a, b, c, dd);
+    tprintf("[hrs] hkSerializeMultiMap::insert RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_18951FE80 -- IDA had this mislabeled as BuiltinTypeReg::fireCallbacks (user removed the label). Keep the
+// passthru; it's the call near the end of rebuildEverything (&v24, &v31), AFTER the crash site -> not the culprit.
+static HkReflect_t g_sub951FE80Orig;
+static __int64 __fastcall Sub951FE80_Detour(void* a, void* b, void* c, void* dd)
+{
+    tprintf("[hrs] sub_18951FE80 (ex-fireCallbacks)(%p, %p, %p, %p) ENTER\n", a, b, c, dd); fflush(stdout);
+    __int64 r = g_sub951FE80Orig(a, b, c, dd);
+    tprintf("[hrs] sub_18951FE80 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// [re] Passthru-trace EVERY remaining distinct callee inside rebuildEverything (sub_18951FAD0) not already
+// covered by [rtc]/[hrs] -- to pin the pre-crash function (crash is somewhere before the tail callbacks call,
+// and the culprit currently has NO hook). Logs ENTER (+ caller-site RVA via return address) and RETURN, so an
+// ENTER with no matching RETURN = the faulting call. Also stamps a breadcrumb (g_reLast/g_reLastRA) that stays
+// readable in the VS debugger at the crash even if the last log line didn't flush. NOTE: several of these fire
+// per-type inside the two loops (hkMemHeapAllocator/188CFDBB0/188D342E0/188CFDC10) -> expect flood; the TAIL of
+// the log (or g_reLast at the break) is what identifies the crash. Trim once the culprit is known.
+static const uintptr_t kReCallees[] = {
+    0x8D3CEC0,  // hkMemHeapAllocator (re-added -- was [rtc]-trimmed for spam but IS called here, per-type)
+    //0x8D34D70,  // sub_188D34D70   (first loop, gated on member flag &0x8000)
+    0x8CFDBB0,  // sub_188CFDBB0   (node iterate / next -- NOTE: distinct from the removed 0x8CFDBC0)
+    0x9521520,  // sub_189521520   (sort, after first loop)
+    0x8D27670,  // sub_188D27670   (array reserve on off_18B21B138)
+    //0x8D0DB40,  // sub_188D0DB40   (v31 hkMap init, m_freeChainStart=-1)
+    0x8D342E0,  // sub_188D342E0   (compare in second loop)
+    0x8CFDC10,  // sub_188CFDC10   (setDuplicate flag)
+    //0x8D0D7B0,  // sub_188D0D7B0   (v31 map insert, dup branch)
+    0x9520FF0,  // sub_189520FF0   (*(a1+24) = ...(&v24, 0, v25-1) build call)
+    0x9521280,  // sub_189521280   (the (&v24, &v31) TAIL call -- what IDA mislabeled as fireCallbacks; SUSPECT)
+    0x8D0DAE0,  // sub_188D0DAE0   (v31 map teardown; AFTER the tail call -- included for completeness)
 };
-static void* g_hkReflectSkipOrig[3];   // unused (VM bodies fault un-bootstrapped)
-static __int64 __fastcall HkReflectSkip_Detour(void*, void*, void*, void*) { return 0; }   // no-op skip
+static const char* const kReNames[] = {
+    "hkMemHeapAllocator", "sub_188D34D70", "sub_188CFDBB0", "sub_189521520(sort)", "sub_188D27670(reserve)",
+    "sub_188D0DB40(mapInit)", "sub_188D342E0(cmp)", "sub_188CFDC10(setDup)", "sub_188D0D7B0(mapInsert)",
+    "sub_189520FF0(build)", "sub_189521280(tail!SUSPECT)", "sub_188D0DAE0(mapFree)",
+};
+static const int kNumRe = (int)(sizeof(kReCallees) / sizeof(kReCallees[0]));
+typedef __int64 (__fastcall* Re_t)(void*, void*, void*, void*);
+static Re_t g_reOrig[kNumRe];
+static uintptr_t g_reBase;                 // module base, for caller-site RVA
+volatile const char* g_reLast = "";        // breadcrumb: last [re] fn entered (read at the debugger on crash)
+volatile uintptr_t g_reLastRA = 0;         // breadcrumb: caller-site RVA of that call
+template<int N> static __int64 __fastcall ReThunk(void* a, void* b, void* c, void* dd)
+{
+    uintptr_t ra = (uintptr_t)_ReturnAddress() - g_reBase;
+    g_reLast = kReNames[N];
+    g_reLastRA = ra;
+    tprintf("[re] %s (sub_18%llX) ENTER  from 0x%llX\n", kReNames[N], (unsigned long long)kReCallees[N], (unsigned long long)ra); fflush(stdout);
+    __int64 r = g_reOrig[N](a, b, c, dd);
+    tprintf("[re] %s RETURNED = 0x%llX\n", kReNames[N], (unsigned long long)r); fflush(stdout);
+    return r;
+}
+template<size_t... I> static std::array<Re_t, sizeof...(I)> MakeReThunks(std::index_sequence<I...>) { return {{ &ReThunk<I>... }}; }
+static const std::array<Re_t, kNumRe> g_reThunks = MakeReThunks(std::make_index_sequence<kNumRe>{});
 
 // Install all physics-init hooks/reimpls (carved from the former InstallSkuTrace). NOT gated on kTraceSku:
 // the reimpls (threadInit / setMemorySoftLimit / LockedMemoryAllocator) are boot-critical for the offline path.
@@ -968,14 +1038,31 @@ void InstallPhysicsHooks(uintptr_t base)
         else
             tprintf("[rtc] FAILED to hook sub_18%llX @ %p\n", (unsigned long long)kRegTypeCallees[i], t);
     }
-    // [hrs] skip the 3 VM'd hkReflect calls in the Register Types path (rebuildEverything's clear/insert + fireCallbacks)
-    for (int i = 0; i < 3; ++i)
+    // [hrs] passthru-trace the 3 hkReflect calls in the Register Types path (rebuildEverything's clear/insert + fireCallbacks)
+    void* s204C0 = (void*)(base + 0x95204C0);
+    if (MH_CreateHook(s204C0, &Sub95204C0_Detour, (LPVOID*)&g_sub95204C0Orig) == MH_OK && MH_EnableHook(s204C0) == MH_OK)
+        tprintf("[hrs] hooked hkSerializeMultiMap::clear (sub_1895204C0) @ %p\n", s204C0);
+    else
+        tprintf("[hrs] FAILED to hook hkSerializeMultiMap::clear @ %p\n", s204C0);
+    void* s20420 = (void*)(base + 0x9520420);
+    if (MH_CreateHook(s20420, &Sub9520420_Detour, (LPVOID*)&g_sub9520420Orig) == MH_OK && MH_EnableHook(s20420) == MH_OK)
+        tprintf("[hrs] hooked hkSerializeMultiMap::insert (sub_189520420) @ %p\n", s20420);
+    else
+        tprintf("[hrs] FAILED to hook hkSerializeMultiMap::insert @ %p\n", s20420);
+    void* s1FE80 = (void*)(base + 0x951FE80);
+    if (MH_CreateHook(s1FE80, &Sub951FE80_Detour, (LPVOID*)&g_sub951FE80Orig) == MH_OK && MH_EnableHook(s1FE80) == MH_OK)
+        tprintf("[hrs] hooked sub_18951FE80 (ex-fireCallbacks) @ %p\n", s1FE80);
+    else
+        tprintf("[hrs] FAILED to hook sub_18951FE80 @ %p\n", s1FE80);
+    // [re] passthru-trace all remaining rebuildEverything (sub_18951FAD0) callees to pin the pre-crash function
+    g_reBase = base;
+    for (int i = 0; i < kNumRe; ++i)
     {
-        void* t = (void*)(base + kHkReflectSkips[i].rva);
-        if (MH_CreateHook(t, &HkReflectSkip_Detour, (LPVOID*)&g_hkReflectSkipOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
-            tprintf("[hrs] skip-stub %s @ %p\n", kHkReflectSkips[i].nm, t);
+        void* t = (void*)(base + kReCallees[i]);
+        if (MH_CreateHook(t, (void*)g_reThunks[i], (LPVOID*)&g_reOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[re] hooked %s (sub_18%llX) @ %p\n", kReNames[i], (unsigned long long)kReCallees[i], t);
         else
-            tprintf("[hrs] FAILED to hook %s @ %p\n", kHkReflectSkips[i].nm, t);
+            tprintf("[re] FAILED to hook %s (sub_18%llX) @ %p\n", kReNames[i], (unsigned long long)kReCallees[i], t);
     }
     void* s50b = (void*)(base + 0x8D050B0);   // 2nd VM thunk in Init (-> sub_1A17D9940)
     if (MH_CreateHook(s50b, &Sub8D050B0_Detour, (LPVOID*)&g_sub8D050B0Orig) == MH_OK && MH_EnableHook(s50b) == MH_OK)
