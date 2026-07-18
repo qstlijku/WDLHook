@@ -1505,8 +1505,8 @@ void Misc::Initialize()
 
     // Scene-singleton boot trace (offset = RVA - 0xA00). CSceneObjectManager::CreateSingletons; flags the
     // indirect-call target that lands in the .rsrc VM region (virtualized -> hangs the VM). WDLLauncher parity.
-    HookOffset3(0x707B240 + 0xA00, &Sub707BC40_Detour,            reinterpret_cast<LPVOID*>(&g_sub707BC40Orig)); // sub_18707BC40
-    HookOffset3(0x707B240 + 0xA00, &Sub7D0BB30_Detour, reinterpret_cast<LPVOID*>(&g_sub7D0BB30Orig)); // sub_18707BC40
+    //HookOffset3(0x707BC40, &Sub707BC40_Detour,            reinterpret_cast<LPVOID*>(&g_sub707BC40Orig)); // sub_18707BC40
+    //HookOffset3(0x7D0BB30, &Sub7D0BB30_Detour, reinterpret_cast<LPVOID*>(&g_sub7D0BB30Orig)); // sub_18707BC40
 
     // Per-singleton capture (normal run, VM bootstrapped): NMalloc size-gate + the 7 virtualized CreateSingleton<T>
     // thunks. Each dumps its instance + finds its .data slot -- the reimpl recipe for manual-load (offsets = RVA-0xA00).

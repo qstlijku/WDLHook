@@ -2253,7 +2253,7 @@ static __int64 __fastcall Sub7D5E810_Detour(
         uintptr_t rbase = (uintptr_t)GetModuleHandleW(kRendererDll);
         InstallGate884(rbase);
         InstallChkPhys(rbase);    // [pcfg]: the 2 CPhysConfig config virtuals (installs even if kGate884=false)
-        InstallGate884Ra(rbase);  // [g884ra]: call_once trio (sub_189372994/A2C/F90) with _ReturnAddress (the caller)
+        //InstallGate884Ra(rbase);  // [g884ra]: call_once trio (sub_189372994/A2C/F90) with _ReturnAddress (the caller)
     }
     g_gate7d5 = true;   // arm the [g884] subtree trace for the duration of this call
     ++g_chkDepth;
@@ -2409,10 +2409,114 @@ static __int64 __fastcall Sub7FA110_Detour(__int64 a1, __int64 a2, __int64 a3)
     {
         tprintf("[fa1] sub_1877FA110(a1=0x%llX a2=0x%llX a3=0x%llX) ENTER\n",
             (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3); fflush(stdout);
+        // Walk the CPhysConfig config-listener registry (global base+0xB4DA548, from vtable[+0x58]=sub_187D332A0,
+        // an ndVector w/ inline-buffer: sign bit of packed[0] selects inline vs heap). Print each handler's
+        // vtable[+8] (what the broadcast calls) and flag any in the VM band -- that's what faults at 0x21B2B9F4.
+        __try
+        {
+            uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+            if (*(uintptr_t*)a1 == base + 0xA5EDBC0)   // this == CPhysConfig
+            {
+                uintptr_t reg = base + 0xB4DA548;
+                unsigned long long packed = *(unsigned long long*)reg;
+                unsigned int count = (unsigned int)((packed >> 32) & 0x7fffffff);
+                uintptr_t* elems = ((long long)packed < 0) ? (uintptr_t*)(reg + 8) : *(uintptr_t**)(reg + 8);
+                tprintf("[fa1]   registry base+0xB4DA548: %u handler(s)\n", count);
+                for (unsigned int i = 0; i < count; ++i)
+                {
+                    uintptr_t elem = elems[i];
+                    uintptr_t evt = *(uintptr_t*)elem;              // element->vtable
+                    uintptr_t m8  = *(uintptr_t*)(evt + 8);         // element->vtable[+8] (what gets called)
+                    uintptr_t rva = m8 - base;
+                    const char* tag = (rva >= 0xBC39000 && rva < 0x21B12800) ? "  <== VM-BAND (faults 0x21B2B9F4)" : "";
+                    tprintf("[fa1]   handler[%u] elem=%p vtable=DuniaDemo+0x%llX vtable[+8]=DuniaDemo+0x%llX%s\n",
+                            i, (void*)elem, (unsigned long long)(evt - base), (unsigned long long)rva, tag);
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[fa1]   (fault walking handler registry)\n"); }
+        fflush(stdout);
     }
     __int64 r = g_sub7FA110Orig(a1, a2, a3);
-    //tprintf("[fa1] sub_1877FA110 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    if (isInRegSingle)
+        tprintf("[fa1] sub_1877FA110 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
+}
+
+// Standalone hooks (isInRegSingle-gated) for sub_18676D70 -- a function the VEH backtrace put on the crash chain
+// under the CPhysConfig broadcast -- and its only real callee sub_18672F00 (a varint/delta byte-stream decoder).
+// Disasm says neither reaches the VM (sub_18672F00 has no calls), so these should ENTER/RETURN cleanly if reached
+// at all -- hooking to CONFIRM they're not silently the crash path.
+typedef __int64 (__fastcall* Sub676D70_t)(void* a1, void* a2, void* a3);
+static Sub676D70_t g_sub676D70Orig = nullptr;
+static __int64 __fastcall Sub676D70_Detour(void* a1, void* a2, void* a3)
+{
+    if (isInRegSingle) { tprintf("[6d7] sub_18676D70(a1=%p a2=%p a3=%p) ENTER\n", a1, a2, a3); fflush(stdout); }
+    __int64 r = g_sub676D70Orig(a1, a2, a3);
+    if (isInRegSingle) { tprintf("[6d7] sub_18676D70 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout); }
+    return r;
+}
+
+typedef void* (__fastcall* Sub672F00_t)(void* a1, void* a2, void* a3);
+static Sub672F00_t g_sub672F00Orig = nullptr;
+static void* __fastcall Sub672F00_Detour(void* a1, void* a2, void* a3)
+{
+    if (isInRegSingle) { tprintf("[72f] sub_18672F00(a1=%p a2=%p a3=%p) ENTER\n", a1, a2, a3); fflush(stdout); }
+    void* r = g_sub672F00Orig(a1, a2, a3);
+    if (isInRegSingle) { tprintf("[72f] sub_18672F00 RETURNED = %p\n", r); fflush(stdout); }
+    return r;
+}
+
+// sub_1802A9A00 (RVA 0x2A9A00) -- the deepest engine frame in the 0x21B2B9F4 crash chain (from the VEH stack scan:
+// sub_1877FA110 broadcast -> handler -> sub_1802A9A00 -> element->vtable[+8] = VM thunk). It's a 2nd-level broadcast:
+// iterates a collection at this+0x40 (packed count at this+0x38, sign bit = inline vs heap) calling each
+// element->vtable[+8](elem, a2, a3, r12). Walk it and flag the element whose vtable[+8] is in the VM band -- that's
+// the virtualized handler that faults. isInRegSingle-gated. 4 args.
+typedef __int64 (__fastcall* Sub2A9A00_t)(void* a1, void* a2, void* a3, void* a4);
+static Sub2A9A00_t g_sub2A9A00Orig = nullptr;
+static __int64 __fastcall Sub2A9A00_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    if (isInRegSingle)
+    {
+        tprintf("[2a9] sub_1802A9A00(a1=%p a2=%p a3=%p a4=%p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+        __try
+        {
+            uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+            unsigned long long packed = *(unsigned long long*)((char*)a1 + 0x38);
+            unsigned int count = (unsigned int)((packed >> 32) & 0x7fffffff);
+            uintptr_t* elems = ((long long)packed < 0) ? (uintptr_t*)((char*)a1 + 0x40) : *(uintptr_t**)((char*)a1 + 0x40);
+            tprintf("[2a9]   collection this+0x40: %u element(s)\n", count);
+            for (unsigned int i = 0; i < count; ++i)
+            {
+                uintptr_t elem = elems[i];
+                uintptr_t evt  = *(uintptr_t*)elem;              // element->vtable
+                uintptr_t m8   = *(uintptr_t*)(evt + 8);         // element->vtable[+8] (what gets called)
+                uintptr_t rva  = m8 - base;
+                const char* tag = (rva >= 0xBC39000 && rva < 0x21B12800) ? "  <== VM-BAND (faults 0x21B2B9F4)" : "";
+                tprintf("[2a9]   element[%u] obj=%p vtable=DuniaDemo+0x%llX vtable[+8]=DuniaDemo+0x%llX%s\n",
+                        i, (void*)elem, (unsigned long long)(evt - base), (unsigned long long)rva, tag);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[2a9]   (fault walking collection)\n"); }
+        fflush(stdout);
+    }
+    __int64 r = g_sub2A9A00Orig(a1, a2, a3, a4);
+    if (isInRegSingle) { tprintf("[2a9] sub_1802A9A00 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout); }
+    return r;
+}
+
+// sub_187D3D5A0 (RVA 0x7D3D5A0) = the VM'd member Load (vtable[+8], -> VM sub_1A15F8100) for the
+// VehicleSphereDeformSettings members (Scratching/Static/Dynamic per physconfig.xml -- 4 floats each:
+// fMinDamageSpeed/fMaxDamageSpeed/fMaxChangePerCollision/fMaxDamage). It is the bottom of the CNomadObject
+// serialization crash chain (0x21B2B9F4). SKIP it: leaving those members at ctor defaults is cosmetic vehicle-
+// deform tuning, not boot-critical (same disposition as CPhysConfig::ResetValues). Caller sub_1802A9A00 ignores
+// the return value. Member Load sig = (member, context, parentObj, node). ([mld] = member Load; was [d3d].)
+typedef __int64 (__fastcall* Sub7D3D5A0_t)(void* a1, void* a2, void* a3, void* a4);
+static Sub7D3D5A0_t g_sub7D3D5A0Orig = nullptr;   // trampoline (unused -- we skip the VM'd body)
+static __int64 __fastcall Sub7D3D5A0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[mld] sub_187D3D5A0 SKIPPED (member=%p) -- VehicleSphereDeform member Load [bypasses VM]\n", a1); fflush(stdout);
+    return 0;
 }
 
 // Native reimpl of hkFreeListAllocator::setMemorySoftLimit -- retail thunk sub_188D067D0 -> virtualized
@@ -2654,6 +2758,26 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[fa1] hooked sub_1877FA110 @ %p\n", sfa1);
     else
         tprintf("[fa1] FAILED to hook sub_1877FA110 @ %p\n", sfa1);
+    void* s6d7 = (void*)(base + 0x676D70);   // sub_18676D70 (VEH-backtrace suspect under the broadcast) -- confirm on/off crash path
+    if (MH_CreateHook(s6d7, &Sub676D70_Detour, (LPVOID*)&g_sub676D70Orig) == MH_OK && MH_EnableHook(s6d7) == MH_OK)
+        tprintf("[6d7] hooked sub_18676D70 @ %p\n", s6d7);
+    else
+        tprintf("[6d7] FAILED to hook sub_18676D70 @ %p\n", s6d7);
+    void* s72f = (void*)(base + 0x672F00);   // sub_18672F00 (sub_18676D70's only real callee, a byte-stream decoder)
+    if (MH_CreateHook(s72f, &Sub672F00_Detour, (LPVOID*)&g_sub672F00Orig) == MH_OK && MH_EnableHook(s72f) == MH_OK)
+        tprintf("[72f] hooked sub_18672F00 @ %p\n", s72f);
+    else
+        tprintf("[72f] FAILED to hook sub_18672F00 @ %p\n", s72f);
+    void* s2a9 = (void*)(base + 0x2A9A00);   // sub_1802A9A00 -- deepest engine frame in the 0x21B2B9F4 crash chain (2nd broadcast)
+    if (MH_CreateHook(s2a9, &Sub2A9A00_Detour, (LPVOID*)&g_sub2A9A00Orig) == MH_OK && MH_EnableHook(s2a9) == MH_OK)
+        tprintf("[2a9] hooked sub_1802A9A00 @ %p\n", s2a9);
+    else
+        tprintf("[2a9] FAILED to hook sub_1802A9A00 @ %p\n", s2a9);
+    void* sd3d = (void*)(base + 0x7D3D5A0);   // sub_187D3D5A0 -- VM'd VehicleSphereDeform member Load; skip-stub
+    if (MH_CreateHook(sd3d, &Sub7D3D5A0_Detour, (LPVOID*)&g_sub7D3D5A0Orig) == MH_OK && MH_EnableHook(sd3d) == MH_OK)
+        tprintf("[mld] hooked sub_187D3D5A0 (member Load) -> skip-stub @ %p\n", sd3d);
+    else
+        tprintf("[mld] FAILED to hook sub_187D3D5A0 @ %p\n", sd3d);
     void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
     if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)
         tprintf("[phys] hooked sub_188D06EA0 (physics-world allocator init) @ %p\n", s8d0);
