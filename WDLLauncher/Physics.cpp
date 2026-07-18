@@ -792,6 +792,45 @@ static __int64 __fastcall Sub951F500_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
+// [rtc] Trace every callee of sub_18951F500 = hkReflect::Detail::BuiltinTypeReg::addBatch (the "Register Types"
+// worker: adds a batch of reflection types to the builtin registry, rebuilds, fires callbacks). PDB names below.
+// NOTE: TypeRegNode::getNext + hkMemHeapAllocator fire per node / per registered type -> can flood.
+static const uintptr_t kRegTypeCallees[] = {
+    0x8D3CEC0, 0x8D277C0, 0x8CFDBC0, 0x9520E70, 0x951FAD0, 0x955A770, 0x8CFDC00, 0x8D18D40,   // fireCallbacks 0x951FE80 -> [hrs] skip
+};
+static const char* const kRegTypeNames[] = {
+    "hkMemHeapAllocator", "hkArrayUtil::_reserveMore", "TypeRegNode::getNext", "s_updateAlignment",
+    "BuiltinTypeReg::rebuildEverything", "TypeDetail::fixupUnknownSpecialMethods", "TypeRegNode::typeIsDuplicate",
+    "hkMemoryAllocator::bufFree2",
+};
+static const int kNumRegTypeCallees = (int)(sizeof(kRegTypeCallees) / sizeof(kRegTypeCallees[0]));
+typedef __int64 (__fastcall* RegTypeCallee_t)(void*, void*, void*, void*);
+static RegTypeCallee_t g_regTypeOrig[kNumRegTypeCallees];
+template<int N> static __int64 __fastcall RegTypeCalleeThunk(void* a, void* b, void* c, void* dd)
+{
+    tprintf("[rtc] %s (sub_18%llX)(%p, %p, %p, %p) ENTER\n", kRegTypeNames[N], (unsigned long long)kRegTypeCallees[N], a, b, c, dd); fflush(stdout);
+    __int64 r = g_regTypeOrig[N](a, b, c, dd);
+    tprintf("[rtc] %s RETURNED = 0x%llX\n", kRegTypeNames[N], (unsigned long long)r); fflush(stdout);
+    return r;
+}
+template<size_t... I> static std::array<RegTypeCallee_t, sizeof...(I)> MakeRegTypeThunks(std::index_sequence<I...>) { return {{ &RegTypeCalleeThunk<I>... }}; }
+static const std::array<RegTypeCallee_t, kNumRegTypeCallees> g_regTypeThunks = MakeRegTypeThunks(std::make_index_sequence<kNumRegTypeCallees>{});
+
+// [hrs] Skip-stubs for the 3 GENUINELY-VIRTUALIZED (Denuvo-obfuscated, un-runnable) hkReflect calls in the
+// "Register Types" path (BuiltinTypeReg::addBatch -> rebuildEverything). All safe to no-op on the first/boot pass:
+//   sub_1895204C0 = hkSerializeMultiMap::clear(&m_duplicates)  -- no-op on the freshly-constructed (empty) map
+//   sub_189520420 = hkSerializeMultiMap::insert(&m_duplicates) -- only hit on duplicate type names (rare early)
+//   sub_18951FE80 = BuiltinTypeReg::fireCallbacks             -- no listeners registered this early
+// PDB clear() = {m_valueChain.m_size=0; hkMapBase::clear(&m_indexMap); m_freeChainStart=-1}; hkMapBase::clear
+// = reset each Pair.key(-1) over m_hashMod+1 slots, m_numElems &= 0x80000000. Reimpl if repeated batches need them.
+static const struct { uintptr_t rva; const char* nm; } kHkReflectSkips[] = {
+    { 0x95204C0, "hkSerializeMultiMap::clear (m_duplicates)" },
+    { 0x9520420, "hkSerializeMultiMap::insert (m_duplicates)" },
+    { 0x951FE80, "BuiltinTypeReg::fireCallbacks" },
+};
+static void* g_hkReflectSkipOrig[3];   // unused (VM bodies fault un-bootstrapped)
+static __int64 __fastcall HkReflectSkip_Detour(void*, void*, void*, void*) { return 0; }   // no-op skip
+
 // Install all physics-init hooks/reimpls (carved from the former InstallSkuTrace). NOT gated on kTraceSku:
 // the reimpls (threadInit / setMemorySoftLimit / LockedMemoryAllocator) are boot-critical for the offline path.
 void InstallPhysicsHooks(uintptr_t base)
@@ -919,6 +958,24 @@ void InstallPhysicsHooks(uintptr_t base)
             tprintf("[bsc] hooked %s @ %p\n", b.nm, b.addr);
         else
             tprintf("[bsc] FAILED to hook %s @ %p\n", b.nm, b.addr);
+    }
+    // [rtc] callees of sub_18951F500 ("Register Types" register fn) -- templated thunk pool
+    for (int i = 0; i < kNumRegTypeCallees; ++i)
+    {
+        void* t = (void*)(base + kRegTypeCallees[i]);
+        if (MH_CreateHook(t, (void*)g_regTypeThunks[i], (LPVOID*)&g_regTypeOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[rtc] hooked %s (sub_18%llX) @ %p\n", kRegTypeNames[i], (unsigned long long)kRegTypeCallees[i], t);
+        else
+            tprintf("[rtc] FAILED to hook sub_18%llX @ %p\n", (unsigned long long)kRegTypeCallees[i], t);
+    }
+    // [hrs] skip the 3 VM'd hkReflect calls in the Register Types path (rebuildEverything's clear/insert + fireCallbacks)
+    for (int i = 0; i < 3; ++i)
+    {
+        void* t = (void*)(base + kHkReflectSkips[i].rva);
+        if (MH_CreateHook(t, &HkReflectSkip_Detour, (LPVOID*)&g_hkReflectSkipOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[hrs] skip-stub %s @ %p\n", kHkReflectSkips[i].nm, t);
+        else
+            tprintf("[hrs] FAILED to hook %s @ %p\n", kHkReflectSkips[i].nm, t);
     }
     void* s50b = (void*)(base + 0x8D050B0);   // 2nd VM thunk in Init (-> sub_1A17D9940)
     if (MH_CreateHook(s50b, &Sub8D050B0_Detour, (LPVOID*)&g_sub8D050B0Orig) == MH_OK && MH_EnableHook(s50b) == MH_OK)
