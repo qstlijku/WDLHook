@@ -103,7 +103,7 @@ static const uintptr_t kChkRvasIE[] = {
     //     0x5C3FE0 (17.6k), 0x9DBCC90 (821), 0x5C2280 (435); 0x5B89E0/0x6884560/0x6CEF40/0x8C13CD0 already in
     //     set; 2 vtable-dispatch sites in sub_187D5E810 are unhookable by address (if none hang, culprit is one) ---
     0x8C369A0, 0x7D5E9D6, 0x7E6CB90, 0x7D35900, 0x1B285A0, 0x7D35980, 0x67A3530,
-    0x6885410, 0x7DC4E40, 0x7D296F0, 0x7D5EFB0, 0x7E534B0,
+    0x6885410, 0x7DC4E40, 0x7E534B0,  // 0x7D296F0 -> [skip] stub, 0x7D5EFB0 -> dedicated [phys] CPhysWorldInit hook
     // sub_187E3A650 (CPhysWorldImplBase ctor) physwind subtree + sub_188D06EA0 allocator-init subtree +
     // 0x8D164A0 MOVED to kChkRvasIEOld below (physics-world init frontier resolved).
 };
@@ -396,6 +396,51 @@ static void InstallGate884Ra(uintptr_t base)
             tprintf("[g884ra] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kGate884RaRvas[i]), tgt);
         else
             tprintf("[g884ra] skip sub_%llX @ %p (already hooked / failed)\n", (unsigned long long)(0x180000000 + kGate884RaRvas[i]), tgt);
+    }
+    fflush(stdout);
+}
+
+// ===================================================================================================
+// [itr] -- bracket the 6 direct calls in CPhysWorldImplBase::Init's first stretch (up to the 2nd real thunk at
+// Init+0x16D). The crash is one of the INTERLEAVED indirect calls (mainInit @+0xF2 / blockAlloc @+0x15C), so the
+// LAST [itr] RETURN before the fault pins which gap faulted. Gated on g_inInit (set by the [init] hook in
+// main.cpp) so these generic helpers only trace inside Init. sub_188D07770 is the "false-positive" VM thunk
+// (@Init+0xAD) -- if it ENTERs but never RETURNs it wasn't a false positive after all.
+static volatile bool g_inInit = false;
+static const uintptr_t kInitTrace[] = {
+    0x8CF7BC0, 0x8CF8140, 0x8D3BF10, 0x8D049E0, 0x8D16080,  // 0x8D07770 (mainInit) -> dedicated reimpl hook
+};
+static const int kNumInitTrace = (int)(sizeof(kInitTrace) / sizeof(kInitTrace[0]));
+static const int kInitTracePool = 8;   // >= kNumInitTrace
+static_assert(kInitTracePool >= kNumInitTrace, "kInitTracePool too small for kInitTrace");
+static ChkFn_t g_initTraceOrig[kInitTracePool];
+
+template<int N> static __int64 __fastcall InitTraceThunk(
+    void* p0, void* p1, void* p2, void* p3, void* p4, void* p5, void* p6, void* p7,
+    void* p8, void* p9, void* p10, void* p11, void* p12, void* p13, void* p14, void* p15)
+{
+    const bool g = g_inInit;
+    const unsigned long long fn = 0x180000000ull + kInitTrace[N];
+    if (g) { tprintf("[itr] sub_%llX ENTER\n", fn); fflush(stdout); }
+    __int64 r = g_initTraceOrig[N](p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15);
+    if (g) { tprintf("[itr] sub_%llX RETURNED\n", fn); fflush(stdout); }
+    return r;
+}
+
+template<size_t... I>
+static std::array<ChkFn_t, sizeof...(I)> MakeInitTraceThunks(std::index_sequence<I...>) { return {{ &InitTraceThunk<I>... }}; }
+static const std::array<ChkFn_t, kInitTracePool> g_initTraceThunks = MakeInitTraceThunks(std::make_index_sequence<kInitTracePool>{});
+
+static void InstallInitTrace(uintptr_t base)
+{
+    MH_Initialize();
+    for (int i = 0; i < kNumInitTrace; ++i)
+    {
+        void* tgt = (void*)(base + kInitTrace[i]);
+        if (MH_CreateHook(tgt, (LPVOID)g_initTraceThunks[i], (LPVOID*)&g_initTraceOrig[i]) == MH_OK && MH_EnableHook(tgt) == MH_OK)
+            tprintf("[itr] hooked sub_%llX @ %p\n", (unsigned long long)(0x180000000 + kInitTrace[i]), tgt);
+        else
+            tprintf("[itr] skip sub_%llX @ %p (already hooked / failed)\n", (unsigned long long)(0x180000000 + kInitTrace[i]), tgt);
     }
     fflush(stdout);
 }

@@ -2519,6 +2519,141 @@ static __int64 __fastcall Sub7D3D5A0_Detour(void* a1, void* a2, void* a3, void* 
     return 0;
 }
 
+// sub_187D296F0 (RVA 0x7D296F0) -- another VM thunk (-> sub_1A15EAAF0) on the sub_187D5E810 physics-init path.
+// Skip-stub (user-requested). Returns 0; revisit if the caller depends on a specific return value / side effects.
+typedef __int64 (__fastcall* Sub7D296F0_t)(void*, void*, void*, void*);
+static Sub7D296F0_t g_sub7D296F0Orig = nullptr;   // trampoline (unused -- skipped)
+static __int64 __fastcall Sub7D296F0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[skip] sub_187D296F0 SKIPPED (a1=%p) -- VM thunk -> sub_1A15EAAF0 [bypasses VM]\n", a1); fflush(stdout);
+    return 0;
+}
+
+// sub_187D5EFB0 = CPhysWorldInit (a sub_187D5E810 physics-init callee; sets mxcsr then drives the init chain).
+// Standalone trace hook (pulled from kChkRvasIE). Lean.
+typedef __int64 (__fastcall* Sub7D5EFB0_t)(void*, void*, void*, void*);
+static Sub7D5EFB0_t g_sub7D5EFB0Orig = nullptr;
+static __int64 __fastcall Sub7D5EFB0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    // final act is (*(**(a1+312)+8))(*(a1+312)) = (a1+0x138)->vtable[+8] = CPhysWorldImplBase::Init (huge Havok
+    // world bring-up). Resolve + print its retail RVA before orig runs (the crash is deep inside it).
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    uintptr_t finalFn = 0;
+    __try
+    {
+        uintptr_t obj = *(uintptr_t*)((char*)a1 + 0x138);   // *(a1+312)
+        finalFn = *(uintptr_t*)(*(uintptr_t*)obj + 8);      // obj->vtable[+8]
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    tprintf("[phys] CPhysWorldInit(a1=%p a2=%p) ENTER -- final (a1+312)->vtable[+8] = DuniaDemo+0x%llX (CPhysWorldImplBase::Init)\n",
+            a1, a2, (unsigned long long)(finalFn - base)); fflush(stdout);
+    __int64 r = g_sub7D5EFB0Orig(a1, a2, a3, a4);
+    tprintf("[phys] CPhysWorldInit RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// CPhysWorldImplBase::Init (sub_187E3C7C0) -- the huge Havok world bring-up (final call of CPhysWorldInit).
+// Standalone trace: ENTER with no RETURN = the crash is inside it. Lean.
+typedef __int64 (__fastcall* Sub7E3C7C0_t)(void*, void*, void*, void*);
+static Sub7E3C7C0_t g_sub7E3C7C0Orig = nullptr;
+static __int64 __fastcall Sub7E3C7C0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[init] CPhysWorldImplBase::Init(this=%p) ENTER (sub_187E3C7C0)\n", a1); fflush(stdout);
+    g_inInit = true;   // arm the [itr] direct-call trace for Init's first stretch
+    __int64 r = g_sub7E3C7C0Orig(a1, a2, a3, a4);
+    g_inInit = false;
+    tprintf("[init] CPhysWorldImplBase::Init RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_188D050B0 -- the 2nd VM thunk (-> VM sub_1A17D9940) called from CPhysWorldImplBase::Init (@Init+0x16D).
+// Trace to see if it's the crash: ENTER with no RETURN confirms (calling orig hits the VM). Lean.
+typedef __int64 (__fastcall* Sub8D050B0_t)(void*, void*, void*, void*);
+static Sub8D050B0_t g_sub8D050B0Orig = nullptr;
+static __int64 __fastcall Sub8D050B0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[50b] sub_188D050B0(a1=%p) ENTER -- VM thunk -> sub_1A17D9940\n", a1); fflush(stdout);
+    __int64 r = g_sub8D050B0Orig(a1, a2, a3, a4);
+    tprintf("[50b] sub_188D050B0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_188D0C850 -- the 5th (also real) VM thunk (-> VM sub_1A2180CEE0) called from CPhysWorldImplBase::Init
+// (@Init+0xE87). Trace to see if it's the crash: ENTER with no RETURN confirms. Lean.
+typedef __int64 (__fastcall* Sub8D0C850_t)(void*, void*, void*, void*);
+static Sub8D0C850_t g_sub8D0C850Orig = nullptr;
+static __int64 __fastcall Sub8D0C850_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[c85] sub_188D0C850(a1=%p) ENTER -- VM thunk -> sub_1A2180CEE0\n", a1); fflush(stdout);
+    __int64 r = g_sub8D0C850Orig(a1, a2, a3, a4);
+    tprintf("[c85] sub_188D0C850 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// Native reimpl of hkFreeListMemorySystem::mainInit -- retail thunk sub_188D07770 -> VM sub_1A1807DF0 (readable):
+//   this->m_frameInfo = *info;                                                        // *(this+16) = *info
+//   if (flags&1) (this->threadInit)(this, &this->m_mainRouter, "main", flags);         // this->vtable[+0x18]
+//   if ((flags&2) && *info) { v5 = this->m_systemAllocator->blockAlloc(this->m_systemAllocator);   // (this+8)->vtable[+8]
+//                             hkSolverAllocator::setBuffer(&this->m_solverAllocator, v5, *info); }  // sub_1895432E0
+//   return &this->m_mainRouter;                                                        // this+152
+// Also prints the 2 inner indirect targets (threadInit / blockAlloc) so we catch any further VM thunk there.
+typedef __int64 (__fastcall* Sub8D07770_t)(void*, void*, unsigned int);
+typedef void  (__fastcall* ThreadInit_t)(void*, void*, const char*, unsigned int);
+typedef void* (__fastcall* BlockAlloc_t)(void*);
+typedef __int64 (__fastcall* SetBuffer_t)(void*, void*, unsigned long long);
+static Sub8D07770_t g_sub8D07770Orig = nullptr;   // trampoline (unused -- we replace the VM'd body)
+static __int64 __fastcall Sub8D07770_Detour(void* this_, unsigned long long* info, unsigned int flags)
+{
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    *(unsigned long long*)((char*)this_ + 16) = *info;              // this->m_frameInfo = *info
+    __try
+    {
+        uintptr_t ti = *(uintptr_t*)(*(uintptr_t*)this_ + 0x18);    // this->vtable[+0x18] = threadInit
+        void* sysAlloc = *(void**)((char*)this_ + 8);              // m_systemAllocator
+        uintptr_t ba = *(uintptr_t*)(*(uintptr_t*)sysAlloc + 8);    // m_systemAllocator->vtable[+8] = blockAlloc
+        tprintf("[777] mainInit reimpl (this=%p flags=%u): threadInit=DuniaDemo+0x%llX  blockAlloc=DuniaDemo+0x%llX\n",
+                this_, flags, (unsigned long long)(ti - base), (unsigned long long)(ba - base)); fflush(stdout);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (flags & 1)
+    {
+        ThreadInit_t ti = (ThreadInit_t)*(uintptr_t*)(*(uintptr_t*)this_ + 0x18);
+        ti(this_, (char*)this_ + 152, "main", flags);
+    }
+    if ((flags & 2) && *info)
+    {
+        void* sysAlloc = *(void**)((char*)this_ + 8);
+        BlockAlloc_t ba = (BlockAlloc_t)*(uintptr_t*)(*(uintptr_t*)sysAlloc + 8);
+        void* v5 = ba(sysAlloc);
+        ((SetBuffer_t)(base + 0x95432E0))((char*)this_ + 272, v5, *info);   // hkSolverAllocator::setBuffer
+    }
+    return (__int64)((char*)this_ + 152);   // &this->m_mainRouter
+}
+
+// Trace hook for hkSolverAllocator::setBuffer (sub_1895432E0) -- real fn, called from mainInit's (flags&2) branch.
+typedef __int64 (__fastcall* Sub95432E0_t)(void*, void*, unsigned long long);
+static Sub95432E0_t g_sub95432E0Orig = nullptr;
+static __int64 __fastcall Sub95432E0_Detour(void* a1, void* a2, unsigned long long a3)
+{
+    tprintf("[543] hkSolverAllocator::setBuffer(this=%p buf=%p size=0x%llX) ENTER (sub_1895432E0)\n", a1, a2, a3); fflush(stdout);
+    __int64 r = g_sub95432E0Orig(a1, a2, a3);
+    tprintf("[543] setBuffer RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// Plain CONFIRM hook for threadInit -- retail thunk sub_188D078D0 -> VM sub_1A18084D0. Called by the mainInit
+// reimpl. NOT a reimpl: ENTER then no RETURN = confirmed it's the crash (orig jmps into the un-bootstrapped VM).
+// 4 args (a1, a2, a3, a4=flags).
+typedef __int64 (__fastcall* Sub8D078D0_t)(void*, void*, void*, void*);
+static Sub8D078D0_t g_sub8D078D0Orig = nullptr;
+static __int64 __fastcall Sub8D078D0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[thi] threadInit(a1=%p a2=%p a4=%p) ENTER -- VM thunk sub_188D078D0 -> sub_1A18084D0\n", a1, a2, a4); fflush(stdout);
+    __int64 r = g_sub8D078D0Orig(a1, a2, a3, a4);
+    tprintf("[thi] threadInit RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 // Native reimpl of hkFreeListAllocator::setMemorySoftLimit -- retail thunk sub_188D067D0 -> virtualized
 // sub_1A1806360 (RVA 0x21806360, in the VM band) hangs un-bootstrapped. From the PDB disasm the real body is:
 //   EnterCriticalSection(this+8); *(u64*)(this+0x1560) = a3; *maxMemory = 0; LeaveCriticalSection(this+8); return maxMemory;
@@ -2778,6 +2913,47 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[mld] hooked sub_187D3D5A0 (member Load) -> skip-stub @ %p\n", sd3d);
     else
         tprintf("[mld] FAILED to hook sub_187D3D5A0 @ %p\n", sd3d);
+    void* s296 = (void*)(base + 0x7D296F0);   // sub_187D296F0 -- VM thunk (-> sub_1A15EAAF0); skip-stub
+    if (MH_CreateHook(s296, &Sub7D296F0_Detour, (LPVOID*)&g_sub7D296F0Orig) == MH_OK && MH_EnableHook(s296) == MH_OK)
+        tprintf("[skip] hooked sub_187D296F0 -> skip-stub @ %p\n", s296);
+    else
+        tprintf("[skip] FAILED to hook sub_187D296F0 @ %p\n", s296);
+    void* spwi = (void*)(base + 0x7D5EFB0);   // sub_187D5EFB0 = CPhysWorldInit (pulled from kChkRvasIE)
+    if (MH_CreateHook(spwi, &Sub7D5EFB0_Detour, (LPVOID*)&g_sub7D5EFB0Orig) == MH_OK && MH_EnableHook(spwi) == MH_OK)
+        tprintf("[phys] hooked CPhysWorldInit (sub_187D5EFB0) @ %p\n", spwi);
+    else
+        tprintf("[phys] FAILED to hook sub_187D5EFB0 @ %p\n", spwi);
+    void* sinit = (void*)(base + 0x7E3C7C0);   // CPhysWorldImplBase::Init (huge Havok world bring-up)
+    if (MH_CreateHook(sinit, &Sub7E3C7C0_Detour, (LPVOID*)&g_sub7E3C7C0Orig) == MH_OK && MH_EnableHook(sinit) == MH_OK)
+        tprintf("[init] hooked CPhysWorldImplBase::Init (sub_187E3C7C0) @ %p\n", sinit);
+    else
+        tprintf("[init] FAILED to hook sub_187E3C7C0 @ %p\n", sinit);
+    void* s50b = (void*)(base + 0x8D050B0);   // 2nd VM thunk in Init (-> sub_1A17D9940)
+    if (MH_CreateHook(s50b, &Sub8D050B0_Detour, (LPVOID*)&g_sub8D050B0Orig) == MH_OK && MH_EnableHook(s50b) == MH_OK)
+        tprintf("[50b] hooked sub_188D050B0 (VM thunk) @ %p\n", s50b);
+    else
+        tprintf("[50b] FAILED to hook sub_188D050B0 @ %p\n", s50b);
+    void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
+    if (MH_CreateHook(sc85, &Sub8D0C850_Detour, (LPVOID*)&g_sub8D0C850Orig) == MH_OK && MH_EnableHook(sc85) == MH_OK)
+        tprintf("[c85] hooked sub_188D0C850 (VM thunk) @ %p\n", sc85);
+    else
+        tprintf("[c85] FAILED to hook sub_188D0C850 @ %p\n", sc85);
+    void* s777 = (void*)(base + 0x8D07770);   // hkFreeListMemorySystem::mainInit -- VM'd thunk (reimpl + prints threadInit/blockAlloc)
+    if (MH_CreateHook(s777, &Sub8D07770_Detour, (LPVOID*)&g_sub8D07770Orig) == MH_OK && MH_EnableHook(s777) == MH_OK)
+        tprintf("[777] hooked mainInit (sub_188D07770) -> native reimpl [bypasses VM]\n");
+    else
+        tprintf("[777] FAILED to hook sub_188D07770 @ %p\n", s777);
+    void* s543 = (void*)(base + 0x95432E0);   // hkSolverAllocator::setBuffer (called from mainInit)
+    if (MH_CreateHook(s543, &Sub95432E0_Detour, (LPVOID*)&g_sub95432E0Orig) == MH_OK && MH_EnableHook(s543) == MH_OK)
+        tprintf("[543] hooked hkSolverAllocator::setBuffer (sub_1895432E0) @ %p\n", s543);
+    else
+        tprintf("[543] FAILED to hook sub_1895432E0 @ %p\n", s543);
+    void* sthi = (void*)(base + 0x8D078D0);   // threadInit -- VM thunk (-> sub_1A18084D0); plain confirm hook (no reimpl)
+    if (MH_CreateHook(sthi, &Sub8D078D0_Detour, (LPVOID*)&g_sub8D078D0Orig) == MH_OK && MH_EnableHook(sthi) == MH_OK)
+        tprintf("[thi] hooked threadInit (sub_188D078D0) @ %p\n", sthi);
+    else
+        tprintf("[thi] FAILED to hook sub_188D078D0 @ %p\n", sthi);
+    InstallInitTrace(base);   // [itr]: bracket the 6 direct calls in Init's first stretch (gated on g_inInit)
     void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
     if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)
         tprintf("[phys] hooked sub_188D06EA0 (physics-world allocator init) @ %p\n", s8d0);
