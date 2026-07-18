@@ -774,10 +774,21 @@ typedef __int64(__fastcall* Sub8CFDC20_t)(void*, void*, void*, void*);
 static Sub8CFDC20_t g_sub8CFDC20Orig = nullptr;
 static __int64 __fastcall Sub8CFDC20_Detour(void* a1, void* a2, void* a3, void* a4)
 {
-    return 0;
+    //return 0;
     tprintf("[1bc] sub_188CFDC20(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
     __int64 r = g_sub8CFDC20Orig(a1, a2, a3, a4);
     tprintf("[1bc] sub_188CFDC20 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64(__fastcall* Sub951F500_t)(void*, void*, void*, void*);
+static Sub951F500_t g_sub951F500Orig = nullptr;
+static __int64 __fastcall Sub951F500_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    //return 0;
+    tprintf("[1bc] sub_18951F500(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub951F500Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18951F500 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
 
@@ -900,6 +911,7 @@ void InstallPhysicsHooks(uintptr_t base)
         { (void*)(base + 0x955F550), (void*)&Sub955F550_Detour, (LPVOID*)&g_sub955F550Orig, "sub_18955F550" },
         { (void*)(base + 0x955CD90), (void*)&Sub955CD90_Detour, (LPVOID*)&g_sub955CD90Orig, "sub_18955CD90" },
         { (void*)(base + 0x8CFDC20), (void*)&Sub8CFDC20_Detour, (LPVOID*)&g_sub8CFDC20Orig, "sub_188CFDC20" },
+        { (void*)(base + 0x951F500), (void*)&Sub951F500_Detour, (LPVOID*)&g_sub951F500Orig, "sub_18951F500" },
     };
     for (auto& b : BSC)
     {
