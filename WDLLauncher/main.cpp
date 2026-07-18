@@ -3062,11 +3062,12 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[c85] hooked sub_188D0C850 (VM thunk) @ %p\n", sc85);
     else
         tprintf("[c85] FAILED to hook sub_188D0C850 @ %p\n", sc85);
+    /*
     void* s777 = (void*)(base + 0x8D07770);   // hkFreeListMemorySystem::mainInit -- VM'd thunk (reimpl + prints threadInit/blockAlloc)
     if (MH_CreateHook(s777, &Sub8D07770_Detour, (LPVOID*)&g_sub8D07770Orig) == MH_OK && MH_EnableHook(s777) == MH_OK)
         tprintf("[777] hooked mainInit (sub_188D07770) -> native reimpl [bypasses VM]\n");
     else
-        tprintf("[777] FAILED to hook sub_188D07770 @ %p\n", s777);
+        tprintf("[777] FAILED to hook sub_188D07770 @ %p\n", s777);*/
     void* s543 = (void*)(base + 0x95432E0);   // hkSolverAllocator::setBuffer (called from mainInit)
     if (MH_CreateHook(s543, &Sub95432E0_Detour, (LPVOID*)&g_sub95432E0Orig) == MH_OK && MH_EnableHook(s543) == MH_OK)
         tprintf("[543] hooked hkSolverAllocator::setBuffer (sub_1895432E0) @ %p\n", s543);
