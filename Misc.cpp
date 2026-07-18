@@ -1482,6 +1482,94 @@ static void __fastcall Sub7D0BB30_Detour(__int64 a1)
     tprintf("[pbb] sub_187D0BB30 skipped\n");
 }
 
+// ---- Native reimpl of hkFreeListMemorySystem::threadInit (retail thunk sub_188D078D0 -> virtualized sub_1A18084D0) ----
+// Verbatim port of the WDLLauncher reimpl (see main.cpp), running here in the RETAIL game (VM bootstrapped) to
+// validate that our native body matches the real VM'd threadInit -- if the game still boots with ours installed,
+// the reimpl is correct. Skips Enter/LeaveCriticalSection(&this->m_threadDataLock @ this+0xF78). Inner calls:
+//   hkThreadMemory::hkThreadMemory = sub_189542EA0 | hkThreadMemory::setMemory = sub_189542F40
+//   blockAlloc = m_systemAllocator->vtable[+8] (sub_187D81CC0), fixed size 320 | hkLifoAllocator::init = sub_188D293F0
+//   this: m_systemAllocator=+0x08, m_frameInfo=+0x10 (sizeHint=+0x14), m_heapAllocator=+0x18, m_debugAllocator=+0x28,
+//         m_solverAllocator=+0x110, m_flags=+0x1100, m_threadDatas(embedded)=+0x578, m_threadDataLock=+0xF78
+//   ThreadData: m_heapThreadMemory=+0x00, m_name=+0x128, m_inUse.m_bool=+0x130, m_next=+0x138
+//   hkMemoryRouter: m_stack=+0x00, m_temp=+0x50, m_heap=+0x58, m_debug=+0x60, m_solver=+0x68, m_userData=+0x70
+typedef __int64 (__fastcall* ThreadInitReimpl_t)(void*, void*, void*, void*);
+static ThreadInitReimpl_t g_threadInitReimplOrig = nullptr;   // trampoline (unused -- we replace the VM'd body)
+static __int64 __fastcall ThreadInit_Reimpl(void* this_, void* router_, void* name_, void* flags_)
+{
+    uintptr_t base = Imagebase;
+    char* thisp = (char*)this_;
+    char* router = (char*)router_;
+    const char* name = (const char*)name_;
+    unsigned char flags = (unsigned char)(uintptr_t)flags_;
+
+    static bool logged = false;
+    if (!logged) { logged = true; tprintf("[thi] threadInit reimpl active (this=%p router=%p name=%s flags=%u) [bypasses VM]\n", this_, router_, name ? name : "?", (unsigned)flags); fflush(stdout); }
+
+    if (flags & 1)
+    {
+        // Walk the intrusive ThreadData list (embedded head at this+0x578); find a free slot (m_inUse==0) or alloc one.
+        char* node = thisp + 0x578;    // m_threadDatas (embedded head node; never null)
+        char* prev = nullptr;          // v8
+        bool needAlloc = false;
+        while (*(unsigned char*)(node + 0x130))          // node->m_inUse.m_bool
+        {
+            prev = node;
+            node = *(char**)(node + 0x138);              // node->m_next
+            if (!node) { needAlloc = true; break; }
+        }
+        if (needAlloc)
+        {
+            void* sysAlloc = *(void**)(thisp + 8);       // m_systemAllocator
+            void* v9 = ((void* (__fastcall*)(void*, unsigned long long))*(uintptr_t*)(*(uintptr_t*)sysAlloc + 8))(sysAlloc, 320);   // vtable[+8] = blockAlloc
+            node = (char*)v9;
+            if (v9)
+            {
+                ((void (__fastcall*)(void*))(base + 0x9542EA0))(v9);   // hkThreadMemory::hkThreadMemory
+                *(void**)(node + 0x128) = nullptr;       // m_name  = 0
+                *(unsigned char*)(node + 0x130) = 0;     // m_inUse = 0
+                *(void**)(node + 0x138) = nullptr;       // m_next  = 0
+            }
+            else
+            {
+                node = nullptr;
+            }
+            *(char**)(prev + 0x138) = node;              // v8->m_next = node
+        }
+        *(unsigned char*)(node + 0x130) = 1;             // node->m_inUse = 1
+        *(const char**)(node + 0x128) = name;            // node->m_name  = name
+        ((__int64 (__fastcall*)(void*, void*, int))(base + 0x9542F40))(node, *(void**)(thisp + 0x18), 8);   // setMemory(&m_heapThreadMemory, m_heapAllocator, 8)
+
+        void* heapAlloc = *(void**)(thisp + 0x18);       // m_heapAllocator
+        if (*(unsigned int*)(thisp + 0x1100) & 4)        // m_flags & 4
+            heapAlloc = node;                            // &node->m_heapThreadMemory (node+0)
+        *(void**)(router + 0x50) = nullptr;              // m_temp   = 0
+        *(void**)(router + 0x68) = nullptr;              // m_solver = 0
+        *(void**)(router + 0x58) = heapAlloc;            // m_heap
+        *(void**)(router + 0x60) = thisp + 0x28;         // m_debug  = &this->m_debugAllocator
+        *(void**)(router + 0x70) = node;                 // m_userData
+    }
+    if (flags & 2)
+    {
+        unsigned int mFlags = *(unsigned int*)(thisp + 0x1100);
+        char* userData = *(char**)(thisp + 0x18);        // m_heapAllocator
+        if (mFlags & 4)
+            userData = *(char**)(router + 0x70);         // router->m_userData (the node)
+        char* solverAlloc = thisp + 0x110;               // &this->m_solverAllocator (p_m_solverAllocator)
+        if ((mFlags & 2) == 0)
+            solverAlloc = userData;
+        unsigned int sizeHint = *(unsigned int*)(thisp + 0x14);   // m_frameInfo.m_stackAllocatorSizeHint
+        // hkLifoAllocator::init(&router->m_stack, p_m_solverAllocator, &userData->m_stack, &userData->m_stack, sizeHint)
+        ((void (__fastcall*)(void*, void*, void*, void*, void*))(base + 0x8D293F0))(router, solverAlloc, userData, userData, (void*)(uintptr_t)sizeHint);
+
+        *(void**)(router + 0x68) = thisp + 0x110;        // m_solver = &this->m_solverAllocator
+        char* stackOwner = userData;
+        if (mFlags & 1)
+            stackOwner = router;                         // m_userData = router
+        *(void**)(router + 0x50) = stackOwner;           // m_temp = &m_userData->m_stack (stackOwner+0)
+    }
+    return (__int64)router;
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -1503,6 +1591,8 @@ void Misc::Initialize()
     HookOffset3(0x5A4D30  + 0xA00, &Str2Enum_Detour,               reinterpret_cast<LPVOID*>(&g_s2e_orig));   // sub_1805A5730
     HookOffset3(0x67C2B90 + 0xA00, &LoadSkuConfigPC_Detour,        reinterpret_cast<LPVOID*>(&g_lsc_orig));    // sub_1867C3590
 
+    // [thi] threadInit VM-slot trace: resolve the 2 obfuscated Enter/Leave-CriticalSection calls in sub_1A18084D0.
+
     // Scene-singleton boot trace (offset = RVA - 0xA00). CSceneObjectManager::CreateSingletons; flags the
     // indirect-call target that lands in the .rsrc VM region (virtualized -> hangs the VM). WDLLauncher parity.
     //HookOffset3(0x707BC40, &Sub707BC40_Detour,            reinterpret_cast<LPVOID*>(&g_sub707BC40Orig)); // sub_18707BC40
@@ -1510,7 +1600,7 @@ void Misc::Initialize()
 
     // Per-singleton capture (normal run, VM bootstrapped): NMalloc size-gate + the 7 virtualized CreateSingleton<T>
     // thunks. Each dumps its instance + finds its .data slot -- the reimpl recipe for manual-load (offsets = RVA-0xA00).
-    HookOffset3(0x60EA30  + 0xA00, &NMalloc_Detour,   reinterpret_cast<LPVOID*>(&g_nmallocOrig));      // CMemMng::NMalloc 0x60F430
+    //HookOffset3(0x60EA30  + 0xA00, &NMalloc_Detour,   reinterpret_cast<LPVOID*>(&g_nmallocOrig));      // CMemMng::NMalloc 0x60F430
     HookOffset3(0x70BD820 + 0xA00, &ScnThunk0_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[0]));  // obj2  0x70BE220
     HookOffset3(0x70BA5A0 + 0xA00, &ScnThunk1_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[1]));  // obj9  0x70BAFA0
     HookOffset3(0x709ADD0 + 0xA00, &ScnThunk2_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[2]));  // obj47 0x709B7D0
@@ -1522,6 +1612,7 @@ void Misc::Initialize()
     // hkFreeListAllocator::setMemorySoftLimit thunk sub_188D067D0 (RVA 0x8D067D0) -- confirm the launcher reimpl's
     // this+0x1560 write matches the real VM-bootstrapped function's, and dump the allocator fields around the call.
     HookOffset3(0x8D05DD0 + 0xA00, &SetMemorySoftLimit_Passthru, reinterpret_cast<LPVOID*>(&g_ssl_orig));  // sub_188D067D0
+    HookOffset3(0x8D06ED0 + 0xA00, &ThreadInit_Reimpl,           reinterpret_cast<LPVOID*>(&g_threadInitReimplOrig)); // sub_188D078D0 threadInit reimpl (retail validation)
 
     // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
     // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).

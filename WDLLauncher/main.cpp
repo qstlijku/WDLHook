@@ -2641,16 +2641,140 @@ static __int64 __fastcall Sub95432E0_Detour(void* a1, void* a2, unsigned long lo
     return r;
 }
 
-// Plain CONFIRM hook for threadInit -- retail thunk sub_188D078D0 -> VM sub_1A18084D0. Called by the mainInit
-// reimpl. NOT a reimpl: ENTER then no RETURN = confirmed it's the crash (orig jmps into the un-bootstrapped VM).
-// 4 args (a1, a2, a3, a4=flags).
+// ---- Native reimpl of hkFreeListMemorySystem::threadInit (retail thunk sub_188D078D0 -> virtualized sub_1A18084D0) ----
+// Faithful port of the readable VM body (PDB: hkFreeListMemorySystem::threadInit). Called by the mainInit reimpl via
+// this->vtable[+0x18]. Skips Enter/LeaveCriticalSection(&this->m_threadDataLock @ this+0xF78): that lock is resolved
+// through the un-bootstrapped VM globals (0 under manual-load) and physics init here is single-threaded. Inner calls:
+//   hkThreadMemory::hkThreadMemory = sub_189542EA0 (real) | hkThreadMemory::setMemory = sub_189542F40 (real)
+//   blockAlloc = m_systemAllocator->vtable[+8] (sub_187D81CC0, real), fixed size 320 (= dword_18E1D728E ^ 0x490860CD)
+// The (flags&2) branch ends in hkLifoAllocator::init = sub_188D293F0 -> VM sub_1A1812100 == THE NEXT WALL (crashes;
+// the [293] hook logs its ENTER). Everything up to that point runs natively.
+//   this: m_systemAllocator=+0x08, m_frameInfo=+0x10 (m_stackAllocatorSizeHint=+0x14), m_heapAllocator=+0x18,
+//         m_debugAllocator=+0x28, m_solverAllocator=+0x110, m_flags=+0x1100, m_threadDatas(embedded)=+0x578, lock=+0xF78
+//   ThreadData: m_heapThreadMemory=+0x00, m_name=+0x128, m_inUse.m_bool=+0x130, m_next=+0x138
+//   hkMemoryRouter: m_stack=+0x00, m_temp=+0x50, m_heap=+0x58, m_debug=+0x60, m_solver=+0x68, m_userData=+0x70
 typedef __int64 (__fastcall* Sub8D078D0_t)(void*, void*, void*, void*);
-static Sub8D078D0_t g_sub8D078D0Orig = nullptr;
-static __int64 __fastcall Sub8D078D0_Detour(void* a1, void* a2, void* a3, void* a4)
+static Sub8D078D0_t g_sub8D078D0Orig = nullptr;   // trampoline (unused -- we replace the VM'd body)
+static __int64 __fastcall Sub8D078D0_Detour(void* this_, void* router_, void* name_, void* flags_)
 {
-    tprintf("[thi] threadInit(a1=%p a2=%p a4=%p) ENTER -- VM thunk sub_188D078D0 -> sub_1A18084D0\n", a1, a2, a4); fflush(stdout);
-    __int64 r = g_sub8D078D0Orig(a1, a2, a3, a4);
-    tprintf("[thi] threadInit RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    char* thisp = (char*)this_;
+    char* router = (char*)router_;
+    const char* name = (const char*)name_;
+    unsigned char flags = (unsigned char)(uintptr_t)flags_;
+
+    static bool logged = false;
+    if (!logged) { logged = true; tprintf("[thi] threadInit reimpl active (this=%p router=%p name=%s flags=%u) [bypasses VM]\n", this_, router_, name ? name : "?", (unsigned)flags); fflush(stdout); }
+
+    if (flags & 1)
+    {
+        // Walk the intrusive ThreadData list (embedded head at this+0x578); find a free slot (m_inUse==0) or alloc one.
+        char* node = thisp + 0x578;    // m_threadDatas (embedded head node; never null)
+        char* prev = nullptr;          // v8
+        bool needAlloc = false;
+        while (*(unsigned char*)(node + 0x130))          // node->m_inUse.m_bool
+        {
+            prev = node;
+            node = *(char**)(node + 0x138);              // node->m_next
+            if (!node) { needAlloc = true; break; }
+        }
+        if (needAlloc)
+        {
+            void* sysAlloc = *(void**)(thisp + 8);       // m_systemAllocator
+            void* v9 = ((void* (__fastcall*)(void*, unsigned long long))*(uintptr_t*)(*(uintptr_t*)sysAlloc + 8))(sysAlloc, 320);   // vtable[+8] = blockAlloc
+            node = (char*)v9;
+            if (v9)
+            {
+                ((void (__fastcall*)(void*))(base + 0x9542EA0))(v9);   // hkThreadMemory::hkThreadMemory
+                *(void**)(node + 0x128) = nullptr;       // m_name  = 0
+                *(unsigned char*)(node + 0x130) = 0;     // m_inUse = 0
+                *(void**)(node + 0x138) = nullptr;       // m_next  = 0
+            }
+            else
+            {
+                node = nullptr;
+            }
+            *(char**)(prev + 0x138) = node;              // v8->m_next = node
+        }
+        *(unsigned char*)(node + 0x130) = 1;             // node->m_inUse = 1
+        *(const char**)(node + 0x128) = name;            // node->m_name  = name
+        ((__int64 (__fastcall*)(void*, void*, int))(base + 0x9542F40))(node, *(void**)(thisp + 0x18), 8);   // setMemory(&m_heapThreadMemory, m_heapAllocator, 8)
+
+        void* heapAlloc = *(void**)(thisp + 0x18);       // m_heapAllocator
+        if (*(unsigned int*)(thisp + 0x1100) & 4)        // m_flags & 4
+            heapAlloc = node;                            // &node->m_heapThreadMemory (node+0)
+        *(void**)(router + 0x50) = nullptr;              // m_temp   = 0
+        *(void**)(router + 0x68) = nullptr;              // m_solver = 0
+        *(void**)(router + 0x58) = heapAlloc;            // m_heap
+        *(void**)(router + 0x60) = thisp + 0x28;         // m_debug  = &this->m_debugAllocator
+        *(void**)(router + 0x70) = node;                 // m_userData
+    }
+    if (flags & 2)
+    {
+        unsigned int mFlags = *(unsigned int*)(thisp + 0x1100);
+        char* userData = *(char**)(thisp + 0x18);        // m_heapAllocator
+        if (mFlags & 4)
+            userData = *(char**)(router + 0x70);         // router->m_userData (the node)
+        char* solverAlloc = thisp + 0x110;               // &this->m_solverAllocator (p_m_solverAllocator)
+        if ((mFlags & 2) == 0)
+            solverAlloc = userData;
+        unsigned int sizeHint = *(unsigned int*)(thisp + 0x14);   // m_frameInfo.m_stackAllocatorSizeHint
+        // hkLifoAllocator::init(&router->m_stack, p_m_solverAllocator, &userData->m_stack, &userData->m_stack, sizeHint)
+        // sub_188D293F0 == VM thunk -> sub_1A1812100 == NEXT WALL (this call crashes un-bootstrapped; [293] logs ENTER).
+        ((void (__fastcall*)(void*, void*, void*, void*, void*))(base + 0x8D293F0))(router, solverAlloc, userData, userData, (void*)(uintptr_t)sizeHint);
+
+        *(void**)(router + 0x68) = thisp + 0x110;        // m_solver = &this->m_solverAllocator
+        char* stackOwner = userData;
+        if (mFlags & 1)
+            stackOwner = router;                         // m_userData = router
+        *(void**)(router + 0x50) = stackOwner;           // m_temp = &m_userData->m_stack (stackOwner+0)
+    }
+    return (__int64)router;
+}
+
+// Trace hooks for threadInit's 4 inner calls (no reimpl). These live INSIDE threadInit's VM body, so under
+// manual-load they only fire once threadInit itself runs natively -- blockAlloc also fires from the mainInit
+// reimpl's (flags&2) branch. sub_188D293F0 is itself a VM thunk (-> sub_1A1812100): calling orig here jmps into
+// the un-bootstrapped VM, so its hook is a CONFIRM (ENTER, no RETURN), like [thi].
+//   blockAlloc = sub_187D81CC0 (m_systemAllocator->vtable[+8]; real leaf) -- (alloc, size)
+typedef void* (__fastcall* TiBlockAlloc_t)(void*, unsigned long long);
+static TiBlockAlloc_t g_tiBlockAllocOrig = nullptr;
+static void* __fastcall TiBlockAlloc_Detour(void* alloc, unsigned long long size)
+{
+    tprintf("[ba] blockAlloc(alloc=%p size=%llu) ENTER (sub_187D81CC0)\n", alloc, size); fflush(stdout);
+    void* r = g_tiBlockAllocOrig(alloc, size);
+    tprintf("[ba] blockAlloc RETURNED = %p\n", r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub9542EA0_t)(void*);
+static Sub9542EA0_t g_sub9542EA0Orig = nullptr;
+static __int64 __fastcall Sub9542EA0_Detour(void* a1)
+{
+    tprintf("[42e] sub_189542EA0(%p) ENTER\n", a1); fflush(stdout);
+    __int64 r = g_sub9542EA0Orig(a1);
+    tprintf("[42e] sub_189542EA0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub9542F40_t)(void*, void*, int);
+static Sub9542F40_t g_sub9542F40Orig = nullptr;
+static __int64 __fastcall Sub9542F40_Detour(void* a1, void* a2, int a3)
+{
+    tprintf("[42f] sub_189542F40(%p, %p, %d) ENTER\n", a1, a2, a3); fflush(stdout);
+    __int64 r = g_sub9542F40Orig(a1, a2, a3);
+    tprintf("[42f] sub_189542F40 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// VM thunk sub_188D293F0 -> sub_1A1812100 (router init in threadInit's (a4&2) branch). Confirm hook: orig crashes.
+typedef __int64 (__fastcall* Sub8D293F0_t)(void*, void*, void*, void*, void*);
+static Sub8D293F0_t g_sub8D293F0Orig = nullptr;
+static __int64 __fastcall Sub8D293F0_Detour(void* a1, void* a2, void* a3, void* a4, void* a5)
+{
+    tprintf("[293] sub_188D293F0(%p, %p, %p, %p, %p) ENTER -- VM thunk sub_188D293F0 -> sub_1A1812100\n", a1, a2, a3, a4, a5); fflush(stdout);
+    __int64 r = g_sub8D293F0Orig(a1, a2, a3, a4, a5);
+    tprintf("[293] sub_188D293F0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
 
@@ -2948,11 +3072,32 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[543] hooked hkSolverAllocator::setBuffer (sub_1895432E0) @ %p\n", s543);
     else
         tprintf("[543] FAILED to hook sub_1895432E0 @ %p\n", s543);
-    void* sthi = (void*)(base + 0x8D078D0);   // threadInit -- VM thunk (-> sub_1A18084D0); plain confirm hook (no reimpl)
+    void* sthi = (void*)(base + 0x8D078D0);   // threadInit -- VM thunk (-> sub_1A18084D0); native reimpl [bypasses VM]
     if (MH_CreateHook(sthi, &Sub8D078D0_Detour, (LPVOID*)&g_sub8D078D0Orig) == MH_OK && MH_EnableHook(sthi) == MH_OK)
-        tprintf("[thi] hooked threadInit (sub_188D078D0) @ %p\n", sthi);
+        tprintf("[thi] hooked threadInit (sub_188D078D0) -> native reimpl [bypasses VM]\n");
     else
         tprintf("[thi] FAILED to hook sub_188D078D0 @ %p\n", sthi);
+    void* sba = (void*)(base + 0x7D81CC0);    // blockAlloc (m_systemAllocator->vtable[+8]); real leaf
+    /*
+    if (MH_CreateHook(sba, &TiBlockAlloc_Detour, (LPVOID*)&g_tiBlockAllocOrig) == MH_OK && MH_EnableHook(sba) == MH_OK)
+        tprintf("[ba] hooked blockAlloc (sub_187D81CC0) @ %p\n", sba);
+    else
+        tprintf("[ba] FAILED to hook sub_187D81CC0 @ %p\n", sba);*/
+    void* s42e = (void*)(base + 0x9542EA0);   // threadInit direct callee (real)
+    if (MH_CreateHook(s42e, &Sub9542EA0_Detour, (LPVOID*)&g_sub9542EA0Orig) == MH_OK && MH_EnableHook(s42e) == MH_OK)
+        tprintf("[42e] hooked sub_189542EA0 @ %p\n", s42e);
+    else
+        tprintf("[42e] FAILED to hook sub_189542EA0 @ %p\n", s42e);
+    void* s42f = (void*)(base + 0x9542F40);   // threadInit direct callee (real setter)
+    if (MH_CreateHook(s42f, &Sub9542F40_Detour, (LPVOID*)&g_sub9542F40Orig) == MH_OK && MH_EnableHook(s42f) == MH_OK)
+        tprintf("[42f] hooked sub_189542F40 @ %p\n", s42f);
+    else
+        tprintf("[42f] FAILED to hook sub_189542F40 @ %p\n", s42f);
+    void* s293 = (void*)(base + 0x8D293F0);   // threadInit direct callee -- VM thunk (-> sub_1A1812100); confirm hook
+    if (MH_CreateHook(s293, &Sub8D293F0_Detour, (LPVOID*)&g_sub8D293F0Orig) == MH_OK && MH_EnableHook(s293) == MH_OK)
+        tprintf("[293] hooked sub_188D293F0 (VM thunk) @ %p\n", s293);
+    else
+        tprintf("[293] FAILED to hook sub_188D293F0 @ %p\n", s293);
     InstallInitTrace(base);   // [itr]: bracket the 6 direct calls in Init's first stretch (gated on g_inInit)
     void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
     if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)
@@ -2969,11 +3114,12 @@ static void InstallSkuTrace(uintptr_t base)
         tprintf("[phys] hooked LockedMemoryAllocator ctor thunk (sub_188CF7BD0) -> native reimpl [bypasses VM]\n");
     else
         tprintf("[phys] FAILED to hook LockedMemoryAllocator ctor thunk @ %p\n", lma);
+    /*
     void* nm = (void*)(base + 0x60F430);   // CMemMng::NMalloc -- size-log gated on g_scnIter ([scene] loop arms it)
     if (MH_CreateHook(nm, &NMalloc_Detour, (LPVOID*)&g_nmallocOrig) == MH_OK && MH_EnableHook(nm) == MH_OK)
         tprintf("[nmsz] hooked CMemMng::NMalloc (base+0x60F430) @ %p [logs only inside CreateSingleton iters]\n", nm);
     else
-        tprintf("[nmsz] FAILED to hook NMalloc @ %p\n", nm);
+        tprintf("[nmsz] FAILED to hook NMalloc @ %p\n", nm);*/
     void* hp = (void*)(base + 0x6D7B20);   // sub_1806D7B20 = CCommandLineParametersGlobal::HasParameter(this, char*)
     if (MH_CreateHook(hp, &HasParam_Detour, (LPVOID*)&g_hasParamOrig) == MH_OK && MH_EnableHook(hp) == MH_OK)
         tprintf("[eng] hooked HasParameter (sub_1806D7B20) @ %p\n", hp);
