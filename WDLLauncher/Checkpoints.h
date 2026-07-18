@@ -261,7 +261,7 @@ template<size_t... I>
 static std::array<ChkFn_t, sizeof...(I)> MakeGate884Thunks(std::index_sequence<I...>) { return {{ &Gate884Thunk<I>... }}; }
 static const std::array<ChkFn_t, kGate884Pool> g_gate884Thunks = MakeGate884Thunks(std::make_index_sequence<kGate884Pool>{});
 
-static bool kGate884 = true;
+static bool kGate884 = false;   // DISABLED: [g884] subtree trace (incl. NMalloc 0x60F430) flooded the log post-CPhysConfig frontier
 static void InstallGate884(uintptr_t base)
 {
     if (!kGate884) return;
@@ -393,7 +393,7 @@ static void InstallGate884Ra(uintptr_t base)
 // (@Init+0xAD) -- if it ENTERs but never RETURNs it wasn't a false positive after all.
 extern volatile bool g_inInit;
 static const uintptr_t kInitTrace[] = {
-    0x8CF7BC0, 0x8CF8140, 0x8D3BF10, 0x8D049E0, 0x8D16080,  // 0x8D07770 (mainInit) -> dedicated reimpl hook
+    0x8CF7BC0, 0x8CF8140, 0x8D049E0, 0x8D16080,  // 0x8D07770 (mainInit) + 0x8D3BF10 (hkBaseSystem::init) -> dedicated hooks
 };
 static const int kNumInitTrace = (int)(sizeof(kInitTrace) / sizeof(kInitTrace[0]));
 static const int kInitTracePool = 8;   // >= kNumInitTrace

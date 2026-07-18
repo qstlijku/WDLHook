@@ -449,8 +449,7 @@ static __int64 __fastcall Sub8D078D0_Detour(void* this_, void* router_, void* na
     const char* name = (const char*)name_;
     unsigned char flags = (unsigned char)(uintptr_t)flags_;
 
-    static bool logged = false;
-    if (!logged) { logged = true; tprintf("[thi] threadInit reimpl active (this=%p router=%p name=%s flags=%u) [bypasses VM]\n", this_, router_, name ? name : "?", (unsigned)flags); fflush(stdout); }
+    tprintf("[thi] threadInit reimpl (this=%p router=%p name=%s flags=%u) [bypasses VM]\n", this_, router_, name ? name : "?", (unsigned)flags); fflush(stdout);
 
     if (flags & 1)
     {
@@ -564,18 +563,28 @@ static __int64 __fastcall Sub8D293F0_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
-// Direct passthru hook on the VM body sub_1A18150D0 (RVA 0x218150D0) -- hooked at the body itself (NOT the parent/
-// thunk sub_188D3C030, which complicated debugging last time). Expected to FAULT inside orig: the body does an
-// indirect call through an un-bootstrapped VM global, so ENTER-then-no-RETURN confirms we reached it with nothing
-// failing earlier. 1 arg (a1).
+// Native reimpl of hkBaseSystem::initThread (VM body sub_1A18150D0, RVA 0x218150D0). PDB:
+//   MEMORY[0x1A1B1F2E0](dword_18B546B30) = TlsGetValue(hkMemoryRouter::s_memoryRouter.m_slotID) via the
+//     un-bootstrapped VM dispatch table -- the ONLY faulting line, and its result is DISCARDED. Replaced with the
+//     real TlsGetValue (harmless read; slot id = dword @ RVA 0xB546B30).
+//   sub_188D3CB90(a1) = hkMemoryRouter::replaceInstance(memoryRouter)  (TlsSetValue via a bound .trace import -- OK)
+//   sub_188D3D440()   = hkMonitorStream::init()
+//   return 0. Hooked at the body; its .text thunk sub_188D3C030 is separately traced by [3c0].
 typedef __int64 (__fastcall* Sub18150D0_t)(void*);
-static Sub18150D0_t g_sub18150D0Orig = nullptr;
+static Sub18150D0_t g_sub18150D0Orig = nullptr;   // trampoline (unused -- we replace the VM'd body)
 static __int64 __fastcall Sub18150D0_Detour(void* a1)
 {
     tprintf("[15d] sub_1A18150D0(%p) ENTER\n", a1); fflush(stdout);
     __int64 r = g_sub18150D0Orig(a1);
     tprintf("[15d] sub_1A18150D0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
+    /*
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    tprintf("[15d] hkBaseSystem::initThread reimpl (router=%p) [replaces VM-dispatch TlsGetValue]\n", a1); fflush(stdout);
+    TlsGetValue(*(DWORD*)(base + 0xB546B30));             // TlsGetValue(s_memoryRouter.m_slotID) -- result discarded
+    ((void (__fastcall*)(void*))(base + 0x8D3CB90))(a1);  // hkMemoryRouter::replaceInstance
+    ((void (__fastcall*)())(base + 0x8D3D440))();         // hkMonitorStream::init
+    return 0;*/
 }
 
 // Native reimpl of hkFreeListAllocator::setMemorySoftLimit -- retail thunk sub_188D067D0 -> virtualized
@@ -589,8 +598,7 @@ static int* __fastcall SetMemorySoftLimit_Reimpl(void* this_, int* maxMemory, un
 {
     *(unsigned long long*)((char*)this_ + 0x1560) = a3;   // m_freeListMemory[40].m_numFreeElements = a3
     if (maxMemory) *maxMemory = 0;
-    static bool logged = false;
-    if (!logged) { logged = true; tprintf("[phys] setMemorySoftLimit reimpl active (this=%p a3=0x%llX) [bypasses VM]\n", this_, a3); fflush(stdout); }
+    tprintf("[phys] setMemorySoftLimit reimpl (this=%p a3=0x%llX) [bypasses VM]\n", this_, a3); fflush(stdout);
     return maxMemory;
 }
 
@@ -611,17 +619,193 @@ static void* __fastcall LockedMemoryAllocator_Reimpl(void* this_, void* chainedA
     *(void**)((char*)this_ + 0x08) = chainedAlloc;                    // m_chainedAllocator
     *(void**)this_ = (void*)(base + 0xA6C4510);                       // __vftable
     ((HkCritSecCtor_t)(base + 0x8D164A0))((char*)this_ + 0x10, 0);    // hkCriticalSection::hkCriticalSection(&m_section, 0)
-    static bool logged = false;
-    if (!logged) { logged = true; tprintf("[phys] LockedMemoryAllocator ctor reimpl active (this=%p chained=%p) [bypasses VM]\n", this_, chainedAlloc); fflush(stdout); }
+    tprintf("[phys] LockedMemoryAllocator ctor reimpl (this=%p chained=%p) [bypasses VM]\n", this_, chainedAlloc); fflush(stdout);
     return this_;
 }
 
+// Passthru/confirm hooks for the current-wall chain (CPhysWorldImplBase::Init callees):
+//   [bsi] sub_188D3BF10 = hkBaseSystem::init -- the Init once-init guard (if(!flag) sub_18957A490(...)); PULLED
+//         from kInitTrace (Checkpoints.h) to avoid a double-hook. 3 args.
+//   [3c0] sub_188D3C030 = the .text thunk -> VM body sub_1A18150D0 (which faults on `call [0x1A1B1F2E0]`, the
+//         un-bootstrapped VM dispatch table). Same passthru style as [15d]; shows where sub_1A18150D0 is entered.
+typedef __int64 (__fastcall* Sub8D3BF10_t)(void*, void*, void*);
+static Sub8D3BF10_t g_sub8D3BF10Orig = nullptr;
+static __int64 __fastcall Sub8D3BF10_Detour(void* a1, void* a2, void* a3)
+{
+    tprintf("[bsi] hkBaseSystem::init(a1=%p a2=%p a3=%p) ENTER (sub_188D3BF10)\n", a1, a2, a3); fflush(stdout);
+    // v8 = (*(**(v7+88)+8))(*(v7+88), 40) -- v7 = TlsGetValue(slotID) = a1 (initThread's replaceInstance sets it),
+    // so *(v7+88) = *(a1+88) (the router's allocator). Print the blockAlloc callee it resolves to (VM thunk vs real).
+    __try
+    {
+        uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+        void* alloc = *(void**)((char*)a1 + 88);        // *(v7+88)
+        void* vt    = *(void**)alloc;                    // its vtable
+        void* ba    = *(void**)((char*)vt + 8);          // vtable[+8] = blockAlloc(alloc, 40)
+        tprintf("[bsi]   v8 blockAlloc = *(**(a1+88)+8) = 0x%llX (DuniaDemo+0x%llX)  alloc=%p\n",
+                (unsigned long long)ba, (unsigned long long)((uintptr_t)ba - base), alloc); fflush(stdout);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        tprintf("[bsi]   v8 blockAlloc probe faulted (a1+88 not ready at ENTER)\n"); fflush(stdout);
+    }
+    __int64 r = g_sub8D3BF10Orig(a1, a2, a3);
+    tprintf("[bsi] hkBaseSystem::init RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub8D3C030_t)(void*);
+static Sub8D3C030_t g_sub8D3C030Orig = nullptr;
+static __int64 __fastcall Sub8D3C030_Detour(void* a1)
+{
+    tprintf("[3c0] sub_188D3C030(%p) ENTER (thunk -> sub_1A18150D0)\n", a1); fflush(stdout);
+    __int64 r = g_sub8D3C030Orig(a1);
+    tprintf("[3c0] sub_188D3C030 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// The remaining hkBaseSystem::init (sub_188D3BF10) direct callees -- passthru traces to follow the flow past
+// initThread and pinpoint the next wall. (sub_188D3C030->initThread is [3c0]/[15d]; sub_188D16080 is already [itr].)
+typedef __int64 (__fastcall* Sub957A490_t)();
+static Sub957A490_t g_sub957A490Orig = nullptr;
+static __int64 __fastcall Sub957A490_Detour()
+{
+    tprintf("[7a4] sub_18957A490() ENTER\n"); fflush(stdout);
+    __int64 r = g_sub957A490Orig();
+    tprintf("[7a4] sub_18957A490 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub951ADF0_t)();
+static Sub951ADF0_t g_sub951ADF0Orig = nullptr;
+static __int64 __fastcall Sub951ADF0_Detour()
+{
+    tprintf("[adf] sub_18951ADF0() ENTER\n"); fflush(stdout);
+    __int64 r = g_sub951ADF0Orig();
+    tprintf("[adf] sub_18951ADF0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub8D3C870_t)(void*);
+static Sub8D3C870_t g_sub8D3C870Orig = nullptr;
+static __int64 __fastcall Sub8D3C870_Detour(void* a1)
+{
+    tprintf("[c87] sub_188D3C870(%p) ENTER\n", a1); fflush(stdout);
+    __int64 r = g_sub8D3C870Orig(a1);
+    tprintf("[c87] sub_188D3C870 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub8D3C170_t)(void*, void*);
+static Sub8D3C170_t g_sub8D3C170Orig = nullptr;
+static __int64 __fastcall Sub8D3C170_Detour(void* a1, void* a2)   // hkBaseSystem::InitNode::init
+{
+    // InitNode::init: *a2 = this->m_initFunction(this->m_arg). Print the m_initFunction ptr (this+8) it's about to
+    // call -- in-module ones are real init fns; the crashing node's is the un-bootstrapped VM addr (e.g. 0x21B2B7EA).
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    void* initFn = nullptr;
+    __try { initFn = *(void**)((char*)a1 + 8); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    uintptr_t fn = (uintptr_t)initFn;
+    if (fn >= base && fn < base + 0x30000000)
+        tprintf("[c17] InitNode::init(this=%p) -> initFunction DuniaDemo+0x%llX\n", a1, (unsigned long long)(fn - base));
+    else
+        tprintf("[c17] InitNode::init(this=%p) -> initFunction 0x%llX  [OUT-OF-MODULE / un-bootstrapped VM]\n", a1, (unsigned long long)fn);
+    fflush(stdout);
+    __int64 r = g_sub8D3C170Orig(a1, a2);
+    tprintf("[c17] InitNode::init RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub7E264C0_t)();
+static Sub7E264C0_t g_sub7E264C0Orig = nullptr;
+static __int64 __fastcall Sub7E264C0_Detour()
+{
+    tprintf("[264] sub_187E264C0() ENTER\n"); fflush(stdout);
+    __int64 r = g_sub7E264C0Orig();
+    tprintf("[264] sub_187E264C0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_18951BCB0 -- thunk -> sub_18951BD10 (1+ arg via rcx). Passthru trace (4-arg forward covers it).
+typedef __int64 (__fastcall* Sub951BCB0_t)(void*, void*, void*, void*);
+static Sub951BCB0_t g_sub951BCB0Orig = nullptr;
+static __int64 __fastcall Sub951BCB0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_18951BCB0(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub951BCB0Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18951BCB0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64(__fastcall* Sub958D4A0_t)(void*, void*, void*, void*);
+static Sub958D4A0_t g_sub958D4A0Orig = nullptr;
+static __int64 __fastcall Sub958D4A0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_18958D4A0(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub958D4A0Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18958D4A0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64(__fastcall* Sub955F550_t)(void*, void*, void*, void*);
+static Sub955F550_t g_sub955F550Orig = nullptr;
+static __int64 __fastcall Sub955F550_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_18955F550(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub955F550Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18955F550 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64(__fastcall* Sub955CD90_t)(void*, void*, void*, void*);
+static Sub955CD90_t g_sub955CD90Orig = nullptr;
+static __int64 __fastcall Sub955CD90_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_18955CD90(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub955CD90Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18955CD90 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64(__fastcall* Sub8CFDC20_t)(void*, void*, void*, void*);
+static Sub8CFDC20_t g_sub8CFDC20Orig = nullptr;
+static __int64 __fastcall Sub8CFDC20_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_188CFDC20(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub8CFDC20Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_188CFDC20 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
 
 // Install all physics-init hooks/reimpls (carved from the former InstallSkuTrace). NOT gated on kTraceSku:
 // the reimpls (threadInit / setMemorySoftLimit / LockedMemoryAllocator) are boot-critical for the offline path.
 void InstallPhysicsHooks(uintptr_t base)
 {
     MH_Initialize();   // idempotent
+
+    // Patch the un-bootstrapped VM dispatch table: MEMORY[0x1A1B1F2E0] slot [0] = TlsGetValue. Without the VM
+    // bootstrap this slot holds garbage (0x21B2B7EA), so EVERY `call qword ptr [0x1A1B1F2E0]` (initThread,
+    // hkBaseSystem InitNode init fns, ...) faults. Redirecting the slot to the real kernel32 TlsGetValue fixes
+    // all callers at once (the "patch the target, not each caller" approach). Slot at base+0x21B1F2E0 (.debug).
+    {
+        void** slot = (void**)(base + 0x21B1F2E0);
+        void* real  = (void*)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "TlsGetValue");
+        DWORD oldp = 0;
+        if (real && VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldp))
+        {
+            void* prev = *slot;
+            *slot = real;
+            VirtualProtect(slot, sizeof(void*), oldp, &oldp);
+            tprintf("[vmt] patched MEMORY[0x1A1B1F2E0][0] 0x%llX -> TlsGetValue %p\n", (unsigned long long)(uintptr_t)prev, real); fflush(stdout);
+        }
+        else
+            tprintf("[vmt] FAILED to patch MEMORY[0x1A1B1F2E0][0] (real=%p)\n", real); fflush(stdout);
+    }
+
     void* s7d5 = (void*)(base + 0x7D5E810);   // dedicated hook for the frozen frontier (pulled from kChkRvasIE)
     if (MH_CreateHook(s7d5, &Sub7D5E810_Detour, (LPVOID*)&g_sub7D5E810Orig) == MH_OK && MH_EnableHook(s7d5) == MH_OK)
         tprintf("[7d5] hooked sub_187D5E810 (frozen frontier) @ %p\n", s7d5);
@@ -652,6 +836,7 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[pbb] hooked sub_187D0BB30 (VM thunk) @ %p\n", sbb);
     else
         tprintf("[pbb] FAILED to hook sub_187D0BB30 @ %p\n", sbb);
+#if 0  // DISABLED: CPhysConfig 0x21B2B9F4 crash-chain traces (RESOLVED) -- [fa1]/[6d7]/[72f]/[2a9] flooded the log (~5k lines/run)
     void* sfa1 = (void*)(base + 0x77FA110);   // CPhysConfig::vtable[+0x38] broadcast (runtime-confirmed *(*v10+56))
     if (MH_CreateHook(sfa1, &Sub7FA110_Detour, (LPVOID*)&g_sub7FA110Orig) == MH_OK && MH_EnableHook(sfa1) == MH_OK)
         tprintf("[fa1] hooked sub_1877FA110 @ %p\n", sfa1);
@@ -672,6 +857,7 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[2a9] hooked sub_1802A9A00 @ %p\n", s2a9);
     else
         tprintf("[2a9] FAILED to hook sub_1802A9A00 @ %p\n", s2a9);
+#endif
     void* sd3d = (void*)(base + 0x7D3D5A0);   // sub_187D3D5A0 -- VM'd VehicleSphereDeform member Load; skip-stub
     if (MH_CreateHook(sd3d, &Sub7D3D5A0_Detour, (LPVOID*)&g_sub7D3D5A0Orig) == MH_OK && MH_EnableHook(sd3d) == MH_OK)
         tprintf("[mld] hooked sub_187D3D5A0 (member Load) -> skip-stub @ %p\n", sd3d);
@@ -692,6 +878,36 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[init] hooked CPhysWorldImplBase::Init (sub_187E3C7C0) @ %p\n", sinit);
     else
         tprintf("[init] FAILED to hook sub_187E3C7C0 @ %p\n", sinit);
+    void* sbsi = (void*)(base + 0x8D3BF10);   // hkBaseSystem::init -- Init once-init guard (pulled from kInitTrace)
+    if (MH_CreateHook(sbsi, &Sub8D3BF10_Detour, (LPVOID*)&g_sub8D3BF10Orig) == MH_OK && MH_EnableHook(sbsi) == MH_OK)
+        tprintf("[bsi] hooked hkBaseSystem::init (sub_188D3BF10) @ %p\n", sbsi);
+    else
+        tprintf("[bsi] FAILED to hook sub_188D3BF10 @ %p\n", sbsi);
+    void* s3c0 = (void*)(base + 0x8D3C030);   // .text thunk -> sub_1A18150D0 (passthru, like [15d])
+    if (MH_CreateHook(s3c0, &Sub8D3C030_Detour, (LPVOID*)&g_sub8D3C030Orig) == MH_OK && MH_EnableHook(s3c0) == MH_OK)
+        tprintf("[3c0] hooked sub_188D3C030 (thunk to sub_1A18150D0) @ %p\n", s3c0);
+    else
+        tprintf("[3c0] FAILED to hook sub_188D3C030 @ %p\n", s3c0);
+    // The remaining hkBaseSystem::init direct callees (passthru traces to follow the flow past initThread).
+    struct { void* addr; void* det; LPVOID* orig; const char* nm; } BSC[] = {
+        { (void*)(base + 0x957A490), (void*)&Sub957A490_Detour, (LPVOID*)&g_sub957A490Orig, "sub_18957A490" },
+        { (void*)(base + 0x951ADF0), (void*)&Sub951ADF0_Detour, (LPVOID*)&g_sub951ADF0Orig, "sub_18951ADF0" },
+        { (void*)(base + 0x8D3C870), (void*)&Sub8D3C870_Detour, (LPVOID*)&g_sub8D3C870Orig, "sub_188D3C870" },
+        { (void*)(base + 0x8D3C170), (void*)&Sub8D3C170_Detour, (LPVOID*)&g_sub8D3C170Orig, "sub_188D3C170" },
+        { (void*)(base + 0x7E264C0), (void*)&Sub7E264C0_Detour, (LPVOID*)&g_sub7E264C0Orig, "sub_187E264C0" },
+        { (void*)(base + 0x951BCB0), (void*)&Sub951BCB0_Detour, (LPVOID*)&g_sub951BCB0Orig, "sub_18951BCB0" },
+        { (void*)(base + 0x958D4A0), (void*)&Sub958D4A0_Detour, (LPVOID*)&g_sub958D4A0Orig, "sub_18958D4A0" },
+        { (void*)(base + 0x955F550), (void*)&Sub955F550_Detour, (LPVOID*)&g_sub955F550Orig, "sub_18955F550" },
+        { (void*)(base + 0x955CD90), (void*)&Sub955CD90_Detour, (LPVOID*)&g_sub955CD90Orig, "sub_18955CD90" },
+        { (void*)(base + 0x8CFDC20), (void*)&Sub8CFDC20_Detour, (LPVOID*)&g_sub8CFDC20Orig, "sub_188CFDC20" },
+    };
+    for (auto& b : BSC)
+    {
+        if (MH_CreateHook(b.addr, b.det, b.orig) == MH_OK && MH_EnableHook(b.addr) == MH_OK)
+            tprintf("[bsc] hooked %s @ %p\n", b.nm, b.addr);
+        else
+            tprintf("[bsc] FAILED to hook %s @ %p\n", b.nm, b.addr);
+    }
     void* s50b = (void*)(base + 0x8D050B0);   // 2nd VM thunk in Init (-> sub_1A17D9940)
     if (MH_CreateHook(s50b, &Sub8D050B0_Detour, (LPVOID*)&g_sub8D050B0Orig) == MH_OK && MH_EnableHook(s50b) == MH_OK)
         tprintf("[50b] hooked sub_188D050B0 (VM thunk) @ %p\n", s50b);
@@ -719,11 +935,11 @@ void InstallPhysicsHooks(uintptr_t base)
     else
         tprintf("[thi] FAILED to hook sub_188D078D0 @ %p\n", sthi);
     void* sba = (void*)(base + 0x7D81CC0);    // blockAlloc (m_systemAllocator->vtable[+8]); real leaf
-    /*
+    
     if (MH_CreateHook(sba, &TiBlockAlloc_Detour, (LPVOID*)&g_tiBlockAllocOrig) == MH_OK && MH_EnableHook(sba) == MH_OK)
         tprintf("[ba] hooked blockAlloc (sub_187D81CC0) @ %p\n", sba);
     else
-        tprintf("[ba] FAILED to hook sub_187D81CC0 @ %p\n", sba);*/
+        tprintf("[ba] FAILED to hook sub_187D81CC0 @ %p\n", sba);
     void* s42e = (void*)(base + 0x9542EA0);   // threadInit direct callee (real)
     if (MH_CreateHook(s42e, &Sub9542EA0_Detour, (LPVOID*)&g_sub9542EA0Orig) == MH_OK && MH_EnableHook(s42e) == MH_OK)
         tprintf("[42e] hooked sub_189542EA0 @ %p\n", s42e);
@@ -739,9 +955,9 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[293] hooked sub_188D293F0 (VM thunk) @ %p\n", s293);
     else
         tprintf("[293] FAILED to hook sub_188D293F0 @ %p\n", s293);
-    void* s15d = (void*)(base + 0x218150D0);  // VM body sub_1A18150D0 -- direct passthru (expected to fault in orig)
+    void* s15d = (void*)(base + 0x218150D0);  // hkBaseSystem::initThread (sub_1A18150D0) -- native reimpl (replaces the faulting VM-dispatch TlsGetValue)
     if (MH_CreateHook(s15d, &Sub18150D0_Detour, (LPVOID*)&g_sub18150D0Orig) == MH_OK && MH_EnableHook(s15d) == MH_OK)
-        tprintf("[15d] hooked sub_1A18150D0 @ %p\n", s15d);
+        tprintf("[15d] hooked hkBaseSystem::initThread (sub_1A18150D0) -> native reimpl [bypasses VM]\n");
     else
         tprintf("[15d] FAILED to hook sub_1A18150D0 @ %p\n", s15d);
     InstallInitTrace(base);   // [itr]: bracket the 6 direct calls in Init's first stretch (gated on g_inInit)
