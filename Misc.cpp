@@ -1588,8 +1588,8 @@ void Misc::Initialize()
 
     // SKU / install-language capture (normal run) to diff against the UPC emu (offsets = RVA - 0xA00):
     //HookOffset3(0x7ADEA90 + 0xA00, &GetInstalledLanguage_Detour,   reinterpret_cast<LPVOID*>(&g_gil_orig));   // sub_187ADF490
-    HookOffset3(0x5A4D30  + 0xA00, &Str2Enum_Detour,               reinterpret_cast<LPVOID*>(&g_s2e_orig));   // sub_1805A5730
-    HookOffset3(0x67C2B90 + 0xA00, &LoadSkuConfigPC_Detour,        reinterpret_cast<LPVOID*>(&g_lsc_orig));    // sub_1867C3590
+    //HookOffset3(0x5A4D30  + 0xA00, &Str2Enum_Detour,               reinterpret_cast<LPVOID*>(&g_s2e_orig));   // sub_1805A5730
+    //HookOffset3(0x67C2B90 + 0xA00, &LoadSkuConfigPC_Detour,        reinterpret_cast<LPVOID*>(&g_lsc_orig));    // sub_1867C3590
 
     // [thi] threadInit VM-slot trace: resolve the 2 obfuscated Enter/Leave-CriticalSection calls in sub_1A18084D0.
 
@@ -1601,18 +1601,18 @@ void Misc::Initialize()
     // Per-singleton capture (normal run, VM bootstrapped): NMalloc size-gate + the 7 virtualized CreateSingleton<T>
     // thunks. Each dumps its instance + finds its .data slot -- the reimpl recipe for manual-load (offsets = RVA-0xA00).
     //HookOffset3(0x60EA30  + 0xA00, &NMalloc_Detour,   reinterpret_cast<LPVOID*>(&g_nmallocOrig));      // CMemMng::NMalloc 0x60F430
-    HookOffset3(0x70BD820 + 0xA00, &ScnThunk0_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[0]));  // obj2  0x70BE220
-    HookOffset3(0x70BA5A0 + 0xA00, &ScnThunk1_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[1]));  // obj9  0x70BAFA0
-    HookOffset3(0x709ADD0 + 0xA00, &ScnThunk2_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[2]));  // obj47 0x709B7D0
-    HookOffset3(0x70BA820 + 0xA00, &ScnThunk3_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[3]));  // obj64 0x70BB220
-    HookOffset3(0x7094EE0 + 0xA00, &ScnThunk4_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[4]));  // obj68 0x70958E0
-    HookOffset3(0x70930A0 + 0xA00, &ScnThunk5_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[5]));  // obj74 0x7093AA0
-    HookOffset3(0x70BDF20 + 0xA00, &ScnThunk6_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[6]));  // obj91 0x70BE920
+    //HookOffset3(0x70BD820 + 0xA00, &ScnThunk0_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[0]));  // obj2  0x70BE220
+    //HookOffset3(0x70BA5A0 + 0xA00, &ScnThunk1_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[1]));  // obj9  0x70BAFA0
+    //HookOffset3(0x709ADD0 + 0xA00, &ScnThunk2_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[2]));  // obj47 0x709B7D0
+    //HookOffset3(0x70BA820 + 0xA00, &ScnThunk3_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[3]));  // obj64 0x70BB220
+    //HookOffset3(0x7094EE0 + 0xA00, &ScnThunk4_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[4]));  // obj68 0x70958E0
+    //HookOffset3(0x70930A0 + 0xA00, &ScnThunk5_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[5]));  // obj74 0x7093AA0
+    //HookOffset3(0x70BDF20 + 0xA00, &ScnThunk6_Detour, reinterpret_cast<LPVOID*>(&g_scnThunkOrig[6]));  // obj91 0x70BE920
 
     // hkFreeListAllocator::setMemorySoftLimit thunk sub_188D067D0 (RVA 0x8D067D0) -- confirm the launcher reimpl's
     // this+0x1560 write matches the real VM-bootstrapped function's, and dump the allocator fields around the call.
-    HookOffset3(0x8D05DD0 + 0xA00, &SetMemorySoftLimit_Passthru, reinterpret_cast<LPVOID*>(&g_ssl_orig));  // sub_188D067D0
-    HookOffset3(0x8D06ED0 + 0xA00, &ThreadInit_Reimpl,           reinterpret_cast<LPVOID*>(&g_threadInitReimplOrig)); // sub_188D078D0 threadInit reimpl (retail validation)
+    //HookOffset3(0x8D05DD0 + 0xA00, &SetMemorySoftLimit_Passthru, reinterpret_cast<LPVOID*>(&g_ssl_orig));  // sub_188D067D0
+    //HookOffset3(0x8D06ED0 + 0xA00, &ThreadInit_Reimpl,           reinterpret_cast<LPVOID*>(&g_threadInitReimplOrig)); // sub_188D078D0 threadInit reimpl (retail validation)
 
     // Token/activation capture is installed EARLY from DllMain (Misc::InstallEarlyHooks) so it beats
     // RunGame's token flow; it is intentionally NOT installed here (MainThread runs too late).

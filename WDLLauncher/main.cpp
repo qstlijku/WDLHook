@@ -19,6 +19,7 @@
 #include <cstdarg>
 #include "minhook.h"
 
+#include "Log.h"
 #include "checkpoints.h"
 
 #pragma comment(lib, "Shlwapi.lib")

@@ -10,29 +10,14 @@
 // >>> place). RVA = IDA VA - 0x180000000 (the hex after "sub_18"). If you exceed the pool, bump
 // >>> kChkThunkPool (one constant) -- g_chkOrig and g_chkThunks resize automatically.
 //
-// SELF-CONTAINED: this header owns tprintf()/g_logFile + the kCheckpoints flag (moved here from main.cpp), so
-// main.cpp #includes it near the top. Only external dependency is MinHook -- include minhook.h before this.
+// This header owns the kCheckpoints flag + the checkpoint/gate thunk machinery. Logging (tprintf/g_logFile)
+// now lives in Log.h/Log.cpp -- a single shared definition (a per-TU static copy would give each split .cpp
+// its own unopened g_logFile and silently drop file logging). main.cpp #includes this near the top.
+// Dependencies: MinHook (include minhook.h before this) + Log.h.
 #pragma once
 #include <array>
 #include <utility>
-
-// printf to both the console and a per-PID log file. The console window dies when the process is
-// killed (as the relaunch does); the file survives, so it captures the last thing that happened.
-// Same idiom as ACMHook / WDLE3Hook.
-static FILE* g_logFile = nullptr;
-static void tprintf(const char* fmt, ...)
-{
-    va_list args;
-    __try   // a caller passing a bad %s pointer AVs inside vprintf/vfprintf -- catch it, log WHICH fmt faulted
-    {       // (identifies the culprit call), and keep boot alive instead of dying here.
-        va_start(args, fmt); vprintf(fmt, args); va_end(args);
-        if (g_logFile) { va_start(args, fmt); vfprintf(g_logFile, fmt, args); va_end(args); fflush(g_logFile); }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        if (g_logFile) { fprintf(g_logFile, "[tprintf] FAULT while formatting: %.120s\n", fmt); fflush(g_logFile); }
-    }
-};
+#include "Log.h"
 
 // ACTIVE crash-window set: FuncA = CDuniaEngineInitBase::InitializeEngineServices (retail 0x3270..0x36A5).
 // Its distinct calls AFTER CEngine::InitializeEngineServices (FuncA+0x3288) -- the streaming/IO-layer stack
