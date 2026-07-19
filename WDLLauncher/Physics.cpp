@@ -442,9 +442,14 @@ static const HnwCallee kHnwCallees[] = {
     { 0x9662280, 0 }, { 0x965F550, 0 }, { 0x965F800, 0 },
 };
 static const int kNumHnw = (int)(sizeof(kHnwCallees) / sizeof(kHnwCallees[0]));
-typedef __int64 (__fastcall* HnwFn_t)(void*, void*, void*, void*);
+// 8 params so callees taking 5-8 args don't get their stack-passed args (5th+) truncated. This makes the whole [hw]
+// pool truncation-proof -- would have caught setupModifierManager (5 args) without a standalone hook. Over-supplying
+// args to a <8-arg callee is harmless (Win64 caller-cleanup; the callee ignores the extra slots). See
+// [[pooled-thunk-arg-truncation]].
+typedef __int64 (__fastcall* HnwFn_t)(void*, void*, void*, void*, void*, void*, void*, void*);
 static HnwFn_t g_hnwOrig[kNumHnw];
-template<int N> static __int64 __fastcall HnwThunk(void* a, void* b, void* c, void* dd)
+template<int N> static __int64 __fastcall HnwThunk(void* a, void* b, void* c, void* dd,
+                                                   void* e, void* f, void* g, void* h)
 {
     unsigned long long rva = (unsigned long long)kHnwCallees[N].rva;
     int sa = kHnwCallees[N].strArg;
@@ -455,7 +460,7 @@ template<int N> static __int64 __fastcall HnwThunk(void* a, void* b, void* c, vo
     else
         tprintf("[hw] sub_18%llX(%p, %p, %p, %p) ENTER\n", rva, a, b, c, dd);
     fflush(stdout);
-    __int64 r = g_hnwOrig[N](a, b, c, dd);
+    __int64 r = g_hnwOrig[N](a, b, c, dd, e, f, g, h);
     tprintf("[hw] sub_18%llX RETURNED = 0x%llX\n", rva, (unsigned long long)r); fflush(stdout);
     return r;
 }
@@ -548,7 +553,7 @@ static __int64 __fastcall Sub96CAF00_Detour(void* thisPtr, void* b, void* c, voi
     return (__int64)thisPtr;
 }
 
-static uintptr_t g_reBase;   // module base, for caller-site / vtable-target RVA (used by [mod], [pi], [v9d])
+static uintptr_t g_reBase;   // module base, for caller-site / vtable-target RVA (used by [pi], [v9d])
 
 // sub_188E2F5F0 / sub_188E2F740 = hknpConstraintManager::relocateConstraintBuffer / relocateGroupBuffer -- the last
 // two calls in the hknpConstraintManager ctor (after the [bcm] reimpl). Passthru trace to see if either is a wall.
@@ -573,34 +578,6 @@ static __int64 __fastcall Sub8E2E6A0_Detour(void* thisContainer, void* result, v
     *(unsigned char*)result = 1;   // m_bool = 1 (can relocate)
     tprintf("[cr] canRelocateBuffer reimpl RETURNED (true)\n"); fflush(stdout);
     return (__int64)result;
-}
-
-// sub_188DEB560 = hknpModifierManager::addModifier(mgr, enablingFlags, modifier, priority). The FIRST thing it does is
-// modifier->getEnabledFunctions() == call [ [modifier]+8 ]. The launcher wall is HERE. DIAGNOSE which pointer is bad:
-// the modifier's vtable (ctor never ran -> null/garbage) or the getEnabledFunctions target (a VM'd virtual method).
-typedef __int64 (__fastcall* AddMod_t)(void*, __int64, void*, __int64);
-static AddMod_t g_addModOrig = nullptr;
-static __int64 __fastcall AddMod_Detour(void* mgr, __int64 flags, void* modifier, __int64 priority)
-{
-    uintptr_t ra = (uintptr_t)_ReturnAddress() - g_reBase;
-    tprintf("[mod] addModifier(mgr=%p flags=0x%llX modifier=%p pri=%lld) ret=0x%llX ENTER\n",
-        mgr, (unsigned long long)flags, modifier, (long long)priority, (unsigned long long)ra); fflush(stdout);
-    void* vt = modifier ? *(void**)modifier : nullptr;   // [modifier] = vtable (modifier is an embedded obj, safe read)
-    if (vt && !IsBadReadPtr(vt, 16))
-    {
-        void* ge = ((void**)vt)[1];   // getEnabledFunctions = vtable slot 1
-        uintptr_t geRva = (uintptr_t)ge - g_reBase;
-        bool inVm = (geRva >= 0xBC39000 && geRva < 0x21B12800);
-        tprintf("[mod]   vtable=%p getEnabledFunctions=%p (rva 0x%llX)%s\n",
-            vt, ge, (unsigned long long)geRva, inVm ? "  <== VM BAND (method is virtualized)" : ""); fflush(stdout);
-    }
-    else
-    {
-        tprintf("[mod]   vtable=%p  <== BAD/NULL vtable (modifier ctor never ran)\n", vt); fflush(stdout);
-    }
-    __int64 r = g_addModOrig(mgr, flags, modifier, priority);
-    tprintf("[mod] addModifier RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
-    return r;
 }
 
 // sub_188DE78B0 = anonymous_namespace::setupModifierManager(cinfo, defaultModifierSet, contactSolver,
@@ -1236,7 +1213,7 @@ static const char* const kReNames[] = {
 static const int kNumRe = (int)(sizeof(kReCallees) / sizeof(kReCallees[0]));
 typedef __int64 (__fastcall* Re_t)(void*, void*, void*, void*);
 static Re_t g_reOrig[kNumRe];
-// g_reBase declared earlier (near the [rcb]/[cr]/[mod] detours) -- module base, for caller-site RVA
+// g_reBase declared earlier (near the [rcb]/[cr] detours) -- module base, for caller-site RVA
 volatile const char* g_reLast = "";        // breadcrumb: last [re] fn entered (read at the debugger on crash)
 volatile uintptr_t g_reLastRA = 0;         // breadcrumb: caller-site RVA of that call
 template<int N> static __int64 __fastcall ReThunk(void* a, void* b, void* c, void* dd)
@@ -1259,7 +1236,7 @@ static const std::array<Re_t, kNumRe> g_reThunks = MakeReThunks(std::make_index_
 // Init after the thunk's jmp) AND unnecessary once the list is Init-specific. sub_188DE8600 -> its own [de8] hook.
 // Install is #if 0'd below; enable when tracing Init. Verify any 0x8D/0x686/0x5C entry is truly Init-only before adding.
 static const uintptr_t kInitCallees[] = {
-    0x7D61260, /* 0x8DEB560 -> dedicated [mod] diagnostic hook */ 0x7D853A0, 0x8DDD970, 0x8D0C850, 0x7E3D9C0, 0x7D9A530, 0x7E3DDE0, 0x7E3E460,
+    0x7D61260, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, 0x7E3D9C0, 0x7D9A530, 0x7E3DDE0, 0x7E3E460,
     0x7E3E670, 0x7E3E7D0, 0x7E76F70, 0x7E77090, 0x7E771B0, 0x7E772D0, 0x7E773F0, 0x7E77510, 0x8DE8830,
 };
 static const int kNumInit = (int)(sizeof(kInitCallees) / sizeof(kInitCallees[0]));
@@ -1621,11 +1598,6 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[cr] hooked canRelocateBuffer reimpl (sub_188E2E6A0) @ %p\n", se6a0);
     else
         tprintf("[cr] FAILED to hook sub_188E2E6A0 @ %p\n", se6a0);
-    void* seb560 = (void*)(base + 0x8DEB560);   // hknpModifierManager::addModifier -- diagnostic (which ptr faults?)
-    if (MH_CreateHook(seb560, &AddMod_Detour, (LPVOID*)&g_addModOrig) == MH_OK && MH_EnableHook(seb560) == MH_OK)
-        tprintf("[mod] hooked addModifier diag (sub_188DEB560) @ %p\n", seb560);
-    else
-        tprintf("[mod] FAILED to hook sub_188DEB560 @ %p\n", seb560);
     void* se78b0 = (void*)(base + 0x8DE78B0);   // setupModifierManager -- 5-arg passthru (forwards the stack-passed mgr)
     if (MH_CreateHook(se78b0, &SetupMod_Detour, (LPVOID*)&g_setupModOrig) == MH_OK && MH_EnableHook(se78b0) == MH_OK)
         tprintf("[smm] hooked setupModifierManager 5-arg (sub_188DE78B0) @ %p\n", se78b0);
