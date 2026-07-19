@@ -1666,6 +1666,36 @@ static __int64 __fastcall Sub955CD90_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
+// ---- hknpDeactivationManager::hknpDeactivationManager reimpl VALIDATION (sub_18966C9B0, VM'd under manual-load) ----
+// Pure field-init, no logic/alloc. Reimpl = memset(0) + fix non-zero fields. Testing here in DE_Hook (NORMAL, VM-
+// bootstrapped run): our reimpl REPLACES the real ctor; if physics deactivation/sleeping still works, it's correct
+// -> then port to WDLLauncher. Layout (DuniaDemo.h, size 0x5C0): 5 inline block-stream arrays (hkInplaceArrayAligned16
+// <Block*,24>) at this+{0x20,0x120,0x220,0x3C0,0x4C0} (m_data=&m_storage@+0x10, cap=0x80000018); 7 heap arrays at
+// {0x310,0x320,0x330,0x340,0x350,0x388,0x398} (cap=0x80000000); m_nopCachesAllowedPerBlock@0x5B0=6,
+// m_numBlocksToDefragmentPerStep@0x5B4=15; m_world@0/m_movingActivatedCaches@0x360 = 0 (from memset).
+typedef __int64 (__fastcall* DeactMgrCtor_t)(void*, void*, void*, void*);
+static DeactMgrCtor_t g_deactMgrOrig = nullptr;   // trampoline (unused -- we replace it)
+static __int64 __fastcall DeactMgrCtor_Reimpl(void* thisPtr, void* b, void* c, void* dd)
+{
+    printf("DeactMgrCtor called\n");
+    char* t = (char*)thisPtr;
+    memset(t, 0, 0x5C0);
+    static const int inlineArrs[5] = { 0x20, 0x120, 0x220, 0x3C0, 0x4C0 };   // *.m_blocks (inline, 24-cap)
+    for (int i = 0; i < 5; ++i)
+    {
+        int X = inlineArrs[i];
+        *(void**)(t + X) = (void*)(t + X + 0x10);       // m_data = &m_storage (inline)
+        *(unsigned int*)(t + X + 0xC) = 0x80000018;     // m_capacityAndFlags = don't-free | 24
+    }
+    static const int heapArrs[7] = { 0x310, 0x320, 0x330, 0x340, 0x350, 0x388, 0x398 };
+    for (int i = 0; i < 7; ++i)
+        *(unsigned int*)(t + heapArrs[i] + 0xC) = 0x80000000;   // empty heap array
+    *(int*)(t + 0x5B0) = 6;    // m_nopCachesAllowedPerBlock
+    *(int*)(t + 0x5B4) = 15;   // m_numBlocksToDefragmentPerStep
+    tprintf("[dm] hknpDeactivationManager ctor reimpl(this=%p) [validation]\n", thisPtr); fflush(stdout);
+    return (__int64)thisPtr;
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -1683,6 +1713,12 @@ void Misc::Initialize()
     // and see if any node registers twice. Offsets = RVA - 0xA00. Comment out for a WDLLauncher run (double-hook).
     //HookOffset3(0x8D3B770 + 0xA00, &Sub8D3C170_Detour, reinterpret_cast<LPVOID*>(&g_sub8D3C170Orig)); // InitNode::init sub_188D3C170
     //HookOffset3(0x8D3B730 + 0xA00, &Sub8D3C130_Detour, reinterpret_cast<LPVOID*>(&g_sub8D3C130Orig)); // internalConstruct sub_188D3C130
+
+    // hknpDeactivationManager ctor reimpl VALIDATION (normal run): replace the real ctor with ours; if physics
+    // deactivation still works, the reimpl is correct -> port to WDLLauncher. Offset = RVA - 0xA00 (0x966C9B0).
+    // VALIDATED (game runs with ours, crashes if stubbed) -> ported to Physics.cpp [dm]. Disabled so a launcher run
+    // (DE_Hook loads there too) doesn't double-hook. Re-enable only for another normal-run check.
+    //HookOffset3(0x966BFB0 + 0xA00, &DeactMgrCtor_Reimpl, reinterpret_cast<LPVOID*>(&g_deactMgrOrig)); // sub_18966C9B0
     /*
     auto base = Imagebase;
     struct { void* addr; void* det; LPVOID* orig; const char* nm; } BSC[] = {

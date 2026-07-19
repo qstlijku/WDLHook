@@ -435,7 +435,7 @@ static const HnwCallee kHnwCallees[] = {
     { 0x8DEA140, 0 }, { 0x8DE8000, 4 }, { 0x96640B0, 0 }, { 0x96640A0, 0 }, { 0x9664110, 0 }, { 0x8DE8120, 4 },
     { 0x96644C0, 0 }, { 0x968F130, 0 }, { 0x8DA7350, 0 }, { 0x96616C0, 0 }, { 0x9675080, 0 },   // 0x9675B10 -> [emd] reimpl
     { 0x96617B0, 0 }, { 0x967CB40, 0 }, { 0x967C710, 0 }, { 0x965EB60, 0 }, { 0x8DE7B90, 4 }, { 0x9662080, 0 },
-    { 0x9661AA0, 0 }, { 0x966C9B0, 0 }, { 0x96611D0, 0 }, { 0x965DFD0, 3 }, { 0x965E6E0, 3 }, { 0x9661210, 0 },
+    { 0x9661AA0, 0 }, { 0x96611D0, 0 }, { 0x965DFD0, 3 }, { 0x965E6E0, 3 }, { 0x9661210, 0 },   // 0x966C9B0 -> [dm] reimpl
     { 0x8E1BE00, 0 }, { 0x9667250, 0 }, { 0x8E2F480, 0 }, { 0x8E3E6C0, 0 }, { 0x9663140, 0 }, { 0x96613B0, 0 },
     { 0x8DEB470, 0 }, { 0x8DE7450, 0 }, { 0x8DE78B0, 0 }, { 0x8DF9E30, 0 }, { 0x967D530, 0 }, { 0x96114D0, 0 },
     { 0x9662280, 0 }, { 0x965F550, 0 }, { 0x965F800, 0 },
@@ -480,6 +480,47 @@ static __int64 __fastcall Sub9675B10_Detour(void* thisDisp, void* world, void* c
     *(unsigned int*)(t + 0x8C) = 0x80000000;                  // m_triggerEvents.m_capacityAndFlags
     tprintf("[emd] hknpEventMergeAndDispatcher ctor reimpl(this=%p world=%p)\n", thisDisp, world); fflush(stdout);
     return (__int64)thisDisp;
+}
+
+// sub_18967C150 = hknpSpaceSplitter::initSortedLinks -- the LAST call in the hknpDynamicSpaceSplitter ctor (the wall).
+// Standalone passthru with a return-0 SKIP at the top (comment out the `return 0;` to actually run it). Skipping just
+// leaves the sorted-links array unbuilt (used for multithreaded solving) -- fine for boot; reimpl if the splitter is
+// later used and crashes (PDB body is readable: hkLifoAllocator::allocateFromNewSlab + array fill).
+typedef __int64 (__fastcall* Sub967C150_t)(void*, void*, void*, void*);
+static Sub967C150_t g_sub967C150Orig = nullptr;
+static __int64 __fastcall Sub967C150_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;   // SKIP for now -- comment out to passthru/run the real body
+    tprintf("[iss] sub_18967C150 (initSortedLinks)(%p, %p) ENTER\n", a1, a2); fflush(stdout);
+    __int64 r = g_sub967C150Orig(a1, a2, a3, a4);
+    tprintf("[iss] sub_18967C150 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_18966C9B0 = hknpDeactivationManager::hknpDeactivationManager -- body VM'd (freezes un-bootstrapped). VALIDATED
+// reimpl (Misc.cpp normal-run: game runs with ours; crashes if stubbed -> required). Pure field-init: memset(0) +
+// 5 inline block-stream arrays @ {0x20,0x120,0x220,0x3C0,0x4C0} (m_data=&m_storage@+0x10, cap=0x80000018) + 7 heap
+// arrays @ {0x310,0x320,0x330,0x340,0x350,0x388,0x398} (cap=0x80000000) + scalars @0x5B0=6 / @0x5B4=15. size 0x5C0.
+typedef __int64 (__fastcall* Sub966C9B0_t)(void*, void*, void*, void*);
+static Sub966C9B0_t g_sub966C9B0Orig = nullptr;   // trampoline out-param (unused -- VM body freezes)
+static __int64 __fastcall Sub966C9B0_Detour(void* thisPtr, void* b, void* c, void* dd)
+{
+    char* t = (char*)thisPtr;
+    memset(t, 0, 0x5C0);
+    static const int inlineArrs[5] = { 0x20, 0x120, 0x220, 0x3C0, 0x4C0 };   // *.m_blocks (inline, 24-cap)
+    for (int i = 0; i < 5; ++i)
+    {
+        int X = inlineArrs[i];
+        *(void**)(t + X) = (void*)(t + X + 0x10);       // m_data = &m_storage
+        *(unsigned int*)(t + X + 0xC) = 0x80000018;     // m_capacityAndFlags = don't-free | 24
+    }
+    static const int heapArrs[7] = { 0x310, 0x320, 0x330, 0x340, 0x350, 0x388, 0x398 };
+    for (int i = 0; i < 7; ++i)
+        *(unsigned int*)(t + heapArrs[i] + 0xC) = 0x80000000;   // empty heap array
+    *(int*)(t + 0x5B0) = 6;    // m_nopCachesAllowedPerBlock
+    *(int*)(t + 0x5B4) = 15;   // m_numBlocksToDefragmentPerStep
+    tprintf("[dm] hknpDeactivationManager ctor reimpl(this=%p)\n", thisPtr); fflush(stdout);
+    return (__int64)thisPtr;
 }
 
 // sub_188D0C850 -- the 5th (also real) VM thunk (-> VM sub_1A2180CEE0) called from CPhysWorldImplBase::Init
@@ -1442,6 +1483,16 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[emd] hooked hknpEventMergeAndDispatcher ctor reimpl (sub_189675B10) @ %p\n", s5b10);
     else
         tprintf("[emd] FAILED to hook sub_189675B10 @ %p\n", s5b10);
+    void* sc150 = (void*)(base + 0x967C150);   // hknpSpaceSplitter::initSortedLinks (last call in DynamicSpaceSplitter ctor) -- skip
+    if (MH_CreateHook(sc150, &Sub967C150_Detour, (LPVOID*)&g_sub967C150Orig) == MH_OK && MH_EnableHook(sc150) == MH_OK)
+        tprintf("[iss] hooked sub_18967C150 (initSortedLinks, skip) @ %p\n", sc150);
+    else
+        tprintf("[iss] FAILED to hook sub_18967C150 @ %p\n", sc150);
+    void* sc9b0 = (void*)(base + 0x966C9B0);   // hknpDeactivationManager ctor (VM'd) -- reimpl (validated in Misc.cpp normal run)
+    if (MH_CreateHook(sc9b0, &Sub966C9B0_Detour, (LPVOID*)&g_sub966C9B0Orig) == MH_OK && MH_EnableHook(sc9b0) == MH_OK)
+        tprintf("[dm] hooked hknpDeactivationManager ctor reimpl (sub_18966C9B0) @ %p\n", sc9b0);
+    else
+        tprintf("[dm] FAILED to hook sub_18966C9B0 @ %p\n", sc9b0);
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
 #if 0
