@@ -398,6 +398,90 @@ static __int64 __fastcall Sub8DE8600_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
+// sub_188DDBE30 = hknpWorld ctor (Init+0x428: sub_188DDBE30(v25 /*this, 2768-byte alloc*/, &v74 /*worldCinfo*/);
+// result stored as qword_18B50D4A0 = the physics world). Current blocker. Standalone passthru, always ENTER/RETURN.
+typedef __int64 (__fastcall* Sub8DDBE30_t)(void*, void*, void*, void*);
+static Sub8DDBE30_t g_sub8DDBE30Orig = nullptr;
+static __int64 __fastcall Sub8DDBE30_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[hnw] hknpWorld ctor sub_188DDBE30(this=%p cinfo=%p) ENTER\n", a1, a2); fflush(stdout);
+    __int64 r = g_sub8DDBE30Orig(a1, a2, a3, a4);
+    tprintf("[hnw] hknpWorld ctor sub_188DDBE30 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_188DDBBA0 = hknpWorldSignals::hknpWorldSignals(this) -- body 0x2181A7E0 is OBFUSCATED VM (freezes); it's the
+// FIRST inner call of the hknpWorld ctor and the actual wall. REIMPL: the real ctor just zeroes all 38 signal slots
+// (each hkSignal = 8 bytes; hknpWorldSignals size 0x130) -- no logic/alloc -> memset(this, 0, 0x130).
+typedef __int64 (__fastcall* Sub8DDBBA0_t)(void*, void*, void*, void*);
+static Sub8DDBBA0_t g_sub8DDBBA0Orig = nullptr;   // trampoline out-param (unused -- VM body freezes)
+static __int64 __fastcall Sub8DDBBA0_Detour(void* thisSignals, void* b, void* c, void* dd)
+{
+    memset(thisSignals, 0, 0x130);   // zero all 38 signal slots
+    tprintf("[ws] hknpWorldSignals ctor reimpl(this=%p) -> zeroed 0x130\n", thisSignals); fflush(stdout);
+    return (__int64)thisSignals;
+}
+
+// [hw] Trace the hknpWorld ctor's (sub_188DDBE30) direct callees -- the sub-object ctors/factories/registers -- to
+// find the next inner wall after [ws]. These are hknp-specific (called from the ctor, not engine-wide), so safe to
+// hook eagerly. EXCLUDES the generic helpers (hkMemHeapAllocator 0x8D3CEC0 / addref 0x8D16020 / release 0x8D16080 /
+// bufFree 0x8D18CA0 / _reserveMore 0x8D27670) and the WorldSignals ctor 0x8DDBBA0 ([ws] reimpl). strArg = which arg
+// is a char* to print (3 = r8, 4 = r9, 0 = none) -- the many "hknpWorldEx"/"hknp..." labels.
+struct HnwCallee { uintptr_t rva; int strArg; };
+static const HnwCallee kHnwCallees[] = {
+    { 0x8DFEF50, 0 }, { 0x8E1BCD0, 0 }, { 0x965EDF0, 0 },                         // BodyManager/MotionManager/SolverInfo ctors
+    { 0x965F2D0, 0 }, { 0x8DFF730, 0 }, { 0x968FB50, 0 }, { 0x968FC00, 0 }, { 0x968FC70, 0 },
+    { 0x965EED0, 0 }, { 0x965EFF0, 0 }, { 0x8DE9880, 0 }, { 0x8DE7EE0, 4 }, { 0x8DDB0B0, 0 }, { 0x8DEA100, 0 },
+    { 0x8DEA140, 0 }, { 0x8DE8000, 4 }, { 0x96640B0, 0 }, { 0x96640A0, 0 }, { 0x9664110, 0 }, { 0x8DE8120, 4 },
+    { 0x96644C0, 0 }, { 0x968F130, 0 }, { 0x8DA7350, 0 }, { 0x96616C0, 0 }, { 0x9675080, 0 },   // 0x9675B10 -> [emd] reimpl
+    { 0x96617B0, 0 }, { 0x967CB40, 0 }, { 0x967C710, 0 }, { 0x965EB60, 0 }, { 0x8DE7B90, 4 }, { 0x9662080, 0 },
+    { 0x9661AA0, 0 }, { 0x966C9B0, 0 }, { 0x96611D0, 0 }, { 0x965DFD0, 3 }, { 0x965E6E0, 3 }, { 0x9661210, 0 },
+    { 0x8E1BE00, 0 }, { 0x9667250, 0 }, { 0x8E2F480, 0 }, { 0x8E3E6C0, 0 }, { 0x9663140, 0 }, { 0x96613B0, 0 },
+    { 0x8DEB470, 0 }, { 0x8DE7450, 0 }, { 0x8DE78B0, 0 }, { 0x8DF9E30, 0 }, { 0x967D530, 0 }, { 0x96114D0, 0 },
+    { 0x9662280, 0 }, { 0x965F550, 0 }, { 0x965F800, 0 },
+};
+static const int kNumHnw = (int)(sizeof(kHnwCallees) / sizeof(kHnwCallees[0]));
+typedef __int64 (__fastcall* HnwFn_t)(void*, void*, void*, void*);
+static HnwFn_t g_hnwOrig[kNumHnw];
+template<int N> static __int64 __fastcall HnwThunk(void* a, void* b, void* c, void* dd)
+{
+    unsigned long long rva = (unsigned long long)kHnwCallees[N].rva;
+    int sa = kHnwCallees[N].strArg;
+    if (sa == 4)
+        tprintf("[hw] sub_18%llX(%p, %p, %p, %s) ENTER\n", rva, a, b, c, SafeStr((const char*)dd));
+    else if (sa == 3)
+        tprintf("[hw] sub_18%llX(%p, %p, %s) ENTER\n", rva, a, b, SafeStr((const char*)c));
+    else
+        tprintf("[hw] sub_18%llX(%p, %p, %p, %p) ENTER\n", rva, a, b, c, dd);
+    fflush(stdout);
+    __int64 r = g_hnwOrig[N](a, b, c, dd);
+    tprintf("[hw] sub_18%llX RETURNED = 0x%llX\n", rva, (unsigned long long)r); fflush(stdout);
+    return r;
+}
+template<size_t... I> static std::array<HnwFn_t, sizeof...(I)> MakeHnwThunks(std::index_sequence<I...>) { return {{ &HnwThunk<I>... }}; }
+static const std::array<HnwFn_t, kNumHnw> g_hnwThunks = MakeHnwThunks(std::make_index_sequence<kNumHnw>{});
+
+// sub_189675B10 = hknpEventMergeAndDispatcher::hknpEventMergeAndDispatcher(this, world) -- body 0x2199B110 is
+// OBFUSCATED VM (freezes); the derived event dispatcher taken when cinfo[0x81] is set, stored as world->m_eventDispatcher
+// (world+0xA88). REIMPL from the PDB: readable base ctor (sub_189675080) + derived vtable + zero 2 added fields.
+// Layout: base @0 (size 0x78); m_raiseTriggerUpdatedEvents @0x78; m_triggerEvents @0x80 (hkArray). Derived vtable @
+// RVA 0xA7F8608 (RTTI-walked from .?AVhknpEventMergeAndDispatcher@@).
+typedef __int64 (__fastcall* Sub9675B10_t)(void*, void*, void*, void*);
+static Sub9675B10_t g_sub9675B10Orig = nullptr;   // trampoline out-param (unused -- VM body freezes)
+static __int64 __fastcall Sub9675B10_Detour(void* thisDisp, void* world, void* c, void* dd)
+{
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    ((void (__fastcall*)(void*, void*))(base + 0x9675080))(thisDisp, world);   // base hknpEventDispatcher::hknpEventDispatcher
+    char* t = (char*)thisDisp;
+    *(unsigned char*)(t + 0x78) = 0;                            // m_raiseTriggerUpdatedEvents = 0
+    *(void**)(t + 0x00) = (void*)(base + 0xA7F8608);            // __vftable (derived overrides the base)
+    *(void**)(t + 0x80) = nullptr;                             // m_triggerEvents.m_data
+    *(int*)(t + 0x88) = 0;                                     // m_triggerEvents.m_size
+    *(unsigned int*)(t + 0x8C) = 0x80000000;                  // m_triggerEvents.m_capacityAndFlags
+    tprintf("[emd] hknpEventMergeAndDispatcher ctor reimpl(this=%p world=%p)\n", thisDisp, world); fflush(stdout);
+    return (__int64)thisDisp;
+}
+
 // sub_188D0C850 -- the 5th (also real) VM thunk (-> VM sub_1A2180CEE0) called from CPhysWorldImplBase::Init
 // (@Init+0xE87). Trace to see if it's the crash: ENTER with no RETURN confirms. Lean.
 typedef __int64 (__fastcall* Sub8D0C850_t)(void*, void*, void*, void*);
@@ -1030,8 +1114,8 @@ static const std::array<Re_t, kNumRe> g_reThunks = MakeReThunks(std::make_index_
 // Init after the thunk's jmp) AND unnecessary once the list is Init-specific. sub_188DE8600 -> its own [de8] hook.
 // Install is #if 0'd below; enable when tracing Init. Verify any 0x8D/0x686/0x5C entry is truly Init-only before adding.
 static const uintptr_t kInitCallees[] = {
-    0x7D61260, 0x8DDBE30, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, 0x7E3D9C0, 0x7D9A530, 0x7E3DDE0, 0x7E3E460,
-    0x7E3E670, 0x7E3E7D0, 0x7E76F70, 0x7E77090, 0x7E771B0, 0x7E772D0, 0x7E773F0, 0x7E77510, 0x9372DE0, 0x8DE8830,
+    0x7D61260, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, 0x7E3D9C0, 0x7D9A530, 0x7E3DDE0, 0x7E3E460,
+    //0x7E3E670, 0x7E3E7D0, 0x7E76F70, 0x7E77090, 0x7E771B0, 0x7E772D0, 0x7E773F0, 0x7E77510, 0x9372DE0, 0x8DE8830,
 };
 static const int kNumInit = (int)(sizeof(kInitCallees) / sizeof(kInitCallees[0]));
 typedef __int64 (__fastcall* InitCallee_t)(void*, void*, void*, void*);
@@ -1334,6 +1418,30 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[de8] hooked sub_188DE8600 @ %p\n", sde8);
     else
         tprintf("[de8] FAILED to hook sub_188DE8600 @ %p\n", sde8);
+    void* sdbe = (void*)(base + 0x8DDBE30);   // hknpWorld ctor (Init+0x428); current blocker -- standalone always-print
+    if (MH_CreateHook(sdbe, &Sub8DDBE30_Detour, (LPVOID*)&g_sub8DDBE30Orig) == MH_OK && MH_EnableHook(sdbe) == MH_OK)
+        tprintf("[hnw] hooked hknpWorld ctor (sub_188DDBE30) @ %p\n", sdbe);
+    else
+        tprintf("[hnw] FAILED to hook sub_188DDBE30 @ %p\n", sdbe);
+    void* sdbb = (void*)(base + 0x8DDBBA0);   // hknpWorldSignals ctor (VM'd; first inner call of the hknpWorld ctor) -- reimpl
+    if (MH_CreateHook(sdbb, &Sub8DDBBA0_Detour, (LPVOID*)&g_sub8DDBBA0Orig) == MH_OK && MH_EnableHook(sdbb) == MH_OK)
+        tprintf("[ws] hooked hknpWorldSignals ctor reimpl (sub_188DDBBA0) @ %p\n", sdbb);
+    else
+        tprintf("[ws] FAILED to hook sub_188DDBBA0 @ %p\n", sdbb);
+    // [hw] hknpWorld ctor direct callees (sub-object ctors/factories/registers) -- find the next inner wall after [ws]
+    for (int i = 0; i < kNumHnw; ++i)
+    {
+        void* t = (void*)(base + kHnwCallees[i].rva);
+        if (MH_CreateHook(t, (void*)g_hnwThunks[i], (LPVOID*)&g_hnwOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[hw] hooked sub_18%llX @ %p\n", (unsigned long long)kHnwCallees[i].rva, t);
+        else
+            tprintf("[hw] FAILED/dup sub_18%llX @ %p\n", (unsigned long long)kHnwCallees[i].rva, t);
+    }
+    void* s5b10 = (void*)(base + 0x9675B10);   // hknpEventMergeAndDispatcher ctor (VM'd) -- reimpl (base ctor + derived vtable/fields)
+    if (MH_CreateHook(s5b10, &Sub9675B10_Detour, (LPVOID*)&g_sub9675B10Orig) == MH_OK && MH_EnableHook(s5b10) == MH_OK)
+        tprintf("[emd] hooked hknpEventMergeAndDispatcher ctor reimpl (sub_189675B10) @ %p\n", s5b10);
+    else
+        tprintf("[emd] FAILED to hook sub_189675B10 @ %p\n", s5b10);
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
 #if 0
