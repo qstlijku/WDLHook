@@ -523,6 +523,27 @@ static __int64 __fastcall Sub966C9B0_Detour(void* thisPtr, void* b, void* c, voi
     return (__int64)thisPtr;
 }
 
+// sub_1896CAF00 = hknpBodyToConstraintsMap::hknpBodyToConstraintsMap -- VM'd (freezes); called inside the
+// hknpConstraintManager ctor (sub_188E2F480, a [hw] callee) as sub_1896CAF00(&this->m_bodyIdToConstraintIdsMap).
+// REIMPL from the PDB: 2 empty hkArrays + 1 handle set to invalid. Layout (DuniaDemo.h, size 0x28):
+// m_bodyIndexToFirstAttachedConstraintId @0x0 (hkArray), m_firstConstraintAttachedToWorld @0x10 (handle) = 0x7FFFFFFF,
+// m_constraintLinks @0x18 (hkArray).
+typedef __int64 (__fastcall* Sub96CAF00_t)(void*, void*, void*, void*);
+static Sub96CAF00_t g_sub96CAF00Orig = nullptr;   // trampoline out-param (unused -- VM body freezes)
+static __int64 __fastcall Sub96CAF00_Detour(void* thisPtr, void* b, void* c, void* dd)
+{
+    char* t = (char*)thisPtr;
+    *(void**)(t + 0x00) = nullptr;              // m_bodyIndexToFirstAttachedConstraintId.m_data
+    *(int*)(t + 0x08) = 0;                       // .m_size
+    *(unsigned int*)(t + 0x0C) = 0x80000000;     // .m_capacityAndFlags
+    *(int*)(t + 0x10) = 0x7FFFFFFF;              // m_firstConstraintAttachedToWorld.m_value = invalid
+    *(void**)(t + 0x18) = nullptr;              // m_constraintLinks.m_data
+    *(int*)(t + 0x20) = 0;                       // .m_size
+    *(unsigned int*)(t + 0x24) = 0x80000000;     // .m_capacityAndFlags
+    tprintf("[bcm] hknpBodyToConstraintsMap ctor reimpl(this=%p)\n", thisPtr); fflush(stdout);
+    return (__int64)thisPtr;
+}
+
 // sub_188D0C850 -- the 5th (also real) VM thunk (-> VM sub_1A2180CEE0) called from CPhysWorldImplBase::Init
 // (@Init+0xE87). Trace to see if it's the crash: ENTER with no RETURN confirms. Lean.
 typedef __int64 (__fastcall* Sub8D0C850_t)(void*, void*, void*, void*);
@@ -1493,6 +1514,11 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[dm] hooked hknpDeactivationManager ctor reimpl (sub_18966C9B0) @ %p\n", sc9b0);
     else
         tprintf("[dm] FAILED to hook sub_18966C9B0 @ %p\n", sc9b0);
+    void* saf00 = (void*)(base + 0x96CAF00);   // hknpBodyToConstraintsMap ctor (VM'd; inside hknpConstraintManager ctor) -- reimpl
+    if (MH_CreateHook(saf00, &Sub96CAF00_Detour, (LPVOID*)&g_sub96CAF00Orig) == MH_OK && MH_EnableHook(saf00) == MH_OK)
+        tprintf("[bcm] hooked hknpBodyToConstraintsMap ctor reimpl (sub_1896CAF00) @ %p\n", saf00);
+    else
+        tprintf("[bcm] FAILED to hook sub_1896CAF00 @ %p\n", saf00);
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
 #if 0
