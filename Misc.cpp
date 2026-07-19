@@ -1681,9 +1681,9 @@ void Misc::Initialize()
     // hkBaseSystem InitNode list capture (normal run): dump the walk + registrations to baseline the manual-load
     // self-loop -- confirm "Register hkLog Sources" (initFn sub_18951AE00) is the LAST node (m_next==NULL) normally,
     // and see if any node registers twice. Offsets = RVA - 0xA00. Comment out for a WDLLauncher run (double-hook).
-    HookOffset3(0x8D3B770 + 0xA00, &Sub8D3C170_Detour, reinterpret_cast<LPVOID*>(&g_sub8D3C170Orig)); // InitNode::init sub_188D3C170
-    HookOffset3(0x8D3B730 + 0xA00, &Sub8D3C130_Detour, reinterpret_cast<LPVOID*>(&g_sub8D3C130Orig)); // internalConstruct sub_188D3C130
-
+    //HookOffset3(0x8D3B770 + 0xA00, &Sub8D3C170_Detour, reinterpret_cast<LPVOID*>(&g_sub8D3C170Orig)); // InitNode::init sub_188D3C170
+    //HookOffset3(0x8D3B730 + 0xA00, &Sub8D3C130_Detour, reinterpret_cast<LPVOID*>(&g_sub8D3C130Orig)); // internalConstruct sub_188D3C130
+    /*
     auto base = Imagebase;
     struct { void* addr; void* det; LPVOID* orig; const char* nm; } BSC[] = {
     //{ (void*)(base + 0x951BCB0), (void*)&Sub951BCB0_Detour, (LPVOID*)&g_sub951BCB0Orig, "sub_18951BCB0" },
@@ -1698,7 +1698,7 @@ void Misc::Initialize()
         else
             tprintf("[bsc] FAILED to hook %s @ %p\n", b.nm, b.addr);
     }
-
+    */
     // Language-resolution capture: log the resolved install language + the registry read (offsets = RVA - 0xA00).
     //HookOffset3(0x68EB140 + 0xA00, &LoadLanguageFromRegistry_Detour, reinterpret_cast<LPVOID*>(&g_llfr_orig)); // sub_1868EBB40
     //HookOffset3(0x68EB410 + 0xA00, &GetGameInstallLanguage_Detour,   reinterpret_cast<LPVOID*>(&GetGameInstallLanguage)); // sub_1868EBE10
