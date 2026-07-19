@@ -438,7 +438,7 @@ static const HnwCallee kHnwCallees[] = {
     { 0x96617B0, 0 }, { 0x967CB40, 0 }, { 0x967C710, 0 }, { 0x965EB60, 0 }, { 0x8DE7B90, 4 }, { 0x9662080, 0 },
     { 0x9661AA0, 0 }, { 0x96611D0, 0 }, { 0x965DFD0, 3 }, { 0x965E6E0, 3 }, { 0x9661210, 0 },   // 0x966C9B0 -> [dm] reimpl
     { 0x8E1BE00, 0 }, { 0x9667250, 0 }, { 0x8E2F480, 0 }, { 0x8E3E6C0, 0 }, { 0x9663140, 0 }, { 0x96613B0, 0 },
-    { 0x8DEB470, 0 }, { 0x8DE7450, 0 }, /* 0x8DE78B0 -> [smm] 5-arg passthru (setupModifierManager) */ { 0x8DF9E30, 0 }, { 0x967D530, 0 }, { 0x96114D0, 0 },
+    { 0x8DEB470, 0 }, { 0x8DE7450, 0 }, /* 0x8DE78B0 -> [smm] 5-arg passthru */ { 0x8DF9E30, 0 }, /* 0x967D530 -> [mts] reimpl */ { 0x96114D0, 0 },
     { 0x9662280, 0 }, { 0x965F550, 0 }, { 0x965F800, 0 },
 };
 static const int kNumHnw = (int)(sizeof(kHnwCallees) / sizeof(kHnwCallees[0]));
@@ -593,6 +593,102 @@ static __int64 __fastcall SetupMod_Detour(void* cinfo, void* defSet, void* conta
     __int64 r = g_setupModOrig(cinfo, defSet, contactSolver, atomSolver, mgr);
     tprintf("[smm] setupModifierManager RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
+}
+
+// ===================== [mts] hknpMultithreadedSimulation ctor (sub_18967D530) reimpl =====================
+// VM'd (jmp sub_182199E760, obfuscated) -> the [hw] passthru returned without initializing the object. blockAlloc'd
+// 0x420 bytes by the readable hknpWorld ctor. Strategy: memset(0) then write only the non-zero fields (like [dm]).
+// All addresses/offsets: vtables RTTI-walked, ctors confirmed readable, struct/enum from PDB DuniaDemo.h.
+// See [[pooled-thunk-arg-truncation]] context and [[pdb-build-location]].
+
+typedef void  (__fastcall* hkCriticalSectionCtor_t)(void*, int);   // sub_188D164A0 (readable)
+typedef void* (__fastcall* hkTaskGraphClear_t)(void*);             // sub_188D2A5E0 (readable)
+typedef void* (__fastcall* HeapBlockAlloc_t)(void*, size_t);       // heap vtable slot 1
+
+// hkMemoryRouter::s_memoryRouter.m_slotID @ RVA 0xB546B30 ; s_fallbackRouter ptr @ 0xB546B28 ; m_heap @ router+0x58
+static void* HavokBlockAlloc(uintptr_t base, size_t size)
+{
+    DWORD slot = *(DWORD*)(base + 0xB546B30);
+    void* router = TlsGetValue(slot);
+    if (!router)
+        router = *(void**)(base + 0xB546B28);
+    void* heap = *(void**)((char*)router + 0x58);
+    void** vt = *(void***)heap;
+    return ((HeapBlockAlloc_t)vt[1])(heap, size);   // vt[1] == vtable[+8] == sub_187D81CC0 (the [ba]-hooked blockAlloc leaf)
+}
+
+// hknpWorldTask-style task: blockAlloc(64), [+0]=vtable{for hkReferencedObject}, [+0x10]=m_memSizeAndFlags(0x1FFFF),
+// [+0x20]=vtable{for hkTask}; rest 0 (memset). NOTE: assumes the RTTI pair is ordered {refObj, hkTask} (primary first).
+static void* AllocTask64(uintptr_t base, uintptr_t vtRefObjRva, uintptr_t vtTaskRva)
+{
+    char* t = (char*)HavokBlockAlloc(base, 64);
+    if (!t)
+        return nullptr;
+    memset(t, 0, 64);
+    *(void**)(t + 0x00) = (void*)(base + vtRefObjRva);
+    *(unsigned int*)(t + 0x10) = 0x1FFFF;
+    *(void**)(t + 0x20) = (void*)(base + vtTaskRva);
+    return t;
+}
+
+typedef __int64 (__fastcall* Sub967D530_t)(void*, void*, void*, void*);
+static Sub967D530_t g_sub967D530Orig = nullptr;   // trampoline out-param (unused -- VM body doesn't init)
+static __int64 __fastcall Sub967D530_Detour(void* thisPtr, void* a2, void* a3, void* a4)
+{
+    tprintf("[mts] hknpMultithreadedSimulation ctor reimpl(this=%p) ENTER\n", thisPtr); fflush(stdout);
+    uintptr_t base = g_reBase;
+    char* s = (char*)thisPtr;
+    memset(s, 0, 0x420);
+
+    *(void**)(s + 0x00) = (void*)(base + 0xA7F8AD8);          // __vftable
+    *(int*)(s + 0x18) = 1;                                    // m_type = MULTI_THREADED
+    *(int*)(s + 0x20) = 1;                                    // m_narrowPhaseWorkStealingMode = STEAL_WHEN_THREADS_IDLE
+
+    ((hkCriticalSectionCtor_t)(base + 0x8D164A0))(s + 0x28, 0);   // hkCriticalSection ctor on m_narrowPhaseLock
+
+    // m_newBroadPhasePairs.m_blocks (inplaceAligned16<Block*,24> @ 0x60): m_data=&m_storage(0x70), cap=0x80000018
+    *(void**)(s + 0x60) = s + 0x70;
+    *(unsigned int*)(s + 0x6C) = 0x80000018;
+
+    *(unsigned int*)(s + 0x15C) = 0x80000000;                // m_constraintStates.m_states.cap
+    *(unsigned int*)(s + 0x174) = 0x80000000;                // m_activeConstraintGroups.m_groups.cap
+    *(unsigned int*)(s + 0x184) = 0x80000000;                // m_reactivatedConstraintGroups.m_groups.cap
+
+    // m_solveTaskGraph @ 0x188 -- inlined hknpTaskGraph ctor (field pattern from readable sub_187E3E460)
+    *(void**)(s + 0x188) = (void*)(base + 0xA607BD0);        // hknpTaskGraph __vftable
+    *(unsigned int*)(s + 0x198) = 0x1FFFF;                   // m_memSizeAndFlags
+    *(void**)(s + 0x1A0) = s + 0x1B0;                        // m_nodes.m_data = &m_nodes.m_storage
+    *(unsigned int*)(s + 0x1AC) = 0x80000010;               // m_nodes.cap
+    *(void**)(s + 0x330) = s + 0x340;                        // m_dependencies.m_data = &m_dependencies.m_storage
+    *(unsigned int*)(s + 0x33C) = 0x80000010;               // m_dependencies.cap
+    *(unsigned int*)(s + 0x38C) = 0x80000000;               // m_referencedTasks.cap (data=0 via memset)
+    *(long long*)(s + 0x390) = -1LL;                        // m_taskIds (qword)
+    *(int*)(s + 0x3A0) = -1;                                 // m_taskIds (dword)
+    ((hkTaskGraphClear_t)(base + 0x8D2A5E0))(s + 0x188);     // hkTaskGraph::clear(&m_solveTaskGraph)
+
+    // 4 heap-allocated tasks (rest of the 14 task ptrs stay null via memset)
+    *(void**)(s + 0x3D8) = AllocTask64(base, 0xA7F8D90, 0xA7F8DB0);   // m_postCollideTask
+    *(void**)(s + 0x3E0) = AllocTask64(base, 0xA7F8D28, 0xA7F8D48);   // m_preSolveTask
+    *(void**)(s + 0x400) = AllocTask64(base, 0xA7F92F8, 0xA7F9318);   // m_postSolveTask
+
+    // m_processFullCastsTask (816 bytes): task base + m_subTasks @ 0x38 + hkIntegerDistributor @ 0x48
+    char* fc = (char*)HavokBlockAlloc(base, 816);
+    if (fc)
+    {
+        memset(fc, 0, 816);
+        *(void**)(fc + 0x00) = (void*)(base + 0xA7F91D8);    // __vftable {for hkReferencedObject}
+        *(unsigned int*)(fc + 0x10) = 0x1FFFF;              // m_memSizeAndFlags
+        *(void**)(fc + 0x20) = (void*)(base + 0xA7F91F8);    // __vftable {for hkTask}
+        *(unsigned int*)(fc + 0x44) = 0x80000000;           // m_subTasks.cap
+        *(void**)(fc + 0x90) = fc + 0xA0;                    // m_distributor.m_threadData.m_data = &m_storage
+        *(unsigned int*)(fc + 0x9C) = 0x80000005;           // m_distributor.m_threadData.cap (inplace 5)
+        *(void**)(fc + 0x1E0) = fc + 0x1F0;                  // m_distributor.m_queues.m_data = &m_storage
+        *(unsigned int*)(fc + 0x1EC) = 0x80000005;          // m_distributor.m_queues.cap (inplace 5)
+    }
+    *(void**)(s + 0x3F8) = fc;                               // m_processFullCastsTask
+
+    tprintf("[mts] hknpMultithreadedSimulation ctor reimpl RETURNED\n"); fflush(stdout);
+    return (__int64)thisPtr;
 }
 typedef __int64 (__fastcall* Sub8E2F740_t)(void*, void*, void*, void*);
 static Sub8E2F740_t g_sub8E2F740Orig = nullptr;
@@ -1603,6 +1699,11 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[smm] hooked setupModifierManager 5-arg (sub_188DE78B0) @ %p\n", se78b0);
     else
         tprintf("[smm] FAILED to hook sub_188DE78B0 @ %p\n", se78b0);
+    void* s7d530 = (void*)(base + 0x967D530);   // hknpMultithreadedSimulation ctor -- VM'd, full reimpl
+    if (MH_CreateHook(s7d530, &Sub967D530_Detour, (LPVOID*)&g_sub967D530Orig) == MH_OK && MH_EnableHook(s7d530) == MH_OK)
+        tprintf("[mts] hooked hknpMultithreadedSimulation ctor reimpl (sub_18967D530) @ %p\n", s7d530);
+    else
+        tprintf("[mts] FAILED to hook sub_18967D530 @ %p\n", s7d530);
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
 #if 0
