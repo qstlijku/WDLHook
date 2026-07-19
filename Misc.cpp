@@ -1570,6 +1570,102 @@ static __int64 __fastcall ThreadInit_Reimpl(void* this_, void* router_, void* na
     return (__int64)router;
 }
 
+// ---- hkBaseSystem InitNode list capture (NORMAL run) -------------------------------------------------------
+// Baseline for the manual-load "Register hkLog Sources" self-loop. Under a normal (VM-bootstrapped) run, dump the
+// InitNode walk + every registration to confirm the list is a clean NULL-terminated chain and that the node whose
+// m_initFunction is sub_18951AE00 ("Register hkLog Sources") has m_next == 0 (i.e. is the LAST node) rather than
+// pointing at itself. InitNode layout: m_initFunction @+0x08, m_arg @+0x18, m_next @+0x20.
+//   InitNode::init = sub_188D3C170 | internalConstruct = sub_188D3C130 (node, name, initFn, cleanup, arg, flag).
+// NOTE: comment these out for a WDLLauncher run -- DE_Hook loads there too and Physics.cpp already hooks these.
+typedef __int64 (__fastcall* Sub8D3C170_t)(void*, void*);
+static Sub8D3C170_t g_sub8D3C170Orig = nullptr;
+static __int64 __fastcall Sub8D3C170_Detour(void* thisNode, void* result)
+{
+    uintptr_t base = Imagebase;
+    char* n = (char*)thisNode;
+    // InitNode: m_name @+0x00, m_initFunction @+0x08, m_arg @+0x18, m_next @+0x20. node/m_next are DATA
+    // addresses (printed as RVAs, comparable -- this==m_next is the self-loop); initFn is a real function.
+    const char* name = *(const char**)(n + 0x00);
+    uintptr_t initFn = *(uintptr_t*)(n + 0x08);
+    char* next = *(char**)(n + 0x20);
+    unsigned long long thisRva = (unsigned long long)((uintptr_t)thisNode - base);
+    unsigned long long initRva = initFn ? (unsigned long long)(initFn - base) : 0;
+    tprintf("[c17]   node=0x%08llX initFn=sub_18%08llX [%s]\n", thisRva, initRva, name ? name : "?");
+    if (next)
+    {
+        const char* nextName = *(const char**)(next + 0x00);
+        uintptr_t nextInit = *(uintptr_t*)(next + 0x08);
+        unsigned long long nextRva = (unsigned long long)((uintptr_t)next - base);
+        unsigned long long nextInitRva = nextInit ? (unsigned long long)(nextInit - base) : 0;
+        tprintf("[c17] m_next=0x%08llX initFn=sub_18%08llX [%s]%s\n",
+            nextRva, nextInitRva, nextName ? nextName : "?",
+            ((uintptr_t)thisNode == (uintptr_t)next) ? " <SELF-LOOP!>" : "");
+    }
+    else
+    {
+        tprintf("[c17] m_next=NULL <TERMINATOR>\n");
+    }
+    fflush(stdout);
+    return g_sub8D3C170Orig(thisNode, result);
+}
+
+typedef __int64 (__fastcall* Sub8D3C130_t)(void*, void*, void*, void*, void*, void*);
+static Sub8D3C130_t g_sub8D3C130Orig = nullptr;
+static __int64 __fastcall Sub8D3C130_Detour(void* node, void* name, void* initFn, void* cleanup, void* arg, void* flag)
+{
+    uintptr_t base = Imagebase;
+    tprintf("[icc] internalConstruct node=%p (rva 0x%llX) name=%s initFn=sub_18%llX flag=%d\n",
+        node, (unsigned long long)((uintptr_t)node - base), name ? (const char*)name : "?",
+        (unsigned long long)((uintptr_t)initFn - base), (int)(uintptr_t)flag);
+    fflush(stdout);
+    return g_sub8D3C130Orig(node, name, initFn, cleanup, arg, flag);
+}
+
+// sub_18951BCB0 -- thunk -> sub_18951BD10 (1+ arg via rcx). Passthru trace (4-arg forward covers it).
+typedef __int64(__fastcall* Sub951BCB0_t)(void*, void*, void*, void*);
+static Sub951BCB0_t g_sub951BCB0Orig = nullptr;
+static __int64 __fastcall Sub951BCB0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_18951BCB0(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub951BCB0Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18951BCB0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64(__fastcall* Sub958D4A0_t)(void*, void*, void*, void*);
+static Sub958D4A0_t g_sub958D4A0Orig = nullptr;
+static __int64 __fastcall Sub958D4A0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_18958D4A0(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub958D4A0Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18958D4A0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64(__fastcall* Sub955F550_t)(void*, void*, void*, void*);
+static Sub955F550_t g_sub955F550Orig = nullptr;
+static __int64 __fastcall Sub955F550_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_18955F550(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub955F550Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18955F550 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64(__fastcall* Sub955CD90_t)(void*, void*, void*, void*);
+static Sub955CD90_t g_sub955CD90Orig = nullptr;
+static __int64 __fastcall Sub955CD90_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[1bc] sub_18955CD90(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub955CD90Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18955CD90 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -1581,6 +1677,27 @@ void Misc::Initialize()
     // Batch-hook every offset listed in hooklist.txt (log-first-call + forward). Edit the file, no rebuild
     // needed to change WHICH functions are traced. See BatchHookFromFile above for the format/limits.
     //BatchHookFromFile("C:\\Users\\qstli\\Downloads\\UPC_ACHTool\\WDLHook\\hooklist.txt"); // DISABLED -- batch thunk hooker
+
+    // hkBaseSystem InitNode list capture (normal run): dump the walk + registrations to baseline the manual-load
+    // self-loop -- confirm "Register hkLog Sources" (initFn sub_18951AE00) is the LAST node (m_next==NULL) normally,
+    // and see if any node registers twice. Offsets = RVA - 0xA00. Comment out for a WDLLauncher run (double-hook).
+    HookOffset3(0x8D3B770 + 0xA00, &Sub8D3C170_Detour, reinterpret_cast<LPVOID*>(&g_sub8D3C170Orig)); // InitNode::init sub_188D3C170
+    HookOffset3(0x8D3B730 + 0xA00, &Sub8D3C130_Detour, reinterpret_cast<LPVOID*>(&g_sub8D3C130Orig)); // internalConstruct sub_188D3C130
+
+    auto base = Imagebase;
+    struct { void* addr; void* det; LPVOID* orig; const char* nm; } BSC[] = {
+    //{ (void*)(base + 0x951BCB0), (void*)&Sub951BCB0_Detour, (LPVOID*)&g_sub951BCB0Orig, "sub_18951BCB0" },
+    { (void*)(base + 0x958D4A0), (void*)&Sub958D4A0_Detour, (LPVOID*)&g_sub958D4A0Orig, "sub_18958D4A0" },
+    { (void*)(base + 0x955F550), (void*)&Sub955F550_Detour, (LPVOID*)&g_sub955F550Orig, "sub_18955F550" },
+    { (void*)(base + 0x955CD90), (void*)&Sub955CD90_Detour, (LPVOID*)&g_sub955CD90Orig, "sub_18955CD90" },
+    };
+    for (auto& b : BSC)
+    {
+        if (MH_CreateHook(b.addr, b.det, b.orig) == MH_OK && MH_EnableHook(b.addr) == MH_OK)
+            tprintf("[bsc] hooked %s @ %p\n", b.nm, b.addr);
+        else
+            tprintf("[bsc] FAILED to hook %s @ %p\n", b.nm, b.addr);
+    }
 
     // Language-resolution capture: log the resolved install language + the registry read (offsets = RVA - 0xA00).
     //HookOffset3(0x68EB140 + 0xA00, &LoadLanguageFromRegistry_Detour, reinterpret_cast<LPVOID*>(&g_llfr_orig)); // sub_1868EBB40

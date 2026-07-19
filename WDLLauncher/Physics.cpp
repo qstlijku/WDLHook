@@ -725,16 +725,81 @@ static __int64 __fastcall Sub7E264C0_Detour()
     return r;
 }
 
-// sub_18951BCB0 -- thunk -> sub_18951BD10 (1+ arg via rcx). Passthru trace (4-arg forward covers it).
+// sub_18951BCB0 = $hkLog::Registry InitNode init -- lazy-constructs the hkLog::Registry singleton. Body 0x218BC5A0
+// is READABLE native (NOT obfuscated): TlsGetValue via the patched [0x21B1F2E0] dispatch -> alloc 0xD0 -> ctor
+// sub_18951B050 -> store into the arg slot; returns 0. It MUST run: stubbing it (return 0) leaves the registry null
+// and self-loops the "Register hkLog Sources" InitNode -- CONFIRMED by isolating just this stub in a normal (VM-
+// bootstrapped) run and reproducing the loop. So it was stubbed PREMATURELY (no-untested-skips). UN-STUBBED -> passthru.
+// Inner calls also hooked passthru [1bc]: sub_18951B050 (ctor), sub_188D16080 (release old registry).
 typedef __int64 (__fastcall* Sub951BCB0_t)(void*, void*, void*, void*);
 static Sub951BCB0_t g_sub951BCB0Orig = nullptr;
 static __int64 __fastcall Sub951BCB0_Detour(void* a1, void* a2, void* a3, void* a4)
 {
-    return 0;
-    tprintf("[1bc] sub_18951BCB0(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    tprintf("[1bc] sub_18951BCB0 ($hkLog::Registry init)(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
     __int64 r = g_sub951BCB0Orig(a1, a2, a3, a4);
     tprintf("[1bc] sub_18951BCB0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
+}
+
+// sub_18951B050 = hkLog::Registry ctor (called by $hkLog::Registry). Passthru trace.
+typedef __int64 (__fastcall* Sub951B050_t)(void*, void*, void*, void*);
+static Sub951B050_t g_sub951B050Orig = nullptr;
+static __int64 __fastcall Sub951B050_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[1bc] sub_18951B050 (hkLog::Registry ctor)(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub951B050Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_18951B050 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_188D16080 = release/decref of the old registry (called by $hkLog::Registry when replacing). Passthru trace.
+// NOTE: this is a generic release helper called from many sites -> expect flood.
+typedef __int64 (__fastcall* Sub8D16080_t)(void*, void*, void*, void*);
+static Sub8D16080_t g_sub8D16080Orig = nullptr;
+static __int64 __fastcall Sub8D16080_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[1bc] sub_188D16080(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub8D16080Orig(a1, a2, a3, a4);
+    tprintf("[1bc] sub_188D16080 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// sub_18951B270 = hkLog::Registry::add(this, ModuleLocalList* e) -- body 0x218BB380 is OBFUSCATED VM (freezes
+// un-bootstrapped) so REIMPL'D from the PDB. Dedup-append e to this->m_heads (hkArray<ModuleLocalList*> @+0xC0:
+// m_data@+0xC0, m_size@+0xC8, m_capacityAndFlags@+0xCC): search for e; if absent, grow-if-full then push_back.
+// Called by BOTH the hkLog::Registry ctor AND addModuleLocalList. Helpers (readable native): hkMemHeapAllocator =
+// sub_188D3CEC0, hkArrayUtil::_reserveMore = sub_188D277C0.
+typedef __int64 (__fastcall* Sub951B270_t)(void*, void*, void*, void*);
+static Sub951B270_t g_sub951B270Orig = nullptr;   // MinHook trampoline out-param (unused -- VM body freezes)
+static __int64 __fastcall Sub951B270_Detour(void* thisReg, void* e, void* c, void* dd)
+{
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    char* reg = (char*)thisReg;
+    void** m_data = *(void***)(reg + 0xC0);
+    int m_size = *(int*)(reg + 0xC8);
+    bool found = false;
+    for (int i = 0; i < m_size; ++i)
+    {
+        if (m_data[i] == e)
+        {
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+    {
+        int cap = *(int*)(reg + 0xCC) & 0x3FFFFFFF;
+        if (m_size == cap)
+        {
+            void* alloc = ((void* (__fastcall*)())(base + 0x8D3CEC0))();                            // hkMemHeapAllocator
+            ((void (__fastcall*)(void*, void*, __int64))(base + 0x8D277C0))(alloc, reg + 0xC0, 8);  // hkArrayUtil::_reserveMore
+            m_data = *(void***)(reg + 0xC0);   // re-read: _reserveMore reallocated the buffer
+        }
+        m_data[m_size] = e;
+        *(int*)(reg + 0xC8) = m_size + 1;
+    }
+    tprintf("[1bc] hkLog::Registry::add reimpl(reg=%p e=%p) -> m_heads.m_size=%d\n", thisReg, e, *(int*)(reg + 0xC8)); fflush(stdout);
+    return 0;
 }
 
 typedef __int64(__fastcall* Sub958D4A0_t)(void*, void*, void*, void*);
@@ -1110,6 +1175,9 @@ void InstallPhysicsHooks(uintptr_t base)
         { (void*)(base + 0x8D3C170), (void*)&Sub8D3C170_Detour, (LPVOID*)&g_sub8D3C170Orig, "sub_188D3C170" },
         { (void*)(base + 0x7E264C0), (void*)&Sub7E264C0_Detour, (LPVOID*)&g_sub7E264C0Orig, "sub_187E264C0" },
         { (void*)(base + 0x951BCB0), (void*)&Sub951BCB0_Detour, (LPVOID*)&g_sub951BCB0Orig, "sub_18951BCB0" },
+        { (void*)(base + 0x951B050), (void*)&Sub951B050_Detour, (LPVOID*)&g_sub951B050Orig, "sub_18951B050" },
+        { (void*)(base + 0x951B270), (void*)&Sub951B270_Detour, (LPVOID*)&g_sub951B270Orig, "sub_18951B270" },
+        { (void*)(base + 0x8D16080), (void*)&Sub8D16080_Detour, (LPVOID*)&g_sub8D16080Orig, "sub_188D16080" },
         { (void*)(base + 0x958D4A0), (void*)&Sub958D4A0_Detour, (LPVOID*)&g_sub958D4A0Orig, "sub_18958D4A0" },
         { (void*)(base + 0x955F550), (void*)&Sub955F550_Detour, (LPVOID*)&g_sub955F550Orig, "sub_18955F550" },
         { (void*)(base + 0x955CD90), (void*)&Sub955CD90_Detour, (LPVOID*)&g_sub955CD90Orig, "sub_18955CD90" },
