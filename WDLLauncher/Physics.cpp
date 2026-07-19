@@ -417,8 +417,9 @@ typedef __int64 (__fastcall* Sub8DDBBA0_t)(void*, void*, void*, void*);
 static Sub8DDBBA0_t g_sub8DDBBA0Orig = nullptr;   // trampoline out-param (unused -- VM body freezes)
 static __int64 __fastcall Sub8DDBBA0_Detour(void* thisSignals, void* b, void* c, void* dd)
 {
+    tprintf("[ws] hknpWorldSignals ctor reimpl(this=%p) ENTER\n", thisSignals); fflush(stdout);
     memset(thisSignals, 0, 0x130);   // zero all 38 signal slots
-    tprintf("[ws] hknpWorldSignals ctor reimpl(this=%p) -> zeroed 0x130\n", thisSignals); fflush(stdout);
+    tprintf("[ws] hknpWorldSignals ctor reimpl RETURNED (zeroed 0x130)\n"); fflush(stdout);
     return (__int64)thisSignals;
 }
 
@@ -470,6 +471,7 @@ typedef __int64 (__fastcall* Sub9675B10_t)(void*, void*, void*, void*);
 static Sub9675B10_t g_sub9675B10Orig = nullptr;   // trampoline out-param (unused -- VM body freezes)
 static __int64 __fastcall Sub9675B10_Detour(void* thisDisp, void* world, void* c, void* dd)
 {
+    tprintf("[emd] hknpEventMergeAndDispatcher ctor reimpl(this=%p world=%p) ENTER\n", thisDisp, world); fflush(stdout);
     uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
     ((void (__fastcall*)(void*, void*))(base + 0x9675080))(thisDisp, world);   // base hknpEventDispatcher::hknpEventDispatcher
     char* t = (char*)thisDisp;
@@ -478,7 +480,7 @@ static __int64 __fastcall Sub9675B10_Detour(void* thisDisp, void* world, void* c
     *(void**)(t + 0x80) = nullptr;                             // m_triggerEvents.m_data
     *(int*)(t + 0x88) = 0;                                     // m_triggerEvents.m_size
     *(unsigned int*)(t + 0x8C) = 0x80000000;                  // m_triggerEvents.m_capacityAndFlags
-    tprintf("[emd] hknpEventMergeAndDispatcher ctor reimpl(this=%p world=%p)\n", thisDisp, world); fflush(stdout);
+    tprintf("[emd] hknpEventMergeAndDispatcher ctor reimpl RETURNED\n"); fflush(stdout);
     return (__int64)thisDisp;
 }
 
@@ -505,6 +507,7 @@ typedef __int64 (__fastcall* Sub966C9B0_t)(void*, void*, void*, void*);
 static Sub966C9B0_t g_sub966C9B0Orig = nullptr;   // trampoline out-param (unused -- VM body freezes)
 static __int64 __fastcall Sub966C9B0_Detour(void* thisPtr, void* b, void* c, void* dd)
 {
+    tprintf("[dm] hknpDeactivationManager ctor reimpl(this=%p) ENTER\n", thisPtr); fflush(stdout);
     char* t = (char*)thisPtr;
     memset(t, 0, 0x5C0);
     static const int inlineArrs[5] = { 0x20, 0x120, 0x220, 0x3C0, 0x4C0 };   // *.m_blocks (inline, 24-cap)
@@ -519,7 +522,7 @@ static __int64 __fastcall Sub966C9B0_Detour(void* thisPtr, void* b, void* c, voi
         *(unsigned int*)(t + heapArrs[i] + 0xC) = 0x80000000;   // empty heap array
     *(int*)(t + 0x5B0) = 6;    // m_nopCachesAllowedPerBlock
     *(int*)(t + 0x5B4) = 15;   // m_numBlocksToDefragmentPerStep
-    tprintf("[dm] hknpDeactivationManager ctor reimpl(this=%p)\n", thisPtr); fflush(stdout);
+    tprintf("[dm] hknpDeactivationManager ctor reimpl RETURNED\n"); fflush(stdout);
     return (__int64)thisPtr;
 }
 
@@ -532,6 +535,7 @@ typedef __int64 (__fastcall* Sub96CAF00_t)(void*, void*, void*, void*);
 static Sub96CAF00_t g_sub96CAF00Orig = nullptr;   // trampoline out-param (unused -- VM body freezes)
 static __int64 __fastcall Sub96CAF00_Detour(void* thisPtr, void* b, void* c, void* dd)
 {
+    tprintf("[bcm] hknpBodyToConstraintsMap ctor reimpl(this=%p) ENTER\n", thisPtr); fflush(stdout);
     char* t = (char*)thisPtr;
     *(void**)(t + 0x00) = nullptr;              // m_bodyIndexToFirstAttachedConstraintId.m_data
     *(int*)(t + 0x08) = 0;                       // .m_size
@@ -540,8 +544,30 @@ static __int64 __fastcall Sub96CAF00_Detour(void* thisPtr, void* b, void* c, voi
     *(void**)(t + 0x18) = nullptr;              // m_constraintLinks.m_data
     *(int*)(t + 0x20) = 0;                       // .m_size
     *(unsigned int*)(t + 0x24) = 0x80000000;     // .m_capacityAndFlags
-    tprintf("[bcm] hknpBodyToConstraintsMap ctor reimpl(this=%p)\n", thisPtr); fflush(stdout);
+    tprintf("[bcm] hknpBodyToConstraintsMap ctor reimpl RETURNED\n"); fflush(stdout);
     return (__int64)thisPtr;
+}
+
+// sub_188E2F5F0 / sub_188E2F740 = hknpConstraintManager::relocateConstraintBuffer / relocateGroupBuffer -- the last
+// two calls in the hknpConstraintManager ctor (after the [bcm] reimpl). Passthru trace to see if either is a wall.
+typedef __int64 (__fastcall* Sub8E2F5F0_t)(void*, void*, void*, void*);
+static Sub8E2F5F0_t g_sub8E2F5F0Orig = nullptr;
+static __int64 __fastcall Sub8E2F5F0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    return 0;
+    tprintf("[rcb] sub_188E2F5F0 (relocateConstraintBuffer)(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub8E2F5F0Orig(a1, a2, a3, a4);
+    tprintf("[rcb] sub_188E2F5F0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+typedef __int64 (__fastcall* Sub8E2F740_t)(void*, void*, void*, void*);
+static Sub8E2F740_t g_sub8E2F740Orig = nullptr;
+static __int64 __fastcall Sub8E2F740_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[rcb] sub_188E2F740 (relocateGroupBuffer)(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub8E2F740Orig(a1, a2, a3, a4);
+    tprintf("[rcb] sub_188E2F740 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
 }
 
 // sub_188D0C850 -- the 5th (also real) VM thunk (-> VM sub_1A2180CEE0) called from CPhysWorldImplBase::Init
@@ -1519,6 +1545,16 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[bcm] hooked hknpBodyToConstraintsMap ctor reimpl (sub_1896CAF00) @ %p\n", saf00);
     else
         tprintf("[bcm] FAILED to hook sub_1896CAF00 @ %p\n", saf00);
+    void* s5f0 = (void*)(base + 0x8E2F5F0);   // hknpConstraintManager::relocateConstraintBuffer -- passthru trace
+    if (MH_CreateHook(s5f0, &Sub8E2F5F0_Detour, (LPVOID*)&g_sub8E2F5F0Orig) == MH_OK && MH_EnableHook(s5f0) == MH_OK)
+        tprintf("[rcb] hooked sub_188E2F5F0 (relocateConstraintBuffer) @ %p\n", s5f0);
+    else
+        tprintf("[rcb] FAILED to hook sub_188E2F5F0 @ %p\n", s5f0);
+    void* s740 = (void*)(base + 0x8E2F740);   // hknpConstraintManager::relocateGroupBuffer -- passthru trace
+    if (MH_CreateHook(s740, &Sub8E2F740_Detour, (LPVOID*)&g_sub8E2F740Orig) == MH_OK && MH_EnableHook(s740) == MH_OK)
+        tprintf("[rcb] hooked sub_188E2F740 (relocateGroupBuffer) @ %p\n", s740);
+    else
+        tprintf("[rcb] FAILED to hook sub_188E2F740 @ %p\n", s740);
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
 #if 0
