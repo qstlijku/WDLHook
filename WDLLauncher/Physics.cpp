@@ -352,15 +352,49 @@ static __int64 __fastcall Sub7E3C7C0_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
-// sub_188D050B0 -- the 2nd VM thunk (-> VM sub_1A17D9940) called from CPhysWorldImplBase::Init (@Init+0x16D).
-// Trace to see if it's the crash: ENTER with no RETURN confirms (calling orig hits the VM). Lean.
+// sub_188D050B0 = hkDynamicBlockStreamAllocator::hkDynamicBlockStreamAllocator(this, initialSize, freePolicy)
+// -- the 2nd VM thunk in CPhysWorldImplBase::Init (@Init+0x16D); body sub_1A17D9940 is OBFUSCATED VM (freezes).
+// REIMPL'D from the PDB (verbatim ctor). Layout: base hkBlockStreamAllocator @0 (__vftable@0, m_propertyBag.m_bag@8,
+// m_memSizeAndFlags@0x10); m_criticalSection@0x18; m_blocks@0x40; m_freeList@0x50; m_freePolicy@0x60; m_maxBytesUsed@0x64.
+// Deps (all found/readable): vtable @ RVA 0xA6C5BD0 (RTTI-verified), hkCriticalSection::hkCriticalSection = sub_188D164A0,
+// hkDynamicBlockStreamAllocator::expand = sub_188D056B0 (allocs numBytes/3840 blocks of 3840 into m_blocks+m_freeList).
 typedef __int64 (__fastcall* Sub8D050B0_t)(void*, void*, void*, void*);
-static Sub8D050B0_t g_sub8D050B0Orig = nullptr;
-static __int64 __fastcall Sub8D050B0_Detour(void* a1, void* a2, void* a3, void* a4)
+static Sub8D050B0_t g_sub8D050B0Orig = nullptr;   // MinHook trampoline out-param (unused -- VM body freezes)
+static __int64 __fastcall Sub8D050B0_Detour(void* thisAlloc, void* initialSize_, void* freePolicy_, void* a4)
 {
-    tprintf("[50b] sub_188D050B0(a1=%p) ENTER -- VM thunk -> sub_1A17D9940\n", a1); fflush(stdout);
-    __int64 r = g_sub8D050B0Orig(a1, a2, a3, a4);
-    tprintf("[50b] sub_188D050B0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
+    char* t = (char*)thisAlloc;
+    int initialSize = (int)(intptr_t)initialSize_;
+    int freePolicy = (int)(intptr_t)freePolicy_;
+    tprintf("[50b] hkDynamicBlockStreamAllocator ctor reimpl(this=%p size=%d policy=%d) ENTER\n", thisAlloc, initialSize, freePolicy); fflush(stdout);
+    *(void**)(t + 0x08) = nullptr;                                        // m_propertyBag.m_bag = 0
+    *(unsigned int*)(t + 0x10) = 0x1FFFF;                                 // m_memSizeAndFlags (dword)
+    *(void**)(t + 0x00) = (void*)(base + 0xA6C5BD0);                      // __vftable
+    ((void (__fastcall*)(void*, int))(base + 0x8D164A0))(t + 0x18, 0);    // hkCriticalSection::hkCriticalSection(&m_criticalSection, 0)
+    *(void**)(t + 0x40) = nullptr;                                        // m_blocks.m_data
+    *(int*)(t + 0x48) = 0;                                                // m_blocks.m_size
+    *(unsigned int*)(t + 0x4C) = 0x80000000;                             // m_blocks.m_capacityAndFlags
+    *(void**)(t + 0x50) = nullptr;                                        // m_freeList.m_data
+    *(int*)(t + 0x58) = 0;                                                // m_freeList.m_size
+    *(unsigned int*)(t + 0x5C) = 0x80000000;                             // m_freeList.m_capacityAndFlags
+    *(int*)(t + 0x64) = 0;                                                // m_maxBytesUsed = 0
+    if (initialSize > 0)
+        ((void (__fastcall*)(void*, int))(base + 0x8D056B0))(t, initialSize);   // expand(this, initialSize)
+    *(int*)(t + 0x60) = freePolicy;                                       // m_freePolicy
+    tprintf("[50b] hkDynamicBlockStreamAllocator ctor reimpl RETURNED -> m_blocks.m_size=%d\n", *(int*)(t + 0x48)); fflush(stdout);
+    return (__int64)thisAlloc;   // ctor returns this (MSVC ABI)
+}
+
+// sub_188DE8600 -- the first call in CPhysWorldImplBase::Init right after the hkDynamicBlockStreamAllocator ctor
+// (Init+0x17E: sub_188DE8600(&v74)). Standalone passthru, ALWAYS logs ENTER/RETURN (ungated) -- verifies hooking
+// works and localizes the post-ctor crash (ENTER with no RETURNED = crash here or in its subtree).
+typedef __int64 (__fastcall* Sub8DE8600_t)(void*, void*, void*, void*);
+static Sub8DE8600_t g_sub8DE8600Orig = nullptr;
+static __int64 __fastcall Sub8DE8600_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[de8] sub_188DE8600(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub8DE8600Orig(a1, a2, a3, a4);
+    tprintf("[de8] sub_188DE8600 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
 
@@ -989,6 +1023,29 @@ template<int N> static __int64 __fastcall ReThunk(void* a, void* b, void* c, voi
 template<size_t... I> static std::array<Re_t, sizeof...(I)> MakeReThunks(std::index_sequence<I...>) { return {{ &ReThunk<I>... }}; }
 static const std::array<Re_t, kNumRe> g_reThunks = MakeReThunks(std::make_index_sequence<kNumRe>{});
 
+// [pi] Trace direct callees of CPhysWorldImplBase::Init (sub_187E3C7C0) -- Init-SPECIFIC functions only (CPhysWorldImplBase
+// methods + the Init VM thunks). NO engine-wide Havok helpers (addref/release/array/map ops): those fire during early
+// boot and passthru-hooking one AV'd (the 0x138 crash). Ungated always-print passthru -- the earlier return-address
+// gating was BOTH unreliable (VM-thunk callees like sub_188D0C850 didn't log despite running -- the ret addr isn't in
+// Init after the thunk's jmp) AND unnecessary once the list is Init-specific. sub_188DE8600 -> its own [de8] hook.
+// Install is #if 0'd below; enable when tracing Init. Verify any 0x8D/0x686/0x5C entry is truly Init-only before adding.
+static const uintptr_t kInitCallees[] = {
+    0x7D61260, 0x8DDBE30, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, 0x7E3D9C0, 0x7D9A530, 0x7E3DDE0, 0x7E3E460,
+    0x7E3E670, 0x7E3E7D0, 0x7E76F70, 0x7E77090, 0x7E771B0, 0x7E772D0, 0x7E773F0, 0x7E77510, 0x9372DE0, 0x8DE8830,
+};
+static const int kNumInit = (int)(sizeof(kInitCallees) / sizeof(kInitCallees[0]));
+typedef __int64 (__fastcall* InitCallee_t)(void*, void*, void*, void*);
+static InitCallee_t g_initOrig[kNumInit];
+template<int N> static __int64 __fastcall InitCalleeThunk(void* a, void* b, void* c, void* dd)
+{
+    tprintf("[pi] sub_18%llX ENTER\n", (unsigned long long)kInitCallees[N]); fflush(stdout);
+    __int64 r = g_initOrig[N](a, b, c, dd);
+    tprintf("[pi] sub_18%llX RETURNED = 0x%llX\n", (unsigned long long)kInitCallees[N], (unsigned long long)r); fflush(stdout);
+    return r;
+}
+template<size_t... I> static std::array<InitCallee_t, sizeof...(I)> MakeInitThunks(std::index_sequence<I...>) { return {{ &InitCalleeThunk<I>... }}; }
+static const std::array<InitCallee_t, kNumInit> g_initThunks = MakeInitThunks(std::make_index_sequence<kNumInit>{});
+
 // [re] rebuildEverything (sub_18951FAD0) dedicated detour -- pulled out of the [rtc] pool so we can resolve the
 // virtual call `(*(*a1 + 64LL))(a1)` that runs immediately AFTER sub_189521280 returns (= the current crash site,
 // per the log: 189521280 RETURNED then no further progress). The vtable (*a1) is constant across the call, so we
@@ -1192,6 +1249,8 @@ void InstallPhysicsHooks(uintptr_t base)
             tprintf("[bsc] FAILED to hook %s @ %p\n", b.nm, b.addr);
     }
     // [rtc] callees of sub_18951F500 ("Register Types" register fn) -- templated thunk pool
+    // DISABLED (spam): Register Types / rebuildEverything is resolved; these passthru traces flooded ~15k lines/boot.
+#if 0
     for (int i = 0; i < kNumRegTypeCallees; ++i)
     {
         void* t = (void*)(base + kRegTypeCallees[i]);
@@ -1200,6 +1259,7 @@ void InstallPhysicsHooks(uintptr_t base)
         else
             tprintf("[rtc] FAILED to hook sub_18%llX @ %p\n", (unsigned long long)kRegTypeCallees[i], t);
     }
+#endif
     // [hrs] passthru-trace the 3 hkReflect calls in the Register Types path (rebuildEverything's clear/insert + fireCallbacks)
     void* s204C0 = (void*)(base + 0x95204C0);
     if (MH_CreateHook(s204C0, &Sub95204C0_Detour, (LPVOID*)&g_sub95204C0Orig) == MH_OK && MH_EnableHook(s204C0) == MH_OK)
@@ -1217,7 +1277,9 @@ void InstallPhysicsHooks(uintptr_t base)
     else
         tprintf("[hrs] FAILED to hook fireCallbacks reimpl (sub_18951FE80) @ %p\n", s1FE80);
     // [re] passthru-trace all remaining rebuildEverything (sub_18951FAD0) callees to pin the pre-crash function
-    g_reBase = base;
+    g_reBase = base;   // KEEP: the [v9d] getFirstIndex reimpl uses g_reBase (calls g_reBase + 0x95183F0)
+    // DISABLED (spam): rebuildEverything is resolved; these passthru traces flooded ~37k lines/boot (hkMemHeapAllocator alone ~22k).
+#if 0
     for (int i = 0; i < kNumRe; ++i)
     {
         void* t = (void*)(base + kReCallees[i]);
@@ -1226,6 +1288,20 @@ void InstallPhysicsHooks(uintptr_t base)
         else
             tprintf("[re] FAILED to hook %s (sub_18%llX) @ %p\n", kReNames[i], (unsigned long long)kReCallees[i], t);
     }
+#endif
+    // [pi] trace direct callees of CPhysWorldImplBase::Init (Init-specific list, ungated always-print). Flip to #if 1
+    // to enable. Kept disabled by default so a stray engine-wide entry can't re-crash early boot (InstallPhysicsHooks
+    // is eager). sub_188DE8600 has its own [de8] hook, so it's not in this list.
+
+    for (int i = 0; i < kNumInit; ++i)
+    {
+        void* t = (void*)(base + kInitCallees[i]);
+        if (MH_CreateHook(t, (void*)g_initThunks[i], (LPVOID*)&g_initOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[pi] hooked sub_18%llX @ %p\n", (unsigned long long)kInitCallees[i], t);
+        else
+            tprintf("[pi] skip sub_18%llX (already hooked / failed) @ %p\n", (unsigned long long)kInitCallees[i], t);
+    }
+
     void* sfad0 = (void*)(base + 0x951FAD0);   // rebuildEverything -- dedicated detour resolves vcall[+0x40] (crash site)
     if (MH_CreateHook(sfad0, &Sub951FAD0_Detour, (LPVOID*)&g_sub951FAD0Orig) == MH_OK && MH_EnableHook(sfad0) == MH_OK)
         tprintf("[re] hooked rebuildEverything (sub_18951FAD0) @ %p\n", sfad0);
@@ -1253,11 +1329,19 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[50b] hooked sub_188D050B0 (VM thunk) @ %p\n", s50b);
     else
         tprintf("[50b] FAILED to hook sub_188D050B0 @ %p\n", s50b);
+    void* sde8 = (void*)(base + 0x8DE8600);   // first post-ctor call in Init (Init+0x17E); standalone always-print passthru
+    if (MH_CreateHook(sde8, &Sub8DE8600_Detour, (LPVOID*)&g_sub8DE8600Orig) == MH_OK && MH_EnableHook(sde8) == MH_OK)
+        tprintf("[de8] hooked sub_188DE8600 @ %p\n", sde8);
+    else
+        tprintf("[de8] FAILED to hook sub_188DE8600 @ %p\n", sde8);
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
+    // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
+#if 0
     if (MH_CreateHook(sc85, &Sub8D0C850_Detour, (LPVOID*)&g_sub8D0C850Orig) == MH_OK && MH_EnableHook(sc85) == MH_OK)
         tprintf("[c85] hooked sub_188D0C850 (VM thunk) @ %p\n", sc85);
     else
         tprintf("[c85] FAILED to hook sub_188D0C850 @ %p\n", sc85);
+#endif
     /*
     void* s777 = (void*)(base + 0x8D07770);   // hkFreeListMemorySystem::mainInit -- VM'd thunk (reimpl + prints threadInit/blockAlloc)
     if (MH_CreateHook(s777, &Sub8D07770_Detour, (LPVOID*)&g_sub8D07770Orig) == MH_OK && MH_EnableHook(s777) == MH_OK)
@@ -1275,11 +1359,13 @@ void InstallPhysicsHooks(uintptr_t base)
     else
         tprintf("[thi] FAILED to hook sub_188D078D0 @ %p\n", sthi);
     void* sba = (void*)(base + 0x7D81CC0);    // blockAlloc (m_systemAllocator->vtable[+8]); real leaf
-    
+    // DISABLED (spam): threadInit/mainInit path resolved; blockAlloc trace flooded ~4k lines/boot.
+#if 0
     if (MH_CreateHook(sba, &TiBlockAlloc_Detour, (LPVOID*)&g_tiBlockAllocOrig) == MH_OK && MH_EnableHook(sba) == MH_OK)
         tprintf("[ba] hooked blockAlloc (sub_187D81CC0) @ %p\n", sba);
     else
         tprintf("[ba] FAILED to hook sub_187D81CC0 @ %p\n", sba);
+#endif
     void* s42e = (void*)(base + 0x9542EA0);   // threadInit direct callee (real)
     if (MH_CreateHook(s42e, &Sub9542EA0_Detour, (LPVOID*)&g_sub9542EA0Orig) == MH_OK && MH_EnableHook(s42e) == MH_OK)
         tprintf("[42e] hooked sub_189542EA0 @ %p\n", s42e);
