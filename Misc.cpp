@@ -1696,6 +1696,32 @@ static __int64 __fastcall DeactMgrCtor_Reimpl(void* thisPtr, void* b, void* c, v
     return (__int64)thisPtr;
 }
 
+// [rcb] hknpConstraintManager::relocateConstraintBuffer (sub_188E2F5F0) -- normal-run passthru trace (experiment:
+// capture it in a VM-bootstrapped run). Ported as-is from the WDLLauncher [rcb] hook.
+typedef __int64 (__fastcall* RelocConstraint_t)(void*, void*, void*, void*);
+static RelocConstraint_t g_relocConstraintOrig = nullptr;
+static __int64 __fastcall RelocConstraint_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[rcb] sub_188E2F5F0 (relocateConstraintBuffer)(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_relocConstraintOrig(a1, a2, a3, a4);
+    tprintf("[rcb] sub_188E2F5F0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// [cr] hknpConstraintManager::BufferedContainer::canRelocateBuffer (sub_188E2E6A0) reimpl VALIDATION (normal run).
+// This is the ONLY VM'd inner call of relocateConstraintBuffer (freezes under manual-load). Returns whether the
+// container can relocate to `capacity` without dropping an active item -> at ctor (empty) + every grow that's TRUE.
+// Replace the real one with "return true" here; if physics still works in a normal run, the reimpl is correct.
+typedef __int64 (__fastcall* CanReloc_t)(void*, void*, void*, void*);
+static CanReloc_t g_canRelocOrig = nullptr;   // unused (we replace the body)
+static __int64 __fastcall CanReloc_Detour(void* thisContainer, void* result, void* capacity, void* dd)
+{
+    tprintf("[cr] canRelocateBuffer reimpl(this=%p cap=%d) ENTER\n", thisContainer, (int)(intptr_t)capacity); fflush(stdout);
+    *(unsigned char*)result = 1;   // m_bool = 1 (can relocate)
+    tprintf("[cr] canRelocateBuffer reimpl RETURNED (true)\n"); fflush(stdout);
+    return (__int64)result;
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -1719,6 +1745,12 @@ void Misc::Initialize()
     // VALIDATED (game runs with ours, crashes if stubbed) -> ported to Physics.cpp [dm]. Disabled so a launcher run
     // (DE_Hook loads there too) doesn't double-hook. Re-enable only for another normal-run check.
     //HookOffset3(0x966BFB0 + 0xA00, &DeactMgrCtor_Reimpl, reinterpret_cast<LPVOID*>(&g_deactMgrOrig)); // sub_18966C9B0
+
+    // [rcb] relocateConstraintBuffer (sub_188E2F5F0) normal-run trace (passthru -- runs its real body). Offset = RVA - 0xA00.
+    HookOffset3(0x8E2EBF0 + 0xA00, &RelocConstraint_Detour, reinterpret_cast<LPVOID*>(&g_relocConstraintOrig)); // sub_188E2F5F0
+    // [cr] canRelocateBuffer reimpl VALIDATION: replace the real one with "return true"; relocateConstraintBuffer above
+    // runs its real body calling THIS. If physics still works normally, the reimpl is correct -> already in Physics.cpp.
+    HookOffset3(0x8E2DCA0 + 0xA00, &CanReloc_Detour, reinterpret_cast<LPVOID*>(&g_canRelocOrig)); // sub_188E2E6A0
     /*
     auto base = Imagebase;
     struct { void* addr; void* det; LPVOID* orig; const char* nm; } BSC[] = {
