@@ -162,7 +162,7 @@ static LONG CALLBACK VehLogger(EXCEPTION_POINTERS* ep)
             HMODULE m = nullptr; char nm[MAX_PATH] = "?";
             if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)addr, &m) && m)
                 GetModuleFileNameA(m, nm, MAX_PATH);
-            tprintf("[veh] exception %#lx at %p  module=%s +0x%llX\n", code, addr, nm,
+            tprintf("[veh] t%-5lu exception %#lx at %p  module=%s +0x%llX\n", GetCurrentThreadId(), code, addr, nm,
                 m ? (unsigned long long)((uintptr_t)addr - (uintptr_t)m) : 0ULL);
             LogCrashBacktrace(ep);   // full unwound chain (module+RVA per frame)
         }

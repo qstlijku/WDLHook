@@ -169,14 +169,11 @@ static __int64 __fastcall InitEngineServices_Detour(void* eng, void* params, dou
 // sub_187D5E810 window via g_gate7d5) and printed only a bare "sub_186799130 ENTER/RETURNED" with no args.
 // Standalone + ungated: always logs, prints its args, the return value, and the caller RVA.
 // 8 params forwarded (arity unknown) so nothing is truncated -- see [[pooled-thunk-arg-truncation]].
-typedef __int64 (__fastcall* Sub6799130_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+typedef void (__fastcall* Sub6799130_t)(void*);
 static Sub6799130_t g_sub6799130Orig = nullptr;
-static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* a4,
-                                             void* a5, void* a6, void* a7, void* a8)
+static void __fastcall Sub6799130_Detour(void* a1)
 {
-    void* ret = _ReturnAddress();
-    tprintf("[InitializeSoundSystem] sub_186799130(%p, %p, %p, %p) ENTER  caller=%p (+0x%llX)\n",
-            a1, a2, a3, a4, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
+    printf("InitializeSoundSystem_Detour called\n");
     // GetSoundSystem() (sub_187F12760) returns qword_18B5101C0. This function makes 3 virtual calls on it:
     //   v7->Initialize(v7, &parameters->platformContext)   = vtbl[+0x00]  (slot 0)
     //   v8->InitializeComm(v8)                             = vtbl[+0x10]  (slot 2)
@@ -212,9 +209,8 @@ static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* 
             }
         }
     }*/
-    __int64 r = g_sub6799130Orig(a1, a2, a3, a4, a5, a6, a7, a8);
-    tprintf("[InitializeSoundSystem] sub_186799130 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
-    return r;
+    g_sub6799130Orig(a1);
+    tprintf("[InitializeSoundSystem] sub_186799130 RETURNED\n"); fflush(stdout);
 }
 
 // [snd] the 3 sound-system vtable targets, captured from a NORMAL run via the Misc.cpp [799] probe:
@@ -229,6 +225,121 @@ static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* 
 // show it. CAVEAT: this assumes the launcher's soundSystem uses the SAME vtable as the normal run -- if all three
 // stay silent, that assumption is wrong (different object/type), and sub_187F12760 (GetSoundSystem) should be
 // hooked to print the actual pointer + vtable under manual load.
+// sub_187F422B0 = the LAZY CONSTRUCTOR / CreateSoundSystem:
+//   if (dword_18B5101C8 == 0) { p = NMalloc(0x6570,0x10); CSoundSystem::CSoundSystem(p) [sub_187F423C0];
+//                               qword_18B5101C0 = p; } ++dword_18B5101C8;  // refcount
+// The ctor sub_187F423C0 writes vtable 0xA630B90 (== the normal run's), so IF this path runs the object is a
+// proper CSoundSystem with Initialize = sub_187F44040. Hooked to see (a) whether construction runs at all under
+// manual load, and (b) the vtable of whatever qword_18B5101C0 holds afterward -- since the [snd] Initialize hook
+// never fires, either this ctor is skipped or something else installs a VM-vtable object.
+typedef void (__fastcall* SndCtor_t)();
+static SndCtor_t g_sndCtorOrig = nullptr;
+static void DumpSoundVtbl(const char* tag);   // fwd (defined with [gss] below)
+static void __fastcall SndConstruct_Detour()
+{
+    tprintf("[snew] t%-5lu CreateSoundSystem (sub_187F422B0) ENTER\n", GetCurrentThreadId()); fflush(stdout);
+    g_sndCtorOrig();
+    tprintf("[snew] CreateSoundSystem RETURNED  initFlag=%u\n",
+            Imagebase ? *(unsigned int*)(Imagebase + 0xB5101C8) : 0xFFFFFFFF); fflush(stdout);
+    DumpSoundVtbl("snew");
+}
+
+// GetSoundSystem (sub_187F12760) = `mov rax,[0xB5101C0]; ret` -- returns qword_18B5101C0. FINDING: the [snd]
+// CSoundSystem::Initialize hook (address captured from a NORMAL run) NEVER fires in the launcher, yet
+// InitializeSoundSystem still faults at 0x21B2B9F4 (VM dispatch) on v7->Initialize(). Since that's a VM fault and
+// not a null-deref, v7 is NON-null but its vtable[+0] is a VM thunk -- i.e. the launcher's sound-system vtable is
+// NOT the normal run's (different object/type, or slot 0 unresolved). Hook GetSoundSystem and dump the returned
+// pointer + vtable[+0]/[+0x10]/[+0x58] AFTER it returns (first call constructs the singleton), so we see the REAL
+// launcher vtable and which slot is virtualized -- BEFORE Initialize is called. sub_<VA> uses the full VA so a
+// VM-band target renders correctly.
+// Shared: dump qword_18B5101C0's vtable[+0/+0x10/+0x58] as sub_<VA>, flagging any VM-band slot. Used by [gss]/[snew].
+static void DumpSoundVtbl(const char* tag)
+{
+    if (!Imagebase) return;
+    void* ss = *(void**)(Imagebase + 0xB5101C0);   // qword_18B5101C0
+    tprintf("[%s]   qword_18B5101C0 = %p\n", tag, ss); fflush(stdout);
+    if (!ss || IsBadReadPtr(ss, 8)) return;
+    void** vt = *(void***)ss;
+    uintptr_t vtRva = (uintptr_t)vt - Imagebase;
+    tprintf("[%s]   vtbl = %p (rva 0x%llX)\n", tag, (void*)vt, (unsigned long long)vtRva); fflush(stdout);
+    if (IsBadReadPtr(vt, 0x60)) return;
+    static const int slots[3] = { 0, 2, 11 };
+    static const char* names[3] = { "Initialize", "InitializeComm", "IsAvailable" };
+    for (int i = 0; i < 3; ++i)
+    {
+        void* fn = vt[slots[i]];
+        uintptr_t frva = fn ? ((uintptr_t)fn - Imagebase) : 0;
+        bool inVm = (frva >= 0xBC39000 && frva < 0x21B12800);
+        tprintf("[%s]     vtbl[+0x%02X] %-15s = sub_%llX  [DuniaDemo+0x%llX]%s\n",
+                tag, slots[i] * 8, names[i], (unsigned long long)(0x180000000ULL + frva),
+                (unsigned long long)frva, inVm ? "  <== IN VM BAND" : ""); fflush(stdout);
+    }
+}
+
+typedef void* (__fastcall* GetSnd_t)(void*, void*, void*, void*);
+static GetSnd_t g_getSndOrig = nullptr;
+static void* __fastcall GetSoundSystem_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    void* ss = g_getSndOrig(a1, a2, a3, a4);
+    static void* s_lastVt = (void*)1;   // dedupe: this getter is called a lot; only log when the vtable changes
+    if (ss && !IsBadReadPtr(ss, 8))
+    {
+        void** vt = *(void***)ss;
+        if ((void*)vt != s_lastVt)
+        {
+            s_lastVt = (void*)vt;
+            DumpSoundVtbl("gss");
+        }
+    }
+    return ss;
+}
+
+// ===================== [sc0] CSoundSystem::CSoundSystem ctor (sub_187F423C0) + all callees ====================
+// The crash is INSIDE this ctor (CreateSoundSystem reaches it, [snew] never returns). 145 funcs scanned to depth 3
+// under it -> NO direct VM thunk, so the 0x21B2B9F4 fault is an INDIRECT call (fn-ptr/vtable) somewhere in here.
+// Hook the ctor + every direct callee (8-arg thunks, no truncation); gate the callee logging on g_inSc0 so these
+// generic helpers don't flood/log when called from elsewhere. The callee that logs ENTER with no RETURNED localizes
+// the crash one level down. NMalloc (sub_1860F430) is EXCLUDED (hottest fn, proven, engine-wide hook = crash risk).
+// Prime suspect: AK::SoundEngine::RegisterAudioDeviceStatusCallback (sub_189350DB0) -- Wwise, may touch an
+// uninitialised audio runtime under manual load.
+static bool g_inSc0 = false;
+static const struct { uintptr_t rva; const char* name; } kSc0Callees[] = {
+    { 0x8C18AA0, "memberInit(sub_188C18AA0)"     },   // called 5x on sub-objects at a1+8/+96/+184/+272/+360
+    { 0x5C2280,  "allocArray(sub_1805C2280)"     },   // (buf, count) -> array; called 2x
+    { 0x7E85A80, "subInit552(sub_187E85A80)"     },   // init at a1+552
+    { 0x5C2140,  "initContainer(sub_1805C2140)"  },   // called 2x (a1+25712, a1+25760)
+    { 0x5C1EB0,  "loopInit(sub_1805C1EB0)"       },   // NOTE: fires 512x in a for-loop -> floods (bounded, gated)
+    { 0x93727B8, "allocCallbackObj(sub_1893727B8)" }, // alloc(8) -> obj with vtable off_18A631CB0
+    { 0x9350DB0, "AK_RegisterAudioDeviceStatusCallback(sub_189350DB0)" }, // Wwise -- prime suspect
+    { 0x7F7F030, "finalInit(sub_187F7F030)"      },   // init at a1+25904
+};
+static const int kNumSc0 = (int)(sizeof(kSc0Callees) / sizeof(kSc0Callees[0]));
+typedef __int64 (__fastcall* Sc0Fn_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sc0Fn_t g_sc0Orig[kNumSc0];
+template<int N> static __int64 __fastcall Sc0Thunk(void* a, void* b, void* c, void* dd,
+                                                    void* e, void* f, void* g, void* h)
+{
+    bool log = g_inSc0;
+    if (log) { tprintf("[sc0] t%-5lu     %s ENTER\n", GetCurrentThreadId(), kSc0Callees[N].name); fflush(stdout); }
+    __int64 r = g_sc0Orig[N](a, b, c, dd, e, f, g, h);
+    if (log) { tprintf("[sc0] t%-5lu     %s RETURNED = 0x%llX\n", GetCurrentThreadId(), kSc0Callees[N].name, (unsigned long long)r); fflush(stdout); }
+    return r;
+}
+template<size_t... I> static std::array<Sc0Fn_t, sizeof...(I)> MakeSc0Thunks(std::index_sequence<I...>) { return {{ &Sc0Thunk<I>... }}; }
+static const std::array<Sc0Fn_t, kNumSc0> g_sc0Thunks = MakeSc0Thunks(std::make_index_sequence<kNumSc0>{});
+
+typedef __int64 (__fastcall* Sc0Ctor_t)(void*);
+static Sc0Ctor_t g_sc0CtorOrig = nullptr;
+static __int64 __fastcall Sc0Ctor_Detour(void* self)
+{
+    tprintf("[sc0] t%-5lu CSoundSystem::CSoundSystem ctor (sub_187F423C0)(this=%p) ENTER -- arming callee trace\n", GetCurrentThreadId(), self); fflush(stdout);
+    g_inSc0 = true;
+    __int64 r = g_sc0CtorOrig(self);
+    g_inSc0 = false;
+    tprintf("[sc0] t%-5lu CSoundSystem::CSoundSystem ctor RETURNED = 0x%llX\n", GetCurrentThreadId(), (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 // The concrete type is CSoundSystem (it implements the ISoundSystem interface); vtable @ RVA 0xA630B90.
 // Slots confirmed by data-ref: Initialize 0xA630B90 (+0x00), InitializeComm 0xA630BA0 (+0x10),
 // IsAvailable 0xA630BE8 (+0x58) -- consecutive entries in that one vtable, matching the decompile's offsets.
@@ -1061,6 +1172,30 @@ void InstallEngineHooks(uintptr_t base)
     // [snd] CSoundSystem vtable targets, addresses captured from a normal run via the Misc.cpp [799] probe.
     // Hooked by CONCRETE ADDRESS (not through the vtable), so installation does not depend on the singleton being
     // constructed -- GetSoundSystem() lazily creates it, so the global reads NULL early in BOTH contexts.
+    // [sc0] the CSoundSystem ctor + all its callees -- localize the indirect-call crash inside construction.
+    void* sc0 = (void*)(base + 0x7F423C0);    // CSoundSystem::CSoundSystem ctor
+    if (MH_CreateHook(sc0, &Sc0Ctor_Detour, (LPVOID*)&g_sc0CtorOrig) == MH_OK && MH_EnableHook(sc0) == MH_OK)
+        tprintf("[sc0] hooked CSoundSystem ctor (sub_187F423C0) @ %p\n", sc0);
+    else
+        tprintf("[sc0] FAILED to hook sub_187F423C0 @ %p\n", sc0);
+    for (int i = 0; i < kNumSc0; ++i)
+    {
+        void* t = (void*)(base + kSc0Callees[i].rva);
+        if (MH_CreateHook(t, (void*)g_sc0Thunks[i], (LPVOID*)&g_sc0Orig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[sc0] hooked %s @ %p\n", kSc0Callees[i].name, t);
+        else
+            tprintf("[sc0] FAILED/dup %s @ %p\n", kSc0Callees[i].name, t);
+    }
+    void* snew = (void*)(base + 0x7F422B0);   // CreateSoundSystem (lazy ctor) -- does construction even run?
+    if (MH_CreateHook(snew, &SndConstruct_Detour, (LPVOID*)&g_sndCtorOrig) == MH_OK && MH_EnableHook(snew) == MH_OK)
+        tprintf("[snew] hooked CreateSoundSystem (sub_187F422B0) @ %p\n", snew);
+    else
+        tprintf("[snew] FAILED to hook sub_187F422B0 @ %p\n", snew);
+    void* gss = (void*)(base + 0x7F12760);    // GetSoundSystem -- dump the REAL launcher vtable (Initialize hook never fires)
+    if (MH_CreateHook(gss, &GetSoundSystem_Detour, (LPVOID*)&g_getSndOrig) == MH_OK && MH_EnableHook(gss) == MH_OK)
+        tprintf("[gss] hooked GetSoundSystem (sub_187F12760) @ %p\n", gss);
+    else
+        tprintf("[gss] FAILED to hook sub_187F12760 @ %p\n", gss);
     void* sndi = (void*)(base + 0x7F44040);   // CSoundSystem::Initialize -- the suspected fault
     if (MH_CreateHook(sndi, &SndInitialize_Detour, (LPVOID*)&g_sndInitOrig) == MH_OK && MH_EnableHook(sndi) == MH_OK)
         tprintf("[snd] hooked CSoundSystem::Initialize (sub_187F44040) @ %p\n", sndi);
