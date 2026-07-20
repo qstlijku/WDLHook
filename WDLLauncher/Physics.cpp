@@ -749,6 +749,155 @@ static __int64 __fastcall Sub7E3D9C0_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
+// ===================== [dde]/[ddc] CPhysVehicleManagerBase::Init (sub_187E3DDE0) HANG probe ====================
+// PDB: void CPhysVehicleManagerBase::Init(CPhysVehicleManagerBase* this, CPhysWorld* world, CWorkLoad* workLoad)
+// NOT VM'd (readable, and no VM thunk at level 1 or 2). It STALLS -- boot sits here until the console is killed.
+// What it does: CDVMManager::Initialise, then loops handlingType 0..0xF; per type it EnumerateFiles(".handling.bin")
+// under s_HandlingBasePath and, for each hit, CFileManager::FileOpen -> GetSize -> NMalloc -> Read ->
+// CDVMManager::Create{Car,Boat,Bike,ChaseCam,VehicleParts}HandlingData + ReadDataBuffer -> NFree -> FileClose.
+// So it is DATA LOADING (directory scan + file I/O), a different failure class than the VM walls: under manual-load
+// the file/data layer may not be mounted the way a normal launch does it, so a scan/open can BLOCK instead of fault.
+// [ddc] traces its direct callees, GATED on g_inDde so common helpers don't flood the log outside this window.
+// CMemMng::NMalloc (0x60F430) is deliberately EXCLUDED -- hottest fn in the engine, proven working, and hooking it
+// engine-wide is what destabilised the early [pi] pool.
+static bool g_inDde = false;
+static const uintptr_t kDdeCallees[] = {
+    //0x8BC7B00,   // DISABLED: log spam (fires constantly) -- kept for reference
+    //0x8BC76E0,   // -> [dvm] standalone typed hook (CDVMManager::Initialise; a2 is a FLOAT in xmm1)
+    // Only the two flooders are DISABLED -- they alone made the log unreadable. Call counts = [ddc] ENTER lines in
+    // wdllauncher_log_2684 ([ddc] was 24941 of 26303 lines; each call logs ENTER+RETURNED). Kept, not deleted.
+    //0x5C48C0,   // 9458 calls -- by far the worst (string/vector helper in the handling-file loop)
+    //0x8BE96D0,  // 2330 calls -- allocator
+    // The rest are noisy but readable (~656 calls total across these 7):
+    0x5E5930,    // 159
+    0x6D9290,    // 155
+    0x5C7A70,    //  85
+    0x5C3FE0,    //  80
+    0x61D010,    //  79
+    0x8BC7800,   //  67
+    0x5C3B80,    //  31
+    0x5E6EC0, 0x7E7BD20, 0x68D3E10,   // 7 / 3 / 3
+    // CDVMManager::Initialise (sub_188BC76E0 = [dvm]) callees. Its first call sub_1893D5D60 tail-jumps to
+    // sub_188BF1410, a VM thunk -> 0x21760BD0 -- BUT that body is READABLE (a run of movdqa copies of 16-byte
+    // constants from .rdata 0xA689xxx into globals 0xB5208xx), no VM context touched, so per the standing rule it
+    // should run native and return. Traced anyway to confirm empirically rather than assume.
+    0x93D5D60,   // -> jmp sub_188BF1410 -> VM 0x21760BD0 (readable body; expected to return)
+    0x8BF1410,   // the VM thunk itself -- confirms whether we enter and never return
+    0x8BE96D0,   // alloc(size, align) -- called 2x (144/16 then 72/16)
+    0x93D7220,   // ctor on the 144-byte alloc
+    0x93E91B0,   // ctor on the 72-byte alloc
+    0x93D5F40,   // last call before the tail assignments
+};
+static const int kNumDde = (int)(sizeof(kDdeCallees) / sizeof(kDdeCallees[0]));
+typedef __int64 (__fastcall* DdeFn_t)(void*, void*, void*, void*, void*, void*, void*, void*);   // 8 args: no truncation
+static DdeFn_t g_ddeOrig[kNumDde];
+template<int N> static __int64 __fastcall DdeThunk(void* a, void* b, void* c, void* dd,
+                                                    void* e, void* f, void* g, void* h)
+{
+    bool log = g_inDde;
+    if (log)
+    {
+        tprintf("[ddc] t%-5lu d%-2d %*ssub_18%llX ENTER\n",
+                GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)kDdeCallees[N]); fflush(stdout);
+        ++g_chkDepth;
+    }
+    __int64 r = g_ddeOrig[N](a, b, c, dd, e, f, g, h);
+    if (log)
+    {
+        --g_chkDepth;
+        tprintf("[ddc] t%-5lu d%-2d %*ssub_18%llX RETURNED = 0x%llX\n",
+                GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)kDdeCallees[N], (unsigned long long)r); fflush(stdout);
+    }
+    return r;
+}
+template<size_t... I> static std::array<DdeFn_t, sizeof...(I)> MakeDdeThunks(std::index_sequence<I...>) { return {{ &DdeThunk<I>... }}; }
+static const std::array<DdeFn_t, kNumDde> g_ddeThunks = MakeDdeThunks(std::make_index_sequence<kNumDde>{});
+
+// ===================== [rng] HamsterRandomClass::seed (sub_18988C4A0 -> VM 0x21AC6340) reimpl =================
+// THE STALL. Chain: CPhysVehicleManagerBase::Init -> CDVMManager::Initialise -> sub_1893D5F40 (InitialisePerlin)
+// -> sub_18988C450 = HamsterRandomClass::HamsterRandomClass(this) { seed(this, 123435); return this; }
+// -> sub_18988C4A0 = HamsterRandomClass::seed(this, seed)  <-- VM thunk to 0x21AC6340, and that body is genuinely
+// OBFUSCATED (lea rsp,[rsp-8] stack juggling, not/and/pop bit-twiddling, self-cancelling +/-0x3fa80762
+// displacements, xor rax,rax; xor rax,rcx). So it decoy-LOOPS un-bootstrapped -> boot hangs with no fault.
+// Perlin noise init needs a randomized permutation/gradient table, hence the PRNG seed in this path.
+//
+// PDB algorithm (a lagged-Fibonacci generator, NOT Mersenne Twister):
+//   state[0] = seed | 1;  m_index = 0;
+//   for (i=1..16) state[i] = 123123 * state[i-1] + 2354254;      // 17 LCG fills
+//   20x (2 outer x 10 unrolled):                                  // warm-up mixing
+//       idx = m_index ? m_index : 17;  m_index = idx - 1;
+//       state[idx-1] += state[(idx+4) % 17];
+// (IDA shows the modulo as `2021161081LL * n >> 32 >> 3` with a `(v>>31)+v` sign fix -- that is just the compiler's
+// magic-number signed division by 17, i.e. `n - 17*(n/17)` == `n % 17`.)
+// Struct: { int m_index @0x0; int m_state[17] @0x4; }  (confirmed in DuniaDemo.h)
+// We hook the WRAPPER sub_18988C450 (readable) rather than the VM thunk, and return `this` like the original ctor.
+typedef __int64 (__fastcall* Sub8988C450_t)(void*, void*, void*, void*);
+static Sub8988C450_t g_sub8988C450Orig = nullptr;   // trampoline out-param (unused -- inner VM body decoy-loops)
+static __int64 __fastcall Sub8988C450_Detour(void* thisPtr, void* a2, void* a3, void* a4)
+{
+    tprintf("[rng] t%-5lu d%-2d %*sHamsterRandomClass::ctor reimpl(this=%p) seed=123435 ENTER\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", thisPtr); fflush(stdout);
+    int* m_index = (int*)thisPtr;         // @ 0x0
+    int* m_state = (int*)thisPtr + 1;     // @ 0x4, 17 ints
+    int v = 123435 | 1;                   // the ctor's fixed seed, |1 per the PDB
+    *m_index = 0;
+    m_state[0] = v;
+    for (int i = 1; i < 17; ++i)
+    {
+        v = 123123 * v + 2354254;
+        m_state[i] = v;
+    }
+    for (int outer = 0; outer < 2; ++outer)      // do{...}while(v3) with v3 = 2
+    {
+        for (int k = 0; k < 10; ++k)             // 10 unrolled mixing steps per outer pass
+        {
+            int idx = *m_index ? *m_index : 17;
+            *m_index = idx - 1;
+            m_state[idx - 1] += m_state[(idx + 4) % 17];
+        }
+    }
+    tprintf("[rng] t%-5lu d%-2d %*sHamsterRandomClass::ctor reimpl RETURNED (m_index=%d state[0]=0x%08X)\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", *m_index, (unsigned int)m_state[0]); fflush(stdout);
+    return (__int64)thisPtr;              // the wrapper returns `this`
+}
+
+// sub_188BC76E0 = CDVMManager::Initialise(this, float timeStep, a3, driveAllocator, defaultAssertReporter,
+// driveProfiler, useDriveVEdit) -- the FIRST call in CPhysVehicleManagerBase::Init. Standalone TYPED hook because
+// a2 is a FLOAT: Win64 passes it in xmm1, so the generic void* [ddc] pool thunk would never forward it correctly
+// (it reads/forwards rdx and may clobber xmm1). PDB call site passes 0.033333335 (1/30s).
+typedef __int64 (__fastcall* Sub8BC76E0_t)(__int64, float, __int64, __int64, __int64, __int64, unsigned __int8);
+static Sub8BC76E0_t g_sub8BC76E0Orig = nullptr;
+static __int64 __fastcall Sub8BC76E0_Detour(__int64 a1, float a2, __int64 a3, __int64 a4,
+                                             __int64 a5, __int64 a6, unsigned __int8 a7)
+{
+    tprintf("[dvm] t%-5lu d%-2d %*sCDVMManager::Initialise(this=0x%llX dt=%f a3=0x%llX alloc=0x%llX assertRep=0x%llX prof=0x%llX vedit=%u) ENTER\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)a1, (double)a2, (unsigned long long)a3,
+        (unsigned long long)a4, (unsigned long long)a5, (unsigned long long)a6, (unsigned int)a7); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_sub8BC76E0Orig(a1, a2, a3, a4, a5, a6, a7);
+    --g_chkDepth;
+    tprintf("[dvm] t%-5lu d%-2d %*sCDVMManager::Initialise RETURNED = 0x%llX\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+typedef __int64 (__fastcall* Sub7E3DDE0_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub7E3DDE0_t g_sub7E3DDE0Orig = nullptr;
+static __int64 __fastcall Sub7E3DDE0_Detour(void* a, void* b, void* c, void* d,
+                                             void* e, void* f, void* g, void* h)
+{
+    tprintf("[dde] t%-5lu d%-2d %*sCPhysVehicleManagerBase::Init(this=%p world=%p workLoad=%p) ENTER -- arming [ddc]\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", a, b, c); fflush(stdout);
+    g_inDde = true;
+    ++g_chkDepth;
+    __int64 r = g_sub7E3DDE0Orig(a, b, c, d, e, f, g, h);
+    --g_chkDepth;
+    g_inDde = false;
+    tprintf("[dde] t%-5lu d%-2d %*sCPhysVehicleManagerBase::Init RETURNED = 0x%llX\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 // ===================== [rid] hkDefaultError::setEnabled (sub_188D04A50 -> VM sub_1A17D6320) reimpl ==============
 // PDB: void hkDefaultError::setEnabled(hkDefaultError* this, int id, hkBool enabled)
 // The singleton qword_18B540C48 is the hkDefaultError handler; this+0x18 = m_disabledAssertIds, this+0x50 = m_lock.
@@ -1429,7 +1578,7 @@ static const std::array<Re_t, kNumRe> g_reThunks = MakeReThunks(std::make_index_
 // Init after the thunk's jmp) AND unnecessary once the list is Init-specific. sub_188DE8600 -> its own [de8] hook.
 // Install is #if 0'd below; enable when tracing Init. Verify any 0x8D/0x686/0x5C entry is truly Init-only before adding.
 static const uintptr_t kInitCallees[] = {
-    0x7D61260, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, /* 0x7E3D9C0 -> [reg] singleton probe */ 0x7D9A530, 0x7E3DDE0, 0x7E3E460,
+    0x7D61260, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, /* 0x7E3D9C0 -> [reg] singleton probe */ 0x7D9A530, /* 0x7E3DDE0 -> [dde] standalone + gated [ddc] pool */ 0x7E3E460,
     0x7E3E670, 0x7E3E7D0, 0x7E76F70, 0x7E77090, 0x7E771B0, 0x7E772D0, 0x7E773F0, 0x7E77510, 0x8DE8830,
 };
 static const int kNumInit = (int)(sizeof(kInitCallees) / sizeof(kInitCallees[0]));
@@ -1811,6 +1960,29 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[rid] hooked sub_188D04A50 reimpl @ %p\n", s4a50);
     else
         tprintf("[rid] FAILED to hook sub_188D04A50 @ %p\n", s4a50);
+    void* sc450 = (void*)(base + 0x988C450);    // HamsterRandomClass ctor -- reimpl (inner seed() VM body loops)
+    if (MH_CreateHook(sc450, &Sub8988C450_Detour, (LPVOID*)&g_sub8988C450Orig) == MH_OK && MH_EnableHook(sc450) == MH_OK)
+        tprintf("[rng] hooked HamsterRandomClass ctor reimpl (sub_18988C450) @ %p\n", sc450);
+    else
+        tprintf("[rng] FAILED to hook sub_18988C450 @ %p\n", sc450);
+    void* s76e0 = (void*)(base + 0x8BC76E0);    // CDVMManager::Initialise -- typed hook (a2 is a float in xmm1)
+    if (MH_CreateHook(s76e0, &Sub8BC76E0_Detour, (LPVOID*)&g_sub8BC76E0Orig) == MH_OK && MH_EnableHook(s76e0) == MH_OK)
+        tprintf("[dvm] hooked CDVMManager::Initialise (sub_188BC76E0) @ %p\n", s76e0);
+    else
+        tprintf("[dvm] FAILED to hook sub_188BC76E0 @ %p\n", s76e0);
+    void* sdde0 = (void*)(base + 0x7E3DDE0);    // CPhysVehicleManagerBase::Init -- STALLS; arms the [ddc] gate
+    if (MH_CreateHook(sdde0, &Sub7E3DDE0_Detour, (LPVOID*)&g_sub7E3DDE0Orig) == MH_OK && MH_EnableHook(sdde0) == MH_OK)
+        tprintf("[dde] hooked CPhysVehicleManagerBase::Init (sub_187E3DDE0) @ %p\n", sdde0);
+    else
+        tprintf("[dde] FAILED to hook sub_187E3DDE0 @ %p\n", sdde0);
+    for (int i = 0; i < kNumDde; ++i)           // gated callee trace -- only logs while inside [dde]
+    {
+        void* t = (void*)(base + kDdeCallees[i]);
+        if (MH_CreateHook(t, (void*)g_ddeThunks[i], (LPVOID*)&g_ddeOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[ddc] hooked sub_18%llX @ %p\n", (unsigned long long)kDdeCallees[i], t);
+        else
+            tprintf("[ddc] skip sub_18%llX (already hooked / failed) @ %p\n", (unsigned long long)kDdeCallees[i], t);
+    }
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
 #if 0
