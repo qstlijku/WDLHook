@@ -876,9 +876,12 @@ typedef __int64 (__fastcall* EnumFiles_t)(void*, const char*, const char*, const
 static EnumFiles_t g_enumFilesOrig = nullptr;
 static __int64 __fastcall EnumFiles_Detour(void* out, const char* path, const char* ext, const char* pattern, __int64 flags)
 {
+    // NOTE: print the strings DIRECTLY, not via SafeStr -- SafeStr returns a single `static char buf[256]`, so three
+    // calls in one tprintf all hand back the SAME pointer and the last one wins (that is why path/ext/pat printed
+    // identically in the first run). printf evaluates each %s independently, so direct pointers are correct here.
     tprintf("[enf] t%-5lu d%-2d %*sEnumerateFiles(out=%p path=%s ext=%s pat=%s flags=0x%llX) ENTER\n",
         GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", out,
-        SafeStr(path), SafeStr(ext), SafeStr(pattern), (unsigned long long)flags); fflush(stdout);
+        path, ext, pattern, (unsigned long long)flags); fflush(stdout);
     ++g_chkDepth;
     __int64 r = g_enumFilesOrig(out, path, ext, pattern, flags);
     --g_chkDepth;
@@ -910,14 +913,21 @@ static __int64 __fastcall EnumFiles_Detour(void* out, const char* path, const ch
         count, capacity, inPlace, onStack, props); fflush(stdout);
     if (elems && count && count < 4096 && !IsBadReadPtr(elems, (size_t)count * 0x10))
     {
+        // UNRESOLVED: first run gave 43 real names then 43 "(null)" -- exactly half of count=86, and 43*0x10 = 0x2B0
+        // is where a 43-element 0x10-stride array would END. So either the stride is 0x8 (and count 86 is right,
+        // meaning we skip every other element) or the stride is 0x10 (and the real element count is 43, meaning the
+        // properties count is in 8-byte units, not elements). Dump the raw qwords per slot to settle it: if q0/q1
+        // both go zero from index 43 on, the array really is 43 elements; if the STRINGS live in alternating slots,
+        // the stride is 0x8. (Strings are char, not wchar_t -- full names printed fine via %s.)
         for (unsigned int i = 0; i < count; ++i)
         {
-            char* e = elems + (size_t)i * 0x10;
-            char* s = *(char**)(e + 0x08);                        // ndStringBase::m_string
-            if (!s || IsBadReadPtr(s, 0x10))
-                s = *(char**)e;                                   // RVO-style fallback: m_string @ +0x00
-            tprintf("[enf] t%-5lu d%-2d %*s    [%u] %s\n", GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "",
-                i, (s && !IsBadReadPtr(s, 0x10)) ? (s + 0x0C) : "(null)"); fflush(stdout);
+            char* e = elems + (size_t)i * 0x08;
+            unsigned long long q0 = *(unsigned long long*)e;
+            unsigned long long q1 = *((unsigned long long*)e + 1);
+            char* s = (char*)q1;                                  // ndStringBase::m_string @ +0x08
+            tprintf("[enf] t%-5lu d%-2d %*s    [%u] q0=%016llX q1=%016llX  %s\n",
+                GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", i, q0, q1,
+                s ? (s + 0x0C) : "(null)"); fflush(stdout);
         }
     }
     return r;
