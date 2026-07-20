@@ -74,13 +74,13 @@ void InstallLanguageCapture(uintptr_t base)
 // shows what str2enum/LoadSkuConfigPC actually get here + which data file CreateFileW can't find + the box-shower.
 static const bool kTraceSku = true;
 
-static uintptr_t g_traceBase   = 0;
+static uintptr_t Imagebase   = 0;
 static int       g_str2enumLogs = 0;
 
 static uintptr_t TraceRva(void* ret)   // caller return address -> in-module RVA (0 if outside the DLL)
 {
     uintptr_t a = (uintptr_t)ret;
-    if (g_traceBase && a > g_traceBase && (a - g_traceBase) < 0x10000000) return a - g_traceBase;
+    if (Imagebase && a > Imagebase && (a - Imagebase) < 0x10000000) return a - Imagebase;
     return 0;
 }
 
@@ -164,6 +164,58 @@ static __int64 __fastcall InitEngineServices_Detour(void* eng, void* params, dou
     tprintf("[eng] CEngine::InitializeEngineServices RETURNED\n"); fflush(stdout);
     return r;
 }
+// sub_186799130 -- promoted out of the [chk] kChkRvasIE pool into a dedicated hook. It sits in the CEngine range
+// right below CEngine::Initialize (0x6799B80), and as a [chk] entry it was GATED (only logged inside the
+// sub_187D5E810 window via g_gate7d5) and printed only a bare "sub_186799130 ENTER/RETURNED" with no args.
+// Standalone + ungated: always logs, prints its args, the return value, and the caller RVA.
+// 8 params forwarded (arity unknown) so nothing is truncated -- see [[pooled-thunk-arg-truncation]].
+typedef __int64 (__fastcall* Sub6799130_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub6799130_t g_sub6799130Orig = nullptr;
+static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* a4,
+                                             void* a5, void* a6, void* a7, void* a8)
+{
+    void* ret = _ReturnAddress();
+    tprintf("[799] sub_186799130(%p, %p, %p, %p) ENTER  caller=%p (+0x%llX)\n",
+            a1, a2, a3, a4, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
+    // GetSoundSystem() (sub_187F12760) returns qword_18B5101C0. This function makes 3 virtual calls on it:
+    //   v7->Initialize(v7, &parameters->platformContext)   = vtbl[+0x00]  (slot 0)
+    //   v8->InitializeComm(v8)                             = vtbl[+0x10]  (slot 2)
+    //   CBinkRenderResourceBase::ms_enableSound = v9->IsAvailable(v9)   = vtbl[+0x58]  (slot 11)
+    // Dump those 3 targets so a virtualized one is visible BEFORE it faults. sub_<VA> uses the full VA
+    // (0x180000000 + rva) so VM-band targets render correctly (sub_1A1......, not sub_182.......).
+    if (Imagebase)
+    {
+        void* soundSystem = *(void**)(Imagebase + 0xB5101C0);   // qword_18B5101C0
+        tprintf("[799]   soundSystem (qword_18B5101C0) = %p\n", soundSystem); fflush(stdout);
+        if (soundSystem && !IsBadReadPtr(soundSystem, 8))
+        {
+            void** vt = *(void***)soundSystem;
+            tprintf("[799]   vtbl = %p\n", (void*)vt); fflush(stdout);
+            if (vt && !IsBadReadPtr(vt, 0x60))
+            {
+                static const struct { int slot; const char* name; } kSlots[] = {
+                    { 0,  "Initialize"     },   // vtbl[+0x00]
+                    { 2,  "InitializeComm" },   // vtbl[+0x10]
+                    { 11, "IsAvailable"    },   // vtbl[+0x58]
+                };
+                for (int i = 0; i < 3; ++i)
+                {
+                    void* fn = vt[kSlots[i].slot];
+                    uintptr_t frva = fn ? ((uintptr_t)fn - Imagebase) : 0;
+                    bool inVm = (frva >= 0xBC39000 && frva < 0x21B12800);
+                    tprintf("[799]     vtbl[+0x%02X] %-15s = sub_%llX  [DuniaDemo+0x%llX]%s\n",
+                            kSlots[i].slot * 8, kSlots[i].name,
+                            (unsigned long long)(0x180000000ULL + frva), (unsigned long long)frva,
+                            inVm ? "  <== IN VM BAND" : ""); fflush(stdout);
+                }
+            }
+        }
+    }
+    __int64 r = g_sub6799130Orig(a1, a2, a3, a4, a5, a6, a7, a8);
+    tprintf("[799] sub_186799130 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 static __int64 __fastcall EngineServicesInit_Detour(void* self, void* params)
 {
     void* ret = _ReturnAddress();
@@ -920,7 +972,7 @@ void InstallVmStubs(uintptr_t base)
 void InstallEngineHooks(uintptr_t base)
 {
     if (!kTraceSku) return;
-    g_traceBase = base;
+    Imagebase = base;
     MH_Initialize();   // idempotent
     struct { void* addr; void* det; LPVOID* orig; const char* nm; } E[] = {
         { (void*)(base + 0x7ADF490), (void*)&GetInstalledLanguage_Detour, (LPVOID*)&g_gilOrig, "GetInstalledLanguage(sub_187ADF490)" },
@@ -948,6 +1000,11 @@ void InstallEngineHooks(uintptr_t base)
         tprintf("[eng] hooked CEngine::Initialize (sub_186799B80) @ %p\n", cei);
     else
         tprintf("[eng] FAILED to hook CEngine::Initialize @ %p\n", cei);
+    void* s799 = (void*)(base + 0x6799130);  // promoted out of the [chk] pool -- ungated, prints args + caller
+    if (MH_CreateHook(s799, &Sub6799130_Detour, (LPVOID*)&g_sub6799130Orig) == MH_OK && MH_EnableHook(s799) == MH_OK)
+        tprintf("[799] hooked sub_186799130 @ %p\n", s799);
+    else
+        tprintf("[799] FAILED to hook sub_186799130 @ %p\n", s799);
     void* ies = (void*)(base + 0x67936F0);   // sub_1867936F0 = CEngine::InitializeEngineServices (parent of CEngineServices::Initialize + the config cluster)
     if (MH_CreateHook(ies, &InitEngineServices_Detour, (LPVOID*)&g_iesOrig) == MH_OK && MH_EnableHook(ies) == MH_OK)
         tprintf("[eng] hooked CEngine::InitializeEngineServices (sub_1867936F0) @ %p\n", ies);

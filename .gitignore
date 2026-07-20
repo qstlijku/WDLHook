@@ -14,3 +14,6 @@ anim_pose.h
 *.txt
 wdl_token_slot4.bin
 /WDLLauncher/WDLLauncher
+
+# Visual Studio Edit-and-Continue scratch dir (recreated whenever you edit source while paused at a breakpoint)
+enc_temp_folder/

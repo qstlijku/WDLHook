@@ -63,7 +63,7 @@ static const uintptr_t kChkRvasIE[] = {
     // call sites (incl. from inside sub_1875F8980); the RA variant logs _ReturnAddress to show WHERE each is from.
     // 0x5C3F60, 0x5A81C0, 0x5E6EC0 REMOVED -- hot generic string/container helpers, called everywhere
     // (thousands of hits), useless as CEngine::Initialize progress markers and flooded the log.
-    0x6035400, 0x7D633E0, 0x686F8D0, 0x6799130, 0x7F60DC0, 0x603E650,   // 0x7D5E810 pulled -> dedicated [7d5] hook
+    0x6035400, 0x7D633E0, 0x686F8D0, /* 0x6799130 -> dedicated [799] hook in Engine.cpp */ 0x7F60DC0, 0x603E650,   // 0x7D5E810 pulled -> dedicated [7d5] hook
     0x60AD8D0, 0x7802ED0, 0x60AD900, 0x60F90C0, 0x60D7A90, 0x6110E90, 0x6121760, 0x66098F0,
     0x6121220, 0x64B0A70, 0x677BAD0, 0x60278C0, 0x6794680, 0x6794A30, 0x6245A20, 0x6796300,
     0x677CA00, 0x657EEB0, 0x6371A40, 0x63B2C40, 0x63B56B0, 0x665E2D0, 0x64A2170, 0x64A7FF0,

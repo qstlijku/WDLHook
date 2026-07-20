@@ -992,7 +992,7 @@ typedef void (__fastcall* Sub8DE5C00_t)(void*, void*, unsigned char);
 static Sub8DE5C00_t g_sub8DE5C00Orig = nullptr;   // trampoline out-param (unused -- VM body faults)
 static void __fastcall Sub8DE5C00_Detour(void* world, void* lib, unsigned char qualityId)
 {
-    tprintf("[oqm] t%-5lu d%-2d %*sonQualityModifiedSignal reimpl(world=%p lib=%p qualityId=%c) ENTER\n",
+    tprintf("[oqm] t%-5lu d%-2d %*sonQualityModifiedSignal reimpl(world=%p lib=%p qualityId=%u) ENTER\n",
         GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", world, lib, qualityId); fflush(stdout);
     unsigned int* words = *(unsigned int**)((char*)world + 0xA60);   // m_dirtyQualities.m_storage.m_words.m_data
     if (words)

@@ -1722,6 +1722,56 @@ static __int64 __fastcall CanReloc_Detour(void* thisContainer, void* result, voi
     return (__int64)result;
 }
 
+// [799] sub_186799130 -- NORMAL-RUN capture of the sound-system vtable (ground truth for the launcher diff).
+// This function makes 3 virtual calls on GetSoundSystem() (sub_187F12760, returns qword_18B5101C0):
+//   v7->Initialize(v7, &parameters->platformContext)              = vtbl[+0x00]  (slot 0)
+//   v8->InitializeComm(v8)                                        = vtbl[+0x10]  (slot 2)
+//   CBinkRenderResourceBase::ms_enableSound = v9->IsAvailable(v9) = vtbl[+0x58]  (slot 11)
+// Indirect calls are the blind spot that hid [rid]/[ade]/[oqm], so dump the targets rather than wait for a fault.
+// Capture here (VM-bootstrapped) vs the launcher's [799] = a two-context diff: whichever slot differs is the one
+// the manual load leaves virtualized/unresolved. See [[instrumentation-in-de-hook-not-launcher]].
+// Print sub_<VA> with the FULL VA (0x180000000 + rva) so VM-band targets render right (sub_1A1..., not sub_182...).
+typedef __int64(__fastcall* Sub6799130_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub6799130_t g_sub6799130Orig = nullptr;
+static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* a4,
+                                            void* a5, void* a6, void* a7, void* a8)
+{
+    tprintf("[799] sub_186799130(%p, %p, %p, %p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
+    __int64 r = g_sub6799130Orig(a1, a2, a3, a4, a5, a6, a7, a8);
+    tprintf("[799] sub_186799130 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    // Dump AFTER the original runs: GetSoundSystem() lazily constructs the singleton, so reading qword_18B5101C0
+    // at ENTRY gives NULL in BOTH contexts (confirmed -- normal run printed NULL and still returned cleanly).
+    if (Imagebase)
+    {
+        void* soundSystem = *(void**)(Imagebase + 0xB5101C0);   // qword_18B5101C0
+        tprintf("[799]   soundSystem (qword_18B5101C0) = %p\n", soundSystem); fflush(stdout);
+        if (soundSystem && !IsBadReadPtr(soundSystem, 8))
+        {
+            void** vt = *(void***)soundSystem;
+            tprintf("[799]   vtbl = %p\n", (void*)vt); fflush(stdout);
+            if (vt && !IsBadReadPtr(vt, 0x60))
+            {
+                static const struct { int slot; const char* name; } kSlots[] = {
+                    { 0,  "Initialize"     },
+                    { 2,  "InitializeComm" },
+                    { 11, "IsAvailable"    },
+                };
+                for (int i = 0; i < 3; ++i)
+                {
+                    void* fn = vt[kSlots[i].slot];
+                    uintptr_t frva = fn ? ((uintptr_t)fn - Imagebase) : 0;
+                    bool inVm = (frva >= 0xBC39000 && frva < 0x21B12800);
+                    tprintf("[799]     vtbl[+0x%02X] %-15s = sub_%llX  [DuniaDemo+0x%llX]%s\n",
+                            kSlots[i].slot * 8, kSlots[i].name,
+                            (unsigned long long)(0x180000000ULL + frva), (unsigned long long)frva,
+                            inVm ? "  <== IN VM BAND" : ""); fflush(stdout);
+                }
+            }
+        }
+    }
+    return r;
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -1751,6 +1801,10 @@ void Misc::Initialize()
     // [cr] canRelocateBuffer reimpl VALIDATION: replace the real one with "return true"; relocateConstraintBuffer above
     // runs its real body calling THIS. If physics still works normally, the reimpl is correct -> already in Physics.cpp.
     HookOffset3(0x8E2DCA0 + 0xA00, &CanReloc_Detour, reinterpret_cast<LPVOID*>(&g_canRelocOrig)); // sub_188E2E6A0
+
+    // [799] sound-system vtable capture (normal run) -- ground truth to diff against the launcher's [799].
+    // Offset = RVA - 0xA00 (RVA 0x6799130). Comment out for a WDLLauncher run (DE_Hook loads there too -> double-hook).
+    HookOffset3(0x6798730 + 0xA00, &Sub6799130_Detour, reinterpret_cast<LPVOID*>(&g_sub6799130Orig)); // sub_186799130
     /*
     auto base = Imagebase;
     struct { void* addr; void* det; LPVOID* orig; const char* nm; } BSC[] = {
