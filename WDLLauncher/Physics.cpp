@@ -493,14 +493,14 @@ template<int N> static __int64 __fastcall HnwThunk(void* a, void* b, void* c, vo
     unsigned long long rva = (unsigned long long)kHnwCallees[N].rva;
     int sa = kHnwCallees[N].strArg;
     if (sa == 4)
-        tprintf("[hw] sub_18%llX(%p, %p, %p, %s) ENTER\n", rva, a, b, c, SafeStr((const char*)dd));
+        tprintf("[hw] sub_18%07llX(%p, %p, %p, %s) ENTER\n", rva, a, b, c, SafeStr((const char*)dd));
     else if (sa == 3)
-        tprintf("[hw] sub_18%llX(%p, %p, %s) ENTER\n", rva, a, b, SafeStr((const char*)c));
+        tprintf("[hw] sub_18%07llX(%p, %p, %s) ENTER\n", rva, a, b, SafeStr((const char*)c));
     else
-        tprintf("[hw] sub_18%llX(%p, %p, %p, %p) ENTER\n", rva, a, b, c, dd);
+        tprintf("[hw] sub_18%07llX(%p, %p, %p, %p) ENTER\n", rva, a, b, c, dd);
     fflush(stdout);
     __int64 r = g_hnwOrig[N](a, b, c, dd, e, f, g, h);
-    tprintf("[hw] sub_18%llX RETURNED = 0x%llX\n", rva, (unsigned long long)r); fflush(stdout);
+    tprintf("[hw] sub_18%07llX RETURNED = 0x%llX\n", rva, (unsigned long long)r); fflush(stdout);
     return r;
 }
 template<size_t... I> static std::array<HnwFn_t, sizeof...(I)> MakeHnwThunks(std::index_sequence<I...>) { return {{ &HnwThunk<I>... }}; }
@@ -776,14 +776,16 @@ static const uintptr_t kDdeCallees[] = {
     0x61D010,    //  79
     0x8BC7800,   //  67
     0x5C3B80,    //  31
-    0x5E6EC0, 0x7E7BD20, 0x68D3E10,   // 7 / 3 / 3
+    0x5E6EC0, 0x7E7BD20,   // 7 / 3      (0x68D3E10 -> [enf] standalone typed hook: EnumerateFiles, 5 args w/ strings)
     // CDVMManager::Initialise (sub_188BC76E0 = [dvm]) callees. Its first call sub_1893D5D60 tail-jumps to
     // sub_188BF1410, a VM thunk -> 0x21760BD0 -- BUT that body is READABLE (a run of movdqa copies of 16-byte
     // constants from .rdata 0xA689xxx into globals 0xB5208xx), no VM context touched, so per the standing rule it
     // should run native and return. Traced anyway to confirm empirically rather than assume.
     0x93D5D60,   // -> jmp sub_188BF1410 -> VM 0x21760BD0 (readable body; expected to return)
     0x8BF1410,   // the VM thunk itself -- confirms whether we enter and never return
-    0x8BE96D0,   // alloc(size, align) -- called 2x (144/16 then 72/16)
+    //0x8BE96D0, // DUPLICATE of the disabled entry above -- this copy kept it live (2330 calls = 77% of [ddc] lines
+                 // in wdllauncher_log_25676). It is the general allocator, NOT just the 144/16 + 72/16 pair; the two
+                 // ctors below (0x93D7220 / 0x93E91B0) already mark those two allocation sites.
     0x93D7220,   // ctor on the 144-byte alloc
     0x93E91B0,   // ctor on the 72-byte alloc
     0x93D5F40,   // last call before the tail assignments
@@ -797,7 +799,7 @@ template<int N> static __int64 __fastcall DdeThunk(void* a, void* b, void* c, vo
     bool log = g_inDde;
     if (log)
     {
-        tprintf("[ddc] t%-5lu d%-2d %*ssub_18%llX ENTER\n",
+        tprintf("[ddc] t%-5lu d%-2d %*ssub_18%07llX ENTER\n",
                 GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)kDdeCallees[N]); fflush(stdout);
         ++g_chkDepth;
     }
@@ -805,7 +807,7 @@ template<int N> static __int64 __fastcall DdeThunk(void* a, void* b, void* c, vo
     if (log)
     {
         --g_chkDepth;
-        tprintf("[ddc] t%-5lu d%-2d %*ssub_18%llX RETURNED = 0x%llX\n",
+        tprintf("[ddc] t%-5lu d%-2d %*ssub_18%07llX RETURNED = 0x%llX\n",
                 GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)kDdeCallees[N], (unsigned long long)r); fflush(stdout);
     }
     return r;
@@ -859,6 +861,66 @@ static __int64 __fastcall Sub8988C450_Detour(void* thisPtr, void* a2, void* a3, 
     tprintf("[rng] t%-5lu d%-2d %*sHamsterRandomClass::ctor reimpl RETURNED (m_index=%d state[0]=0x%08X)\n",
         GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", *m_index, (unsigned int)m_state[0]); fflush(stdout);
     return (__int64)thisPtr;              // the wrapper returns `this`
+}
+
+// sub_1868D3E10 = EnumerateFiles(ndVector<ndStringBase<char>>* out, const char* path, const char* ext,
+//                                const char* pattern, int flags)
+// PDB call site in CPhysVehicleManagerBase::Init's 16-iteration loop:
+//     EnumerateFiles(&handlings, c_str(&s_HandlingBasePath[type]), ".handling.bin", "*", 0);
+// Standalone + TYPED so we can actually read the three string args -- the generic [ddc] void* thunk showed none of
+// them. This is the directory scan, and the prime suspect if the handling loop stalls or silently finds nothing
+// (under manual-load the data layer / pack mounting may not be in the state a normal launch produces).
+// After the call we dump the out-vector's first two qwords (ndVector: m_data @0x0, m_properties @0x8) so a
+// zero/empty result is visible without having to decode ndVectorProperties here.
+typedef __int64 (__fastcall* EnumFiles_t)(void*, const char*, const char*, const char*, __int64);
+static EnumFiles_t g_enumFilesOrig = nullptr;
+static __int64 __fastcall EnumFiles_Detour(void* out, const char* path, const char* ext, const char* pattern, __int64 flags)
+{
+    tprintf("[enf] t%-5lu d%-2d %*sEnumerateFiles(out=%p path=%s ext=%s pat=%s flags=0x%llX) ENTER\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", out,
+        SafeStr(path), SafeStr(ext), SafeStr(pattern), (unsigned long long)flags); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_enumFilesOrig(out, path, ext, pattern, flags);
+    --g_chkDepth;
+    // ndVectorBase (sizeof 0x10): m_properties @ 0x00, m_data @ 0x08  (NOT the other way round).
+    // ndVectorProperties is one packed u64 (ndBaseVectorProperties::m_fullValue):
+    //     bits  0..30 : m_capacity          (31)
+    //     bit   31    : m_isVectorOnStack   (1)
+    //     bits 32..62 : m_count             (31)
+    //     bit   63    : m_isInPlace         (1)
+    // m_isInPlace selects storage: clear => heap block at *m_data, set => elements INLINE at &m_data. (Same idiom
+    // the PDB uses for s_HandlingBasePath: `if ((props & 0x8000000000000000) == 0) p = m_data; else p = &m_data;`)
+    // Elements are ndStringBase<char> (0x10 each): +0x08 = Data*, and Data+0x0C is the null-terminated chars
+    // (Data: size@0, capacity@4, refCount@8, chars@0xC). See [[ndstringbase-layout]].
+    unsigned long long props = 0;
+    unsigned int count = 0, capacity = 0, onStack = 0, inPlace = 0;
+    char* elems = nullptr;
+    if (out && !IsBadReadPtr(out, 16))
+    {
+        props    = *(unsigned long long*)out;
+        capacity = (unsigned int)(props & 0x7FFFFFFF);
+        onStack  = (unsigned int)((props >> 31) & 1);
+        count    = (unsigned int)((props >> 32) & 0x7FFFFFFF);
+        inPlace  = (unsigned int)((props >> 63) & 1);
+        char** pData = (char**)((char*)out + 8);
+        elems = inPlace ? (char*)pData : *pData;
+    }
+    tprintf("[enf] t%-5lu d%-2d %*sEnumerateFiles RETURNED = 0x%llX  count=%u cap=%u inPlace=%u onStack=%u props=0x%llX\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)r,
+        count, capacity, inPlace, onStack, props); fflush(stdout);
+    if (elems && count && count < 4096 && !IsBadReadPtr(elems, (size_t)count * 0x10))
+    {
+        for (unsigned int i = 0; i < count; ++i)
+        {
+            char* e = elems + (size_t)i * 0x10;
+            char* s = *(char**)(e + 0x08);                        // ndStringBase::m_string
+            if (!s || IsBadReadPtr(s, 0x10))
+                s = *(char**)e;                                   // RVO-style fallback: m_string @ +0x00
+            tprintf("[enf] t%-5lu d%-2d %*s    [%u] %s\n", GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "",
+                i, (s && !IsBadReadPtr(s, 0x10)) ? (s + 0x0C) : "(null)"); fflush(stdout);
+        }
+    }
+    return r;
 }
 
 // sub_188BC76E0 = CDVMManager::Initialise(this, float timeStep, a3, driveAllocator, defaultAssertReporter,
@@ -1456,7 +1518,7 @@ typedef __int64 (__fastcall* RegTypeCallee_t)(void*, void*, void*, void*);
 static RegTypeCallee_t g_regTypeOrig[kNumRegTypeCallees];
 template<int N> static __int64 __fastcall RegTypeCalleeThunk(void* a, void* b, void* c, void* dd)
 {
-    tprintf("[rtc] %s (sub_18%llX)(%p, %p, %p, %p) ENTER\n", kRegTypeNames[N], (unsigned long long)kRegTypeCallees[N], a, b, c, dd); fflush(stdout);
+    tprintf("[rtc] %s (sub_18%07llX)(%p, %p, %p, %p) ENTER\n", kRegTypeNames[N], (unsigned long long)kRegTypeCallees[N], a, b, c, dd); fflush(stdout);
     __int64 r = g_regTypeOrig[N](a, b, c, dd);
     tprintf("[rtc] %s RETURNED = 0x%llX\n", kRegTypeNames[N], (unsigned long long)r); fflush(stdout);
     return r;
@@ -1563,7 +1625,7 @@ template<int N> static __int64 __fastcall ReThunk(void* a, void* b, void* c, voi
     uintptr_t ra = (uintptr_t)_ReturnAddress() - g_reBase;
     g_reLast = kReNames[N];
     g_reLastRA = ra;
-    tprintf("[re] %s (sub_18%llX) ENTER  from 0x%llX\n", kReNames[N], (unsigned long long)kReCallees[N], (unsigned long long)ra); fflush(stdout);
+    tprintf("[re] %s (sub_18%07llX) ENTER  from 0x%llX\n", kReNames[N], (unsigned long long)kReCallees[N], (unsigned long long)ra); fflush(stdout);
     __int64 r = g_reOrig[N](a, b, c, dd);
     tprintf("[re] %s RETURNED = 0x%llX\n", kReNames[N], (unsigned long long)r); fflush(stdout);
     return r;
@@ -1590,9 +1652,9 @@ static InitCallee_t g_initOrig[kNumInit];
 template<int N> static __int64 __fastcall InitCalleeThunk(void* a, void* b, void* c, void* dd,
                                                           void* e, void* f, void* g, void* h)
 {
-    tprintf("[pi] sub_18%llX ENTER\n", (unsigned long long)kInitCallees[N]); fflush(stdout);
+    tprintf("[pi] sub_18%07llX ENTER\n", (unsigned long long)kInitCallees[N]); fflush(stdout);
     __int64 r = g_initOrig[N](a, b, c, dd, e, f, g, h);
-    tprintf("[pi] sub_18%llX RETURNED = 0x%llX\n", (unsigned long long)kInitCallees[N], (unsigned long long)r); fflush(stdout);
+    tprintf("[pi] sub_18%07llX RETURNED = 0x%llX\n", (unsigned long long)kInitCallees[N], (unsigned long long)r); fflush(stdout);
     return r;
 }
 template<size_t... I> static std::array<InitCallee_t, sizeof...(I)> MakeInitThunks(std::index_sequence<I...>) { return {{ &InitCalleeThunk<I>... }}; }
@@ -1607,7 +1669,7 @@ static __int64 __fastcall Sub951FAD0_Detour(void* a, void* b, void* c, void* dd)
 {
     uintptr_t vtbl = *(uintptr_t*)a;
     uintptr_t vfn = *(uintptr_t*)(vtbl + 64);
-    tprintf("[re] rebuildEverything ENTER this=%p  vtbl-rva=0x%llX  vcall[+0x40]=sub_18%llX\n",
+    tprintf("[re] rebuildEverything ENTER this=%p  vtbl-rva=0x%llX  vcall[+0x40]=sub_18%07llX\n",
         a, (unsigned long long)(vtbl - g_reBase), (unsigned long long)(vfn - g_reBase)); fflush(stdout);
     __int64 r = g_sub951FAD0Orig(a, b, c, dd);
     tprintf("[re] rebuildEverything RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
@@ -1807,9 +1869,9 @@ void InstallPhysicsHooks(uintptr_t base)
     {
         void* t = (void*)(base + kRegTypeCallees[i]);
         if (MH_CreateHook(t, (void*)g_regTypeThunks[i], (LPVOID*)&g_regTypeOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
-            tprintf("[rtc] hooked %s (sub_18%llX) @ %p\n", kRegTypeNames[i], (unsigned long long)kRegTypeCallees[i], t);
+            tprintf("[rtc] hooked %s (sub_18%07llX) @ %p\n", kRegTypeNames[i], (unsigned long long)kRegTypeCallees[i], t);
         else
-            tprintf("[rtc] FAILED to hook sub_18%llX @ %p\n", (unsigned long long)kRegTypeCallees[i], t);
+            tprintf("[rtc] FAILED to hook sub_18%07llX @ %p\n", (unsigned long long)kRegTypeCallees[i], t);
     }
 #endif
     // [hrs] passthru-trace the 3 hkReflect calls in the Register Types path (rebuildEverything's clear/insert + fireCallbacks)
@@ -1836,9 +1898,9 @@ void InstallPhysicsHooks(uintptr_t base)
     {
         void* t = (void*)(base + kReCallees[i]);
         if (MH_CreateHook(t, (void*)g_reThunks[i], (LPVOID*)&g_reOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
-            tprintf("[re] hooked %s (sub_18%llX) @ %p\n", kReNames[i], (unsigned long long)kReCallees[i], t);
+            tprintf("[re] hooked %s (sub_18%07llX) @ %p\n", kReNames[i], (unsigned long long)kReCallees[i], t);
         else
-            tprintf("[re] FAILED to hook %s (sub_18%llX) @ %p\n", kReNames[i], (unsigned long long)kReCallees[i], t);
+            tprintf("[re] FAILED to hook %s (sub_18%07llX) @ %p\n", kReNames[i], (unsigned long long)kReCallees[i], t);
     }
 #endif
     // [pi] trace direct callees of CPhysWorldImplBase::Init (Init-specific list, ungated always-print). Flip to #if 1
@@ -1849,9 +1911,9 @@ void InstallPhysicsHooks(uintptr_t base)
     {
         void* t = (void*)(base + kInitCallees[i]);
         if (MH_CreateHook(t, (void*)g_initThunks[i], (LPVOID*)&g_initOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
-            tprintf("[pi] hooked sub_18%llX @ %p\n", (unsigned long long)kInitCallees[i], t);
+            tprintf("[pi] hooked sub_18%07llX @ %p\n", (unsigned long long)kInitCallees[i], t);
         else
-            tprintf("[pi] skip sub_18%llX (already hooked / failed) @ %p\n", (unsigned long long)kInitCallees[i], t);
+            tprintf("[pi] skip sub_18%07llX (already hooked / failed) @ %p\n", (unsigned long long)kInitCallees[i], t);
     }
 
     void* sfad0 = (void*)(base + 0x951FAD0);   // rebuildEverything -- dedicated detour resolves vcall[+0x40] (crash site)
@@ -1901,9 +1963,9 @@ void InstallPhysicsHooks(uintptr_t base)
     {
         void* t = (void*)(base + kHnwCallees[i].rva);
         if (MH_CreateHook(t, (void*)g_hnwThunks[i], (LPVOID*)&g_hnwOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
-            tprintf("[hw] hooked sub_18%llX @ %p\n", (unsigned long long)kHnwCallees[i].rva, t);
+            tprintf("[hw] hooked sub_18%07llX @ %p\n", (unsigned long long)kHnwCallees[i].rva, t);
         else
-            tprintf("[hw] FAILED/dup sub_18%llX @ %p\n", (unsigned long long)kHnwCallees[i].rva, t);
+            tprintf("[hw] FAILED/dup sub_18%07llX @ %p\n", (unsigned long long)kHnwCallees[i].rva, t);
     }
     void* s5b10 = (void*)(base + 0x9675B10);   // hknpEventMergeAndDispatcher ctor (VM'd) -- reimpl (base ctor + derived vtable/fields)
     if (MH_CreateHook(s5b10, &Sub9675B10_Detour, (LPVOID*)&g_sub9675B10Orig) == MH_OK && MH_EnableHook(s5b10) == MH_OK)
@@ -1960,6 +2022,11 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[rid] hooked sub_188D04A50 reimpl @ %p\n", s4a50);
     else
         tprintf("[rid] FAILED to hook sub_188D04A50 @ %p\n", s4a50);
+    void* s3e10 = (void*)(base + 0x68D3E10);    // EnumerateFiles -- typed hook (3 string args the pool couldn't show)
+    if (MH_CreateHook(s3e10, &EnumFiles_Detour, (LPVOID*)&g_enumFilesOrig) == MH_OK && MH_EnableHook(s3e10) == MH_OK)
+        tprintf("[enf] hooked EnumerateFiles (sub_1868D3E10) @ %p\n", s3e10);
+    else
+        tprintf("[enf] FAILED to hook sub_1868D3E10 @ %p\n", s3e10);
     void* sc450 = (void*)(base + 0x988C450);    // HamsterRandomClass ctor -- reimpl (inner seed() VM body loops)
     if (MH_CreateHook(sc450, &Sub8988C450_Detour, (LPVOID*)&g_sub8988C450Orig) == MH_OK && MH_EnableHook(sc450) == MH_OK)
         tprintf("[rng] hooked HamsterRandomClass ctor reimpl (sub_18988C450) @ %p\n", sc450);
@@ -1979,9 +2046,9 @@ void InstallPhysicsHooks(uintptr_t base)
     {
         void* t = (void*)(base + kDdeCallees[i]);
         if (MH_CreateHook(t, (void*)g_ddeThunks[i], (LPVOID*)&g_ddeOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
-            tprintf("[ddc] hooked sub_18%llX @ %p\n", (unsigned long long)kDdeCallees[i], t);
+            tprintf("[ddc] hooked sub_18%07llX @ %p\n", (unsigned long long)kDdeCallees[i], t);
         else
-            tprintf("[ddc] skip sub_18%llX (already hooked / failed) @ %p\n", (unsigned long long)kDdeCallees[i], t);
+            tprintf("[ddc] skip sub_18%07llX (already hooked / failed) @ %p\n", (unsigned long long)kDdeCallees[i], t);
     }
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
