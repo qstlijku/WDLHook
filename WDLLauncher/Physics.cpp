@@ -874,8 +874,21 @@ static __int64 __fastcall Sub8988C450_Detour(void* thisPtr, void* a2, void* a3, 
 // zero/empty result is visible without having to decode ndVectorProperties here.
 typedef __int64 (__fastcall* EnumFiles_t)(void*, const char*, const char*, const char*, __int64);
 static EnumFiles_t g_enumFilesOrig = nullptr;
+
 static __int64 __fastcall EnumFiles_Detour(void* out, const char* path, const char* ext, const char* pattern, __int64 flags)
 {
+    // SKIP any scan whose path contains "MotorCycle". Safe to return without touching `out`: the caller zeroes the
+    // vector BEFORE calling us (PDB: `handlings.m_properties.m_fullValue = 0; handlings.m_data = 0;`), so it stays
+    // empty -> Begin() == cend() -> the per-file loop body is simply skipped. Return value is ignored by the caller.
+    // Match is case-INSENSITIVE via StrStrIA (shlwapi -- already included here and linked; Engine.cpp uses the wide
+    // twin StrStrIW). Observed paths are lowercased, e.g. "engine/shaders/materialdescriptors/", so an exact-case
+    // test would likely never fire -- swap StrStrIA for strstr if you want it literal.
+    if (path && StrStrIA(path, "MotorCycle"))
+    {
+        tprintf("[enf] t%-5lu d%-2d %*sEnumerateFiles SKIPPED (path contains MotorCycle) path=%s ext=%s\n",
+            GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", path, ext); fflush(stdout);
+        return 0;
+    }
     // NOTE: print the strings DIRECTLY, not via SafeStr -- SafeStr returns a single `static char buf[256]`, so three
     // calls in one tprintf all hand back the SAME pointer and the last one wins (that is why path/ext/pat printed
     // identically in the first run). printf evaluates each %s independently, so direct pointers are correct here.
