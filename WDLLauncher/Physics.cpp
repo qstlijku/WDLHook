@@ -1311,7 +1311,8 @@ static __int64 __fastcall Sub8D078D0_Detour(void* this_, void* router_, void* na
     const char* name = (const char*)name_;
     unsigned char flags = (unsigned char)(uintptr_t)flags_;
 
-    tprintf("[thi] threadInit reimpl (this=%p router=%p name=%s flags=%u) [bypasses VM]\n", this_, router_, name ? name : "?", (unsigned)flags); fflush(stdout);
+    // Fires a lot on worker threads - uncomment if ever needed to debug
+    //tprintf("[thi] threadInit reimpl (this=%p router=%p name=%s flags=%u) [bypasses VM]\n", this_, router_, name ? name : "?", (unsigned)flags); fflush(stdout);
 
     if (flags & 1)
     {
@@ -1394,6 +1395,7 @@ static void* __fastcall TiBlockAlloc_Detour(void* alloc, unsigned long long size
     return r;
 }
 
+/*
 typedef __int64 (__fastcall* Sub9542EA0_t)(void*);
 static Sub9542EA0_t g_sub9542EA0Orig = nullptr;
 static __int64 __fastcall Sub9542EA0_Detour(void* a1)
@@ -1413,7 +1415,7 @@ static __int64 __fastcall Sub9542F40_Detour(void* a1, void* a2, int a3)
     tprintf("[42f] sub_189542F40 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
-
+*/
 // VM thunk sub_188D293F0 -> sub_1A1812100 (router init in threadInit's (a4&2) branch). Confirm hook: orig crashes.
 typedef __int64 (__fastcall* Sub8D293F0_t)(void*, void*, void*, void*, void*);
 static Sub8D293F0_t g_sub8D293F0Orig = nullptr;
@@ -2410,12 +2412,12 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[thi] FAILED to hook sub_188D078D0 @ %p\n", sthi);
     void* sba = (void*)(base + 0x7D81CC0);    // blockAlloc (m_systemAllocator->vtable[+8]); real leaf
     // DISABLED (spam): threadInit/mainInit path resolved; blockAlloc trace flooded ~4k lines/boot.
-#if 0
+    /*
     if (MH_CreateHook(sba, &TiBlockAlloc_Detour, (LPVOID*)&g_tiBlockAllocOrig) == MH_OK && MH_EnableHook(sba) == MH_OK)
         tprintf("[ba] hooked blockAlloc (sub_187D81CC0) @ %p\n", sba);
     else
         tprintf("[ba] FAILED to hook sub_187D81CC0 @ %p\n", sba);
-#endif
+
     void* s42e = (void*)(base + 0x9542EA0);   // threadInit direct callee (real)
     if (MH_CreateHook(s42e, &Sub9542EA0_Detour, (LPVOID*)&g_sub9542EA0Orig) == MH_OK && MH_EnableHook(s42e) == MH_OK)
         tprintf("[42e] hooked sub_189542EA0 @ %p\n", s42e);
@@ -2431,7 +2433,7 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[293] hooked sub_188D293F0 (VM thunk) @ %p\n", s293);
     else
         tprintf("[293] FAILED to hook sub_188D293F0 @ %p\n", s293);
-    /*
+    
     void* s15d = (void*)(base + 0x218150D0);  // hkBaseSystem::initThread (sub_1A18150D0) -- native reimpl (replaces the faulting VM-dispatch TlsGetValue)
     if (MH_CreateHook(s15d, &Sub18150D0_Detour, (LPVOID*)&g_sub18150D0Orig) == MH_OK && MH_EnableHook(s15d) == MH_OK)
         tprintf("[15d] hooked hkBaseSystem::initThread (sub_1A18150D0) -> native reimpl [bypasses VM]\n");
