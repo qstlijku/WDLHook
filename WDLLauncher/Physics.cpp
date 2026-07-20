@@ -338,6 +338,44 @@ static __int64 __fastcall Sub7D5EFB0_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
+static uintptr_t g_reBase;   // module base, for caller-site / vtable-target RVA (used by [init], [reg], [pi], [v9d])
+
+// CURRENT WALL. CPhysWorldImplBase::Init runs a batch of registration calls on the singleton at RVA 0xB540C48:
+//     (*(*qword_18B540C48 + 32))(qword_18B540C48, <id>, 0)     // i.e. vtable[+0x20]
+// with ids 0xABBAB1E4 (2881139172), 0x17422C40, 0x4281E85E/5F, 0x13, 0xC0FB370A, 0x30175129, 0x577FF81E, ...
+// That slot dispatches into a READABLE-relocated VM body (around sub_1A17D6344) which faults at
+//     add rax, [r11 + 0xA0] ; call rax        with r11 == 0   -> AV reading 0x00000000000000A0
+// i.e. the code runs native but depends on an un-bootstrapped VM context pointer (same class as threadInit).
+// Dump the singleton + vtable + slot +0x20 (resolving a jmp thunk) to identify the function to reimpl or skip.
+static void DumpRegSingleton(const char* tag)
+{
+    uintptr_t base = g_reBase;
+    if (!base)
+    {
+        tprintf("[%s] singleton dump skipped (g_reBase not set yet)\n", tag); fflush(stdout);
+        return;
+    }
+    void* singleton = *(void**)(base + 0xB540C48);
+    tprintf("[%s] qword_18B540C48 = %p\n", tag, singleton); fflush(stdout);
+    if (!singleton || IsBadReadPtr(singleton, 8))
+        return;
+    void** vt = *(void***)singleton;
+    tprintf("[%s]   vtable = %p (rva 0x%llX)\n", tag, (void*)vt, (unsigned long long)((uintptr_t)vt - base)); fflush(stdout);
+    if (!vt || IsBadReadPtr(vt, 0x28))
+        return;
+    unsigned char* fn = (unsigned char*)vt[4];   // vtable[+0x20] -- the call that faults
+    uintptr_t rva = (uintptr_t)fn - base;
+    bool inVm = (rva >= 0xBC39000 && rva < 0x21B12800);
+    tprintf("[%s]   vtable[+0x20] = %p (rva 0x%llX)%s\n", tag, (void*)fn, (unsigned long long)rva,
+        inVm ? "  <== IN VM BAND" : ""); fflush(stdout);
+    if (!IsBadReadPtr(fn, 5) && fn[0] == 0xE9)   // jmp rel32 thunk -> resolve the body
+    {
+        int rel = *(int*)(fn + 1);
+        uintptr_t dst = (uintptr_t)fn + 5 + rel;
+        tprintf("[%s]   -> jmp thunk to %p (rva 0x%llX)\n", tag, (void*)dst, (unsigned long long)(dst - base)); fflush(stdout);
+    }
+}
+
 // CPhysWorldImplBase::Init (sub_187E3C7C0) -- the huge Havok world bring-up (final call of CPhysWorldInit).
 // Standalone trace: ENTER with no RETURN = the crash is inside it. Lean.
 typedef __int64 (__fastcall* Sub7E3C7C0_t)(void*, void*, void*, void*);
@@ -345,6 +383,7 @@ static Sub7E3C7C0_t g_sub7E3C7C0Orig = nullptr;
 static __int64 __fastcall Sub7E3C7C0_Detour(void* a1, void* a2, void* a3, void* a4)
 {
     tprintf("[init] CPhysWorldImplBase::Init(this=%p) ENTER (sub_187E3C7C0)\n", a1); fflush(stdout);
+    DumpRegSingleton("init");   // expect vtable[+0x20] = sub_188D04A50 -> thunk into sub_1A17D6320
     g_inInit = true;   // arm the [itr] direct-call trace for Init's first stretch
     __int64 r = g_sub7E3C7C0Orig(a1, a2, a3, a4);
     g_inInit = false;
@@ -553,7 +592,7 @@ static __int64 __fastcall Sub96CAF00_Detour(void* thisPtr, void* b, void* c, voi
     return (__int64)thisPtr;
 }
 
-static uintptr_t g_reBase;   // module base, for caller-site / vtable-target RVA (used by [pi], [v9d])
+// g_reBase declared earlier (above the [init] hook, with DumpRegSingleton)
 
 // sub_188E2F5F0 / sub_188E2F740 = hknpConstraintManager::relocateConstraintBuffer / relocateGroupBuffer -- the last
 // two calls in the hknpConstraintManager ctor (after the [bcm] reimpl). Passthru trace to see if either is a wall.
@@ -689,6 +728,64 @@ static __int64 __fastcall Sub967D530_Detour(void* thisPtr, void* a2, void* a3, v
 
     tprintf("[mts] hknpMultithreadedSimulation ctor reimpl RETURNED\n"); fflush(stdout);
     return (__int64)thisPtr;
+}
+
+// ===================== [reg] singleton vtable[+0x20] probe =====================
+// CURRENT WALL: right after this call (Init+0x4F5) CPhysWorldImplBase::Init runs a BATCH of registration calls
+//   singleton = *(base+0xB540C48);  singleton->vtable[+0x20](singleton, <id>, 0)
+// with ids 0xABBAB1E4, 0x17422C40, 0x4281E85E, 0x4281E85F, 0x13, 0xC0FB370A, 0x30175129, 0x577FF81E, ...
+// That vtable slot is VM-backed -> the first call faults 0xC0000005 at DuniaDemo+0x217D6344 (un-bootstrapped VM).
+// The singleton is runtime-initialized (file value 0) so it can't be resolved statically. This passthru dumps the
+// singleton, its vtable, and slot +0x20 (resolving a jmp-thunk) so we can identify the function to reimpl or skip.
+typedef __int64 (__fastcall* Sub7E3D9C0_t)(void*, void*, void*, void*);
+static Sub7E3D9C0_t g_sub7E3D9C0Orig = nullptr;
+static __int64 __fastcall Sub7E3D9C0_Detour(void* a1, void* a2, void* a3, void* a4)
+{
+    tprintf("[reg] sub_187E3D9C0(%p) ENTER\n", a1); fflush(stdout);
+    __int64 r = g_sub7E3D9C0Orig(a1, a2, a3, a4);
+    tprintf("[reg] sub_187E3D9C0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+
+    DumpRegSingleton("reg");   // fires at Init+0x4F5, immediately before the faulting call series
+    return r;
+}
+
+// ===================== [rid] hkDefaultError::setEnabled (sub_188D04A50 -> VM sub_1A17D6320) reimpl ==============
+// PDB: void hkDefaultError::setEnabled(hkDefaultError* this, int id, hkBool enabled)
+// The singleton qword_18B540C48 is the hkDefaultError handler; this+0x18 = m_disabledAssertIds, this+0x50 = m_lock.
+// It's the Havok ASSERT-SUPPRESSION table: CPhysWorldImplBase::Init calls it via vtable[+0x20] in a batch of 13,
+// all with enabled=0, to disable known-noisy assert ids (0xABBAB1E4, 0x17422C40, 0x4281E85E/5F, 0x13, 0xC0FB370A,
+// 0x30175129, 0x577FF81E, 0x572FB01E, 0xF0345456, 0x01289234, 0x76DD800A, 0xF0FF0005).
+// The VM body is READABLE relocated code that runs native; ONLY the lock resolution faults -- it reads the
+// un-bootstrapped VM globals W = *(base+0x1FEAA151) / V = *(base+0x214E484F) (both 0), so
+// `add rax,[r11+0xA0]; call rax` AVs reading 0xA0. SAME class + SAME fix as threadInit: skip the locks, keep the work.
+//   EnterCriticalSection(&m_lock)                                        <- SKIPPED (VM-global-resolved)
+//   if (enabled)      hkMapBase::remove(&m_disabledAssertIds.m_map, &out, &id);      // sub_188D0DA50
+//   else if (id != 0) hkMapBase::insert(&m_disabledAssertIds, hkMemHeapAllocator(), &id, &one);  // sub_188D0D7B0
+//   LeaveCriticalSection(&m_lock)  [same table, offsets 0xC0/0xC8]       <- SKIPPED
+// NOTE IDA's local naming in the PDB is misleading: its `key` holds the VALUE 1 and `v8` holds the KEY (the id);
+// the actual call is insert(map, alloc, &id, &one). Low risk: worst case on failure is un-suppressed asserts.
+typedef __int64 (__fastcall* Sub8D04A50_t)(void*, int, char, void*);
+static Sub8D04A50_t g_sub8D04A50Orig = nullptr;   // trampoline out-param (unused -- VM body faults on the lock)
+static __int64 __fastcall Sub8D04A50_Detour(void* thisPtr, int id, char flag, void* a4)
+{
+    tprintf("[rid] hkDefaultError::setEnabled reimpl(this=%p id=0x%08X enabled=%d) ENTER\n",
+        thisPtr, (unsigned int)id, (int)flag); fflush(stdout);
+    uintptr_t base = g_reBase;
+    char* t = (char*)thisPtr;
+    __int64 key = (__int64)id;        // movsxd edx -> sign-extended
+    if (flag)
+    {
+        __int64 out = 0;              // out-param (uninitialized local in the original)
+        ((void (__fastcall*)(void*, void*, void*))(base + 0x8D0DA50))(t + 0x18, &out, &key);
+    }
+    else if (id != 0)
+    {
+        __int64 value = 1;
+        void* alloc = ((void* (__fastcall*)())(base + 0x8D3CEC0))();   // hkMemHeapAllocator
+        ((void (__fastcall*)(void*, void*, void*, void*))(base + 0x8D0D7B0))(t + 0x18, alloc, &key, &value);
+    }
+    tprintf("[rid] hkDefaultError::setEnabled reimpl RETURNED\n"); fflush(stdout);
+    return 0;
 }
 typedef __int64 (__fastcall* Sub8E2F740_t)(void*, void*, void*, void*);
 static Sub8E2F740_t g_sub8E2F740Orig = nullptr;
@@ -1332,7 +1429,7 @@ static const std::array<Re_t, kNumRe> g_reThunks = MakeReThunks(std::make_index_
 // Init after the thunk's jmp) AND unnecessary once the list is Init-specific. sub_188DE8600 -> its own [de8] hook.
 // Install is #if 0'd below; enable when tracing Init. Verify any 0x8D/0x686/0x5C entry is truly Init-only before adding.
 static const uintptr_t kInitCallees[] = {
-    0x7D61260, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, 0x7E3D9C0, 0x7D9A530, 0x7E3DDE0, 0x7E3E460,
+    0x7D61260, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, /* 0x7E3D9C0 -> [reg] singleton probe */ 0x7D9A530, 0x7E3DDE0, 0x7E3E460,
     0x7E3E670, 0x7E3E7D0, 0x7E76F70, 0x7E77090, 0x7E771B0, 0x7E772D0, 0x7E773F0, 0x7E77510, 0x8DE8830,
 };
 static const int kNumInit = (int)(sizeof(kInitCallees) / sizeof(kInitCallees[0]));
@@ -1704,6 +1801,16 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[mts] hooked hknpMultithreadedSimulation ctor reimpl (sub_18967D530) @ %p\n", s7d530);
     else
         tprintf("[mts] FAILED to hook sub_18967D530 @ %p\n", s7d530);
+    void* sd9c0 = (void*)(base + 0x7E3D9C0);    // Init+0x4F5 -- probe the singleton whose vtable[+0x20] is the wall
+    if (MH_CreateHook(sd9c0, &Sub7E3D9C0_Detour, (LPVOID*)&g_sub7E3D9C0Orig) == MH_OK && MH_EnableHook(sd9c0) == MH_OK)
+        tprintf("[reg] hooked singleton probe (sub_187E3D9C0) @ %p\n", sd9c0);
+    else
+        tprintf("[reg] FAILED to hook sub_187E3D9C0 @ %p\n", sd9c0);
+    void* s4a50 = (void*)(base + 0x8D04A50);    // singleton vtable[+0x20] registration -- VM'd lock, reimpl
+    if (MH_CreateHook(s4a50, &Sub8D04A50_Detour, (LPVOID*)&g_sub8D04A50Orig) == MH_OK && MH_EnableHook(s4a50) == MH_OK)
+        tprintf("[rid] hooked sub_188D04A50 reimpl @ %p\n", s4a50);
+    else
+        tprintf("[rid] FAILED to hook sub_188D04A50 @ %p\n", s4a50);
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
 #if 0
