@@ -863,6 +863,107 @@ static __int64 __fastcall Sub8988C450_Detour(void* thisPtr, void* a2, void* a3, 
     return (__int64)thisPtr;              // the wrapper returns `this`
 }
 
+// ===================== [ade] hknpEventDispatcher::allocateEntry (sub_189675750) reimpl ========================
+// PDB: hknpEventDispatcher::Entry* hknpEventDispatcher::allocateEntry(hknpEventDispatcher* this, hknpBodyId id)
+// CURRENT WALL. sub_189675750 is a VM thunk -> 0x21999400 -> jmp 0xDF10434, and THAT body is obfuscated
+// (pushfq / ror / masked constants / self-cancelling lea) -> faults at the un-bootstrapped VM dispatch 0x21B2B9F4.
+// Chain: CPhysWorldImplBase::Init+0x99F -> sub_188DE2580(singleton,0,0xFFFFFF) -> [singleton+0xA88] is the
+// hknpEventDispatcher -> sub_1896751B0 (get-or-create the GLOBAL signal for an event type) -> allocateEntry.
+//
+// Layout (DuniaDemo.h, every offset cross-checked against the retail disasm of sub_1896751B0):
+//   hknpEventDispatcher: m_firstFreeElement u16 @0x38, m_entryPool hkArray @0x40 (m_data@0x40, m_size@0x48,
+//                        m_capacityAndFlags@0x4C), m_bodyToEntryMap hkArray<u16> @0x50 (m_data@0x50),
+//                        m_globalEntry u16 @0x60
+//   Entry (16 bytes):    m_nextEntry u16 @0x00, m_eventType u16 @0x02, m_signal @0x08
+// 0xFFFF = the free-list/end sentinel; id.m_serialAndIndex == 0xFFFFFF selects the GLOBAL chain.
+// Deps are readable + already used elsewhere: hkMemHeapAllocator sub_188D3CEC0, hkArrayUtil::_reserve sub_188D27670.
+typedef void* (__fastcall* HkMemHeapAlloc_t)();
+typedef void  (__fastcall* HkArrayReserve_t)(void*, void**, int, int);
+typedef __int64 (__fastcall* Sub9675750_t)(void*, unsigned int, void*, void*);
+static Sub9675750_t g_sub9675750Orig = nullptr;   // trampoline out-param (unused -- VM body faults)
+static __int64 __fastcall Sub9675750_Detour(void* thisPtr, unsigned int id, void* a3, void* a4)
+{
+    char* t = (char*)thisPtr;
+    unsigned short  firstFree = *(unsigned short*)(t + 0x38);
+    char**          pData     = (char**)(t + 0x40);
+    int*            pSize     = (int*)(t + 0x48);
+    unsigned int*   pCapFlags = (unsigned int*)(t + 0x4C);
+    unsigned short* pGlobal   = (unsigned short*)(t + 0x60);
+    tprintf("[ade] t%-5lu d%-2d %*sallocateEntry reimpl(this=%p id=0x%06X) ENTER  firstFree=0x%04X size=%d\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", thisPtr, id & 0xFFFFFF, firstFree, *pSize); fflush(stdout);
+
+    unsigned short index;      // index of the entry we hand back (the PDB reuses m_firstFreeElement for this)
+    char* entry;
+    if (firstFree == 0xFFFF)
+    {
+        // free list empty -> grow the pool by one
+        int size = *pSize;
+        index = (unsigned short)size;
+        void* alloc = ((HkMemHeapAlloc_t)(g_reBase + 0x8D3CEC0))();
+        int cap = (int)(*pCapFlags & 0x3FFFFFFF);
+        int want = size + 1;
+        if (cap < size + 1)
+        {
+            int dbl = 2 * cap;
+            if (want < dbl)
+                want = dbl;
+            ((HkArrayReserve_t)(g_reBase + 0x8D27670))(alloc, (void**)pData, want, 16);   // 16 = sizeof(Entry)
+        }
+        entry = *pData + (size_t)size * 16;    // re-read m_data: _reserve may have reallocated it
+        if (entry)
+            *(unsigned long long*)(entry + 8) = 0;   // m_signal.m_slots.m_ptrAndInt = 0
+        ++*pSize;
+    }
+    else
+    {
+        // pop the free list
+        index = firstFree;
+        entry = *pData + (size_t)firstFree * 16;
+        *(unsigned short*)(t + 0x38) = *(unsigned short*)entry;   // m_firstFreeElement = entry->m_nextEntry
+    }
+
+    if ((id & 0xFFFFFF) == 0xFFFFFF)
+    {
+        // global chain
+        *(unsigned short*)entry = *pGlobal;     // entry->m_nextEntry = m_globalEntry
+        *pGlobal = index;
+    }
+    else
+    {
+        // per-body chain: m_bodyToEntryMap[id & 0xFFFFFF]
+        unsigned short* map = *(unsigned short**)(t + 0x50);
+        unsigned int slot = id & 0xFFFFFF;
+        *(unsigned short*)entry = map[slot];     // entry->m_nextEntry = map[slot]
+        map[slot] = index;
+    }
+
+    tprintf("[ade] t%-5lu d%-2d %*sallocateEntry reimpl RETURNED entry=%p index=0x%04X\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", entry, index); fflush(stdout);
+    return (__int64)entry;
+}
+
+// sub_188DE2580 = hknpWorld::getEventSignal(hknpWorld* this, hknpEventType::Enum eventType, hknpBodyId id)
+//   m_ptr = this->m_eventDispatcher.m_ptr;                        // hknpWorld::m_eventDispatcher @ +0xA88
+//   return (id & 0xFFFFFF) == 0xFFFFFF ? getSignal(m_ptr, eventType)        // sub_1896751B0, global
+//                                      : getSignal(m_ptr, eventType, id);   // sub_189675210, per-body
+// Init+0x99F calls it as getEventSignal(ms_hkWorld, 0, 0xFFFFFF) -> the GLOBAL path.
+// All three of these wrappers are READABLE native code -- only allocateEntry below is VM'd. This one was UNHOOKED,
+// which is why the crash surfaced as a raw [veh] dump instead of an ENTER-with-no-RETURN. Passthru to close that
+// blind spot.
+typedef __int64 (__fastcall* Sub8DE2580_t)(void*, unsigned int, unsigned int, void*);
+static Sub8DE2580_t g_sub8DE2580Orig = nullptr;
+static __int64 __fastcall Sub8DE2580_Detour(void* world, unsigned int eventType, unsigned int bodyId, void* a4)
+{
+    tprintf("[ade] t%-5lu d%-2d %*sgetEventSignal(world=%p eventType=%u id=0x%06X) ENTER\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", world, eventType, bodyId & 0xFFFFFF); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_sub8DE2580Orig(world, eventType, bodyId, a4);
+    --g_chkDepth;
+    tprintf("[ade] t%-5lu d%-2d %*sgetEventSignal RETURNED = 0x%llX (&Entry::m_signal)\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 // sub_1868D3E10 = EnumerateFiles(ndVector<ndStringBase<char>>* out, const char* path, const char* ext,
 //                                const char* pattern, int flags)
 // PDB call site in CPhysVehicleManagerBase::Init's 16-iteration loop:
@@ -2045,6 +2146,16 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[rid] hooked sub_188D04A50 reimpl @ %p\n", s4a50);
     else
         tprintf("[rid] FAILED to hook sub_188D04A50 @ %p\n", s4a50);
+    void* s5750 = (void*)(base + 0x9675750);    // hknpEventDispatcher::allocateEntry -- VM'd (obfuscated), reimpl
+    if (MH_CreateHook(s5750, &Sub9675750_Detour, (LPVOID*)&g_sub9675750Orig) == MH_OK && MH_EnableHook(s5750) == MH_OK)
+        tprintf("[ade] hooked allocateEntry reimpl (sub_189675750) @ %p\n", s5750);
+    else
+        tprintf("[ade] FAILED to hook sub_189675750 @ %p\n", s5750);
+    void* s2580 = (void*)(base + 0x8DE2580);    // Init+0x99F caller -- was UNHOOKED, hence the blind [veh] crash
+    if (MH_CreateHook(s2580, &Sub8DE2580_Detour, (LPVOID*)&g_sub8DE2580Orig) == MH_OK && MH_EnableHook(s2580) == MH_OK)
+        tprintf("[ade] hooked sub_188DE2580 passthru @ %p\n", s2580);
+    else
+        tprintf("[ade] FAILED to hook sub_188DE2580 @ %p\n", s2580);
     void* s3e10 = (void*)(base + 0x68D3E10);    // EnumerateFiles -- typed hook (3 string args the pool couldn't show)
     if (MH_CreateHook(s3e10, &EnumFiles_Detour, (LPVOID*)&g_enumFilesOrig) == MH_OK && MH_EnableHook(s3e10) == MH_OK)
         tprintf("[enf] hooked EnumerateFiles (sub_1868D3E10) @ %p\n", s3e10);
