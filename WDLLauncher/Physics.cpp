@@ -1765,8 +1765,75 @@ static const std::array<Re_t, kNumRe> g_reThunks = MakeReThunks(std::make_index_
 // Install is #if 0'd below; enable when tracing Init. Verify any 0x8D/0x686/0x5C entry is truly Init-only before adding.
 static const uintptr_t kInitCallees[] = {
     0x7D61260, 0x8DEB560, 0x7D853A0, 0x8DDD970, 0x8D0C850, /* 0x7E3D9C0 -> [reg] singleton probe */ 0x7D9A530, /* 0x7E3DDE0 -> [dde] standalone + gated [ddc] pool */ 0x7E3E460,
-    0x7E3E670, 0x7E3E7D0, 0x7E76F70, 0x7E77090, 0x7E771B0, 0x7E772D0, 0x7E773F0, 0x7E77510, 0x8DE8830,
+    // 0x7E3E670 / 0x7E3E7D0 / 0x7E76F70 / 0x7E77090 / 0x7E771B0 / 0x7E772D0 / 0x7E773F0 / 0x7E77510
+    // -> moved to the [sig] pool below (signal-subscribe block, 4 args incl. a debugName string)
+    0x8DE8830,
+    // --- Init tail block (+0xB79 .. +0x1040), previously unhooked. Counts below are XREFS in the whole binary,
+    // used to keep engine-wide helpers OUT of this eagerly-installed pool (that is what caused the old 0x138 AV).
+    0x8DD62B0,   // 15 xrefs -- ctor-ish, called x5 here on &v90
+    0x8D19080,   // 18 xrefs -- (v92+1, &v73)
+    0x8DE99C0,   // 17 xrefs -- (*(singleton+2600), &v73, &v90), called x5
+    0x8DEA1F0,   // 20 xrefs -- (*(singleton+2608), &v73, &v90), called x3
+    0x8E2A350,   // 18 xrefs -- (&v90, 1)
+    0x8E2A170,   //  4 xrefs -- (&v91.., v64, v65, 3)
+    0x8E2A470,   //  4 xrefs -- (&v90, 4)
+    // Generic engine-wide Havok helpers. These are the documented risk for an EAGERLY-installed pool (the old
+    // 0x138 AV) and will also flood the log -- enabled anyway for full coverage; comment out individually if one
+    // crashes early or drowns the output.
+    0x8D15FF0,   // 617 xrefs (!) -- generic dtor, called many times in this block alone
+    0x8D0D340,   // 390 xrefs     -- generic dtor
+    0x8D0C7F0,   // 110 xrefs     -- generic (hkPropertyBag-ish; cf. 0x8D0C850 which IS hooked, Init-specific)
+    0x8D6C990,   //  29 xrefs     -- (v52+824, &v91.., 24)
 };
+
+// ===================== [sig] the signal-subscribe block in CPhysWorldImplBase::Init (+0x9BB .. +0xB4F) ==========
+// All 8 share the shape  (signalOrSlot, owner, callbackFn, const char* debugName)  -- from the PDB:
+//   sub_187E3E670(getEventSignal(world,  0, 0xFFFFFF), a1,  sub_187E3E6E0, "NomadPhysWorld");
+//   sub_187E3E7D0(getEventSignal(world,  1, 0xFFFFFF), v71, sub_187D82700, "CHkPhysContactListener");
+//   sub_187E3E7D0(getEventSignal(world,  2, 0xFFFFFF), v71, sub_187D82700, "CHkPhysContactListener");
+//   sub_187E3E670(getEventSignal(world, 25, 0xFFFFFF), a1,  sub_187E3E840, "NomadPhysWorld");
+//   sub_187E3E670(getEventSignal(world, 13, 0xFFFFFF), a1,  sub_187E3EA40, "NomadPhysWorld");
+//   sub_187E76F70(world+2504, a1, sub_187E52720, "CPhysWorldImplBase");   // +0x9C8
+//   sub_187E77090(world+2512, a1, sub_187E528C0, "CPhysWorldImplBase");   // +0x9D0
+//   sub_187E771B0(world+2400, a1, sub_187E52C00, "CPhysWorldImplBase");   // +0x960
+//   sub_187E771B0(world+2408, a1, sub_187E52CB0, "CPhysWorldImplBase");   // +0x968
+//   sub_187E772D0(world+2248, a1, sub_187E53380, "CPhysWorldImplBase");   // +0x8C8
+//   sub_187E773F0(world+2312, a1, sub_187E533D0, "CPhysWorldImplBase");   // +0x908
+//   sub_187E77510(world+2424, a1, sub_187E53420, "CPhysWorldImplBase");   // +0x978
+// The first five subscribe to hknpEventSignals obtained via [ade] getEventSignal; the rest attach to slots at
+// fixed offsets in the world/singleton. Dedicated pool (not [pi]) so we can print the callback as an RVA and the
+// debugName string -- that identifies WHICH subscription each call is without cross-referencing IDA.
+// 8 params forwarded (they take 4) so nothing is truncated -- see [[pooled-thunk-arg-truncation]].
+static const uintptr_t kSigCallees[] = {
+    0x7E3E670,   // subscribe, "NomadPhysWorld"          (x3: eventType 0, 25, 13)
+    0x7E3E7D0,   // subscribe, "CHkPhysContactListener"  (x2: eventType 1, 2)
+    0x7E76F70,   // slot @ world+2504
+    0x7E77090,   // slot @ world+2512
+    0x7E771B0,   // slot @ world+2400 and +2408
+    0x7E772D0,   // slot @ world+2248
+    0x7E773F0,   // slot @ world+2312
+    0x7E77510,   // slot @ world+2424
+};
+static const int kNumSig = (int)(sizeof(kSigCallees) / sizeof(kSigCallees[0]));
+typedef __int64 (__fastcall* SigFn_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static SigFn_t g_sigOrig[kNumSig];
+template<int N> static __int64 __fastcall SigThunk(void* a, void* b, void* c, void* dd,
+                                                    void* e, void* f, void* g, void* h)
+{
+    unsigned long long rva = (unsigned long long)kSigCallees[N];
+    uintptr_t cbRva = g_reBase ? ((uintptr_t)c - g_reBase) : 0;
+    tprintf("[sig] t%-5lu d%-2d %*ssub_18%07llX(slot=%p owner=%p cb=DuniaDemo+0x%llX name=%s) ENTER\n",
+            GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", rva, a, b,
+            (unsigned long long)cbRva, (const char*)dd); fflush(stdout);
+    ++g_chkDepth;
+    __int64 r = g_sigOrig[N](a, b, c, dd, e, f, g, h);
+    --g_chkDepth;
+    tprintf("[sig] t%-5lu d%-2d %*ssub_18%07llX RETURNED = 0x%llX\n",
+            GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", rva, (unsigned long long)r); fflush(stdout);
+    return r;
+}
+template<size_t... I> static std::array<SigFn_t, sizeof...(I)> MakeSigThunks(std::index_sequence<I...>) { return {{ &SigThunk<I>... }}; }
+static const std::array<SigFn_t, kNumSig> g_sigThunks = MakeSigThunks(std::make_index_sequence<kNumSig>{});
 static const int kNumInit = (int)(sizeof(kInitCallees) / sizeof(kInitCallees[0]));
 // 8 params so callees taking 5-8 args don't get their stack-passed args (5th+) truncated (see the setupModifierManager
 // [smm] fix / [[pooled-thunk-arg-truncation]]). Over-supplying args to a <8-arg callee is harmless -- Win64 is
@@ -2040,6 +2107,16 @@ void InstallPhysicsHooks(uintptr_t base)
             tprintf("[pi] skip sub_18%07llX (already hooked / failed) @ %p\n", (unsigned long long)kInitCallees[i], t);
     }
 
+    // [sig] the signal-subscribe block at Init+0x9BB..+0xB4F -- prints the callback RVA + the debugName string
+    for (int i = 0; i < kNumSig; ++i)
+    {
+        void* t = (void*)(base + kSigCallees[i]);
+        if (MH_CreateHook(t, (void*)g_sigThunks[i], (LPVOID*)&g_sigOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[sig] hooked sub_18%07llX @ %p\n", (unsigned long long)kSigCallees[i], t);
+        else
+            tprintf("[sig] skip sub_18%07llX (already hooked / failed) @ %p\n", (unsigned long long)kSigCallees[i], t);
+    }
+
     void* sfad0 = (void*)(base + 0x951FAD0);   // rebuildEverything -- dedicated detour resolves vcall[+0x40] (crash site)
     if (MH_CreateHook(sfad0, &Sub951FAD0_Detour, (LPVOID*)&g_sub951FAD0Orig) == MH_OK && MH_EnableHook(sfad0) == MH_OK)
         tprintf("[re] hooked rebuildEverything (sub_18951FAD0) @ %p\n", sfad0);
@@ -2083,6 +2160,11 @@ void InstallPhysicsHooks(uintptr_t base)
     else
         tprintf("[ws] FAILED to hook sub_188DDBBA0 @ %p\n", sdbb);
     // [hw] hknpWorld ctor direct callees (sub-object ctors/factories/registers) -- find the next inner wall after [ws]
+    // DISABLED: the hknpWorld ctor RETURNS now (all its VM'd sub-object ctors are reimpl'd: [50b]/[ws]/[emd]/[dm]/
+    // [bcm]/[mts]), so this 51-entry passthru pool is pure log volume (~200 lines/run). The reimpls themselves are
+    // separate standalone hooks and stay enabled -- only the trace pool is off. Re-enable if a NEW wall appears
+    // inside the world ctor.
+#if 0
     for (int i = 0; i < kNumHnw; ++i)
     {
         void* t = (void*)(base + kHnwCallees[i].rva);
@@ -2091,6 +2173,7 @@ void InstallPhysicsHooks(uintptr_t base)
         else
             tprintf("[hw] FAILED/dup sub_18%07llX @ %p\n", (unsigned long long)kHnwCallees[i].rva, t);
     }
+#endif
     void* s5b10 = (void*)(base + 0x9675B10);   // hknpEventMergeAndDispatcher ctor (VM'd) -- reimpl (base ctor + derived vtable/fields)
     if (MH_CreateHook(s5b10, &Sub9675B10_Detour, (LPVOID*)&g_sub9675B10Orig) == MH_OK && MH_EnableHook(s5b10) == MH_OK)
         tprintf("[emd] hooked hknpEventMergeAndDispatcher ctor reimpl (sub_189675B10) @ %p\n", s5b10);
@@ -2176,7 +2259,13 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[dde] hooked CPhysVehicleManagerBase::Init (sub_187E3DDE0) @ %p\n", sdde0);
     else
         tprintf("[dde] FAILED to hook sub_187E3DDE0 @ %p\n", sdde0);
-    for (int i = 0; i < kNumDde; ++i)           // gated callee trace -- only logs while inside [dde]
+    // [ddc] gated callee trace -- only logged while inside [dde].
+    // DISABLED: CPhysVehicleManagerBase::Init RETURNS now (the [rng] HamsterRandomClass reimpl cleared the
+    // InitialisePerlin hang), so this pool has served its purpose and was the single biggest log source
+    // (~6000 lines/run even after trimming the two flooders). The [dde] gate hook itself stays as a cheap
+    // 2-line milestone marker. Re-enable if that Init ever stalls again.
+#if 0
+    for (int i = 0; i < kNumDde; ++i)
     {
         void* t = (void*)(base + kDdeCallees[i]);
         if (MH_CreateHook(t, (void*)g_ddeThunks[i], (LPVOID*)&g_ddeOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
@@ -2184,6 +2273,7 @@ void InstallPhysicsHooks(uintptr_t base)
         else
             tprintf("[ddc] skip sub_18%07llX (already hooked / failed) @ %p\n", (unsigned long long)kDdeCallees[i], t);
     }
+#endif
     void* sc85 = (void*)(base + 0x8D0C850);   // 5th VM thunk in Init (-> sub_1A2180CEE0)
     // DISABLED: moved into the [pi] Init-callee list (0x8D0C850); avoid double-hook when [pi] is enabled.
 #if 0
