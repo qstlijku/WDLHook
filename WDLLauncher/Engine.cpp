@@ -175,7 +175,7 @@ static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* 
                                              void* a5, void* a6, void* a7, void* a8)
 {
     void* ret = _ReturnAddress();
-    tprintf("[799] sub_186799130(%p, %p, %p, %p) ENTER  caller=%p (+0x%llX)\n",
+    tprintf("[InitializeSoundSystem] sub_186799130(%p, %p, %p, %p) ENTER  caller=%p (+0x%llX)\n",
             a1, a2, a3, a4, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
     // GetSoundSystem() (sub_187F12760) returns qword_18B5101C0. This function makes 3 virtual calls on it:
     //   v7->Initialize(v7, &parameters->platformContext)   = vtbl[+0x00]  (slot 0)
@@ -183,6 +183,7 @@ static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* 
     //   CBinkRenderResourceBase::ms_enableSound = v9->IsAvailable(v9)   = vtbl[+0x58]  (slot 11)
     // Dump those 3 targets so a virtualized one is visible BEFORE it faults. sub_<VA> uses the full VA
     // (0x180000000 + rva) so VM-band targets render correctly (sub_1A1......, not sub_182.......).
+    /*
     if (Imagebase)
     {
         void* soundSystem = *(void**)(Imagebase + 0xB5101C0);   // qword_18B5101C0
@@ -210,9 +211,9 @@ static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* 
                 }
             }
         }
-    }
+    }*/
     __int64 r = g_sub6799130Orig(a1, a2, a3, a4, a5, a6, a7, a8);
-    tprintf("[799] sub_186799130 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    tprintf("[InitializeSoundSystem] sub_186799130 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
 
