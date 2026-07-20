@@ -1843,9 +1843,14 @@ static InitCallee_t g_initOrig[kNumInit];
 template<int N> static __int64 __fastcall InitCalleeThunk(void* a, void* b, void* c, void* dd,
                                                           void* e, void* f, void* g, void* h)
 {
-    tprintf("[pi] sub_18%07llX ENTER\n", (unsigned long long)kInitCallees[N]); fflush(stdout);
+    unsigned long long rva = (unsigned long long)kInitCallees[N];
+    tprintf("[pi] t%-5lu d%-2d %*ssub_18%07llX ENTER\n",
+            GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", rva); fflush(stdout);
+    ++g_chkDepth;
     __int64 r = g_initOrig[N](a, b, c, dd, e, f, g, h);
-    tprintf("[pi] sub_18%07llX RETURNED = 0x%llX\n", (unsigned long long)kInitCallees[N], (unsigned long long)r); fflush(stdout);
+    --g_chkDepth;
+    tprintf("[pi] t%-5lu d%-2d %*ssub_18%07llX RETURNED = 0x%llX\n",
+            GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", rva, (unsigned long long)r); fflush(stdout);
     return r;
 }
 template<size_t... I> static std::array<InitCallee_t, sizeof...(I)> MakeInitThunks(std::index_sequence<I...>) { return {{ &InitCalleeThunk<I>... }}; }
