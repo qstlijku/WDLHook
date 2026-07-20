@@ -1797,14 +1797,14 @@ void Misc::Initialize()
     //HookOffset3(0x966BFB0 + 0xA00, &DeactMgrCtor_Reimpl, reinterpret_cast<LPVOID*>(&g_deactMgrOrig)); // sub_18966C9B0
 
     // [rcb] relocateConstraintBuffer (sub_188E2F5F0) normal-run trace (passthru -- runs its real body). Offset = RVA - 0xA00.
-    HookOffset3(0x8E2EBF0 + 0xA00, &RelocConstraint_Detour, reinterpret_cast<LPVOID*>(&g_relocConstraintOrig)); // sub_188E2F5F0
+    //HookOffset3(0x8E2EBF0 + 0xA00, &RelocConstraint_Detour, reinterpret_cast<LPVOID*>(&g_relocConstraintOrig)); // sub_188E2F5F0
     // [cr] canRelocateBuffer reimpl VALIDATION: replace the real one with "return true"; relocateConstraintBuffer above
     // runs its real body calling THIS. If physics still works normally, the reimpl is correct -> already in Physics.cpp.
-    HookOffset3(0x8E2DCA0 + 0xA00, &CanReloc_Detour, reinterpret_cast<LPVOID*>(&g_canRelocOrig)); // sub_188E2E6A0
+    //HookOffset3(0x8E2DCA0 + 0xA00, &CanReloc_Detour, reinterpret_cast<LPVOID*>(&g_canRelocOrig)); // sub_188E2E6A0
 
     // [799] sound-system vtable capture (normal run) -- ground truth to diff against the launcher's [799].
     // Offset = RVA - 0xA00 (RVA 0x6799130). Comment out for a WDLLauncher run (DE_Hook loads there too -> double-hook).
-    HookOffset3(0x6798730 + 0xA00, &Sub6799130_Detour, reinterpret_cast<LPVOID*>(&g_sub6799130Orig)); // sub_186799130
+    //HookOffset3(0x6798730 + 0xA00, &Sub6799130_Detour, reinterpret_cast<LPVOID*>(&g_sub6799130Orig)); // sub_186799130
     /*
     auto base = Imagebase;
     struct { void* addr; void* det; LPVOID* orig; const char* nm; } BSC[] = {
