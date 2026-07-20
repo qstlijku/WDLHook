@@ -2123,11 +2123,12 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[bsi] hooked hkBaseSystem::init (sub_188D3BF10) @ %p\n", sbsi);
     else
         tprintf("[bsi] FAILED to hook sub_188D3BF10 @ %p\n", sbsi);
+    /*
     void* s3c0 = (void*)(base + 0x8D3C030);   // .text thunk -> sub_1A18150D0 (passthru, like [15d])
     if (MH_CreateHook(s3c0, &Sub8D3C030_Detour, (LPVOID*)&g_sub8D3C030Orig) == MH_OK && MH_EnableHook(s3c0) == MH_OK)
         tprintf("[3c0] hooked sub_188D3C030 (thunk to sub_1A18150D0) @ %p\n", s3c0);
     else
-        tprintf("[3c0] FAILED to hook sub_188D3C030 @ %p\n", s3c0);
+        tprintf("[3c0] FAILED to hook sub_188D3C030 @ %p\n", s3c0);*/
     // The remaining hkBaseSystem::init direct callees (passthru traces to follow the flow past initThread).
     struct { void* addr; void* det; LPVOID* orig; const char* nm; } BSC[] = {
         { (void*)(base + 0x957A490), (void*)&Sub957A490_Detour, (LPVOID*)&g_sub957A490Orig, "sub_18957A490" },
@@ -2430,11 +2431,12 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[293] hooked sub_188D293F0 (VM thunk) @ %p\n", s293);
     else
         tprintf("[293] FAILED to hook sub_188D293F0 @ %p\n", s293);
+    /*
     void* s15d = (void*)(base + 0x218150D0);  // hkBaseSystem::initThread (sub_1A18150D0) -- native reimpl (replaces the faulting VM-dispatch TlsGetValue)
     if (MH_CreateHook(s15d, &Sub18150D0_Detour, (LPVOID*)&g_sub18150D0Orig) == MH_OK && MH_EnableHook(s15d) == MH_OK)
         tprintf("[15d] hooked hkBaseSystem::initThread (sub_1A18150D0) -> native reimpl [bypasses VM]\n");
     else
-        tprintf("[15d] FAILED to hook sub_1A18150D0 @ %p\n", s15d);
+        tprintf("[15d] FAILED to hook sub_1A18150D0 @ %p\n", s15d);*/
     InstallInitTrace(base);   // [itr]: bracket the 6 direct calls in Init's first stretch (gated on g_inInit)
     void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
     if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)

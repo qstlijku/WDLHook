@@ -216,6 +216,58 @@ static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
+// [snd] the 3 sound-system vtable targets, captured from a NORMAL run via the Misc.cpp [799] probe:
+//   soundSystem (qword_18B5101C0) = 0x...403BC0, vtbl = 0x7FFE8DFC0B90
+//     vtbl[+0x00] Initialize      = sub_187F44040
+//     vtbl[+0x10] InitializeComm  = sub_187F470E0
+//     vtbl[+0x58] IsAvailable     = sub_187F66350
+// Hooked by CONCRETE ADDRESS rather than through the vtable, so installation does not depend on soundSystem or
+// its vtable being readable at hook time (GetSoundSystem lazily constructs the singleton -- reading the global
+// early gives NULL in BOTH contexts, which is what misled us once already).
+// Whichever of these logs ENTER with no RETURNED is the fault. If one is a VM thunk the [snd] target dump will
+// show it. CAVEAT: this assumes the launcher's soundSystem uses the SAME vtable as the normal run -- if all three
+// stay silent, that assumption is wrong (different object/type), and sub_187F12760 (GetSoundSystem) should be
+// hooked to print the actual pointer + vtable under manual load.
+// The concrete type is CSoundSystem (it implements the ISoundSystem interface); vtable @ RVA 0xA630B90.
+// Slots confirmed by data-ref: Initialize 0xA630B90 (+0x00), InitializeComm 0xA630BA0 (+0x10),
+// IsAvailable 0xA630BE8 (+0x58) -- consecutive entries in that one vtable, matching the decompile's offsets.
+//
+// 0x7F470E0 InitializeComm is NOT HOOKED. IDA: nullsub_25064, a COLLAPSED 1-BYTE function (bare ret) -- i.e.
+// CSoundSystem never implements that ISoundSystem slot. Two reasons to skip it: it provably cannot fault, and
+// MinHook writes a 5-byte jmp rel32, so patching a 1-byte function spills 4 bytes past its end (here only
+// `align 10h` padding before nullsub_25065 @ 0x7F470F0, so harmless, but the trampoline would be built from a
+// lone `ret`). It is NOT ICF-folded (exactly 1 data ref), so it is genuinely CSoundSystem's own empty slot.
+// GENERAL RULE: never MinHook a nullsub -- hook its caller instead.
+
+// CSoundSystem::Initialize (sub_187F44040) -- the only one of the three with a real body, and per the earlier
+// observation the step that actually faults. Callees: sub_186884560 (already traced as [884]), sub_188C13CD0,
+// an INDIRECT call [rip+0x2a3842a], sub_187F66280, sub_18029C9A0. Static scan: not a VM thunk.
+// Called as v7->Initialize(v7, &parameters->platformContext); 8 params forwarded so nothing is truncated.
+typedef __int64 (__fastcall* SndInit_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static SndInit_t g_sndInitOrig = nullptr;
+static __int64 __fastcall SndInitialize_Detour(void* self, void* platformContext, void* c, void* dd,
+                                                void* e, void* f, void* g, void* h)
+{
+    void* ret = _ReturnAddress();
+    tprintf("[snd] CSoundSystem::Initialize (sub_187F44040)(this=%p platformContext=%p) ENTER  caller=%p (+0x%llX)\n",
+            self, platformContext, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
+    __int64 r = g_sndInitOrig(self, platformContext, c, dd, e, f, g, h);
+    tprintf("[snd] CSoundSystem::Initialize RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// CSoundSystem::IsAvailable (sub_187F66350) -- trivial getter (0x13 bytes); its result feeds
+// CBinkRenderResourceBase::ms_enableSound. Traced mainly as a sequence marker after Initialize.
+typedef __int64 (__fastcall* SndAvail_t)(void*, void*, void*, void*);
+static SndAvail_t g_sndAvailOrig = nullptr;
+static __int64 __fastcall SndIsAvailable_Detour(void* self, void* b, void* c, void* dd)
+{
+    tprintf("[snd] CSoundSystem::IsAvailable (sub_187F66350)(this=%p) ENTER\n", self); fflush(stdout);
+    __int64 r = g_sndAvailOrig(self, b, c, dd);
+    tprintf("[snd] CSoundSystem::IsAvailable RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 static __int64 __fastcall EngineServicesInit_Detour(void* self, void* params)
 {
     void* ret = _ReturnAddress();
@@ -1005,6 +1057,19 @@ void InstallEngineHooks(uintptr_t base)
         tprintf("[799] hooked sub_186799130 @ %p\n", s799);
     else
         tprintf("[799] FAILED to hook sub_186799130 @ %p\n", s799);
+    // [snd] CSoundSystem vtable targets, addresses captured from a normal run via the Misc.cpp [799] probe.
+    // Hooked by CONCRETE ADDRESS (not through the vtable), so installation does not depend on the singleton being
+    // constructed -- GetSoundSystem() lazily creates it, so the global reads NULL early in BOTH contexts.
+    void* sndi = (void*)(base + 0x7F44040);   // CSoundSystem::Initialize -- the suspected fault
+    if (MH_CreateHook(sndi, &SndInitialize_Detour, (LPVOID*)&g_sndInitOrig) == MH_OK && MH_EnableHook(sndi) == MH_OK)
+        tprintf("[snd] hooked CSoundSystem::Initialize (sub_187F44040) @ %p\n", sndi);
+    else
+        tprintf("[snd] FAILED to hook CSoundSystem::Initialize @ %p\n", sndi);
+    void* snda = (void*)(base + 0x7F66350);   // CSoundSystem::IsAvailable -- sequence marker after Initialize
+    if (MH_CreateHook(snda, &SndIsAvailable_Detour, (LPVOID*)&g_sndAvailOrig) == MH_OK && MH_EnableHook(snda) == MH_OK)
+        tprintf("[snd] hooked CSoundSystem::IsAvailable (sub_187F66350) @ %p\n", snda);
+    else
+        tprintf("[snd] FAILED to hook CSoundSystem::IsAvailable @ %p\n", snda);
     void* ies = (void*)(base + 0x67936F0);   // sub_1867936F0 = CEngine::InitializeEngineServices (parent of CEngineServices::Initialize + the config cluster)
     if (MH_CreateHook(ies, &InitEngineServices_Detour, (LPVOID*)&g_iesOrig) == MH_OK && MH_EnableHook(ies) == MH_OK)
         tprintf("[eng] hooked CEngine::InitializeEngineServices (sub_1867936F0) @ %p\n", ies);
