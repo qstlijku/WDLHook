@@ -964,6 +964,101 @@ static __int64 __fastcall Sub8DE2580_Detour(void* world, unsigned int eventType,
     return r;
 }
 
+// ===================== [oqm] hknpWorldEx::onQualityModifiedSignal (sub_188DE5C00) reimpl =====================
+// PDB: void hknpWorldEx::onQualityModifiedSignal(hknpWorldEx* this, hknpBodyQualityLibrary* /*unused*/,
+//                                                hknpBodyQualityId qualityId)
+//      { this->m_dirtyQualities.m_storage.m_words.m_data[qualityId >> 5] |= 1 << (qualityId & 0x1F); }
+// A single dirty-bit set -- no allocation, no vtables, no VM state.
+//
+// sub_188DE5C00 is a bare 5-byte VM thunk (E9 0B 64 A3 18 = jmp 0x2181C010 -> jmp 0x15AB25DC -> the Denuvo
+// interpreter: readeflags/writeeflags, rcl on junk constants, __CFSHR__/__SETP__ over garbage, JUMPOUT, chained
+// handlers). Genuinely obfuscated, so it faults into the un-bootstrapped dispatch at 0x21B2B9F4 instead of running
+// native. IDA shows it as qword_188DE5C00 (data) because both xrefs only TAKE its address -- it is never called
+// statically; the hknpWorld ctor stores it into a signal slot and it is invoked indirectly. NOTE the bytes after
+// the 5-byte jmp are 3 MORE packed VM thunks (+8 -> 0xF2414B5, +14 -> 0x10E111A1, +20 -> 0xDF8E0CB), NOT padding --
+// but a MinHook jmp rel32 patch is exactly 5 bytes, so hooking here does not clobber them.
+//
+// How it is reached: hknpWorld ctor subscribes it to m_qualityLibrary->m_qualityModifiedSignal with the world as
+// receiver; CPhysWorldImplBase::Init+0xEFB then fires that signal (inlined hkSignal::fire) after modifying
+// m_qualities[16], via slot vtable[+0x10] -> sub_188DE8520 -> (*(slot+0x18))(slot->receiver).
+//
+// ARG NOTE: sub_188DE8520 is `(*(a1+24))(*(a1+16))` -- looks 1-arg in IDA, but it never writes rdx/r8, so the
+// fire loop's `mov rdx, m_ptr` and `mov r8b, 0x10` pass STRAIGHT THROUGH. The callback really receives
+// (this=world, lib, qualityId=16), matching the PDB's 3-arg signature.
+// Layout: hknpWorld::m_dirtyQualities @ 0xA60 (hkBitField, 0x18) -> m_storage @ +0, m_words (hkArray) @ +0,
+// m_words.m_data @ +0, m_numBits @ +0x10. Cross-check: 0xA60+0x18 = 0xA78, and m_eventDispatcher @ 0xA88 is
+// runtime-confirmed from sub_188DE2580's `mov rcx,[rcx+0xA88]`.
+typedef __int64 (__fastcall* Sub8DE5C00_t)(void*, void*, unsigned int, void*);
+static Sub8DE5C00_t g_sub8DE5C00Orig = nullptr;   // trampoline out-param (unused -- VM body faults)
+static __int64 __fastcall Sub8DE5C00_Detour(void* world, void* lib, unsigned int qualityId, void* a4)
+{
+    tprintf("[oqm] t%-5lu d%-2d %*sonQualityModifiedSignal reimpl(world=%p lib=%p qualityId=%u) ENTER\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", world, lib, qualityId); fflush(stdout);
+    unsigned int* words = *(unsigned int**)((char*)world + 0xA60);   // m_dirtyQualities.m_storage.m_words.m_data
+    if (words)
+        words[qualityId >> 5] |= (1u << (qualityId & 0x1F));
+    tprintf("[oqm] t%-5lu d%-2d %*sonQualityModifiedSignal reimpl RETURNED (words=%p word[%u] |= 0x%X)\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (void*)words,
+        qualityId >> 5, (unsigned int)(1u << (qualityId & 0x1F))); fflush(stdout);
+    return 0;
+}
+
+// ===================== [dlg] sub_188DE8520 -- the bound-delegate slot thunk (CURRENT WALL) ====================
+// PDB: __int64 sub_188DE8520(__int64 a1) { return (*(a1 + 24))(*(a1 + 16)); }
+//   0x8DE8520: mov rax, rcx ; mov rcx, [rcx+0x10] ; call qword ptr [rax+0x18] ; ret
+// i.e. the slot stores a receiver at +0x10 and a FUNCTION POINTER at +0x18, and forwards to it.
+//
+// This is what the inlined hkSignal::fire loop in CPhysWorldImplBase::Init reaches via its 2nd indirect call:
+//   Init+0xEFB:  mov rax,[rcx] ; mov rdx,rdi ; mov r8b,0x10 ; call qword ptr [rax+0x10]   (returns to Init+0xF00)
+// = the PDB's  (*(v87 + 16))(v85, m_ptr, v83)  firing m_ptr->m_qualityModifiedSignal (library @ singleton+2616,
+// slots at library+24). The crash is 0xC0000005 at 0x21B2B9F4 -- the un-bootstrapped VM dispatch -- INSIDE the
+// `call [rax+0x18]` here (stack frame DuniaDemo+0x8DE852E = the return address of that call).
+//
+// NOTE the [sig] pool shows all 11 subscribe-registered callbacks land in normal .text (0x7D82700..0x7E53420),
+// none in the VM band -- so the bad slot is NOT one of those; m_qualityModifiedSignal is subscribed elsewhere.
+// Passthru probe: print the slot, the receiver, and the stored fn pointer as an RVA, flagging the VM band and
+// resolving a jmp-thunk. That names the function to reimpl.
+typedef __int64 (__fastcall* Sub8DE8520_t)(void*, void*, void*, void*);
+static Sub8DE8520_t g_sub8DE8520Orig = nullptr;
+static __int64 __fastcall Sub8DE8520_Detour(void* slot, void* a2, void* a3, void* a4)
+{
+    uintptr_t base = g_reBase;
+    void* recv = nullptr;
+    unsigned char* fn = nullptr;
+    if (slot)
+    {
+        recv = *(void**)((char*)slot + 0x10);
+        fn   = *(unsigned char**)((char*)slot + 0x18);
+    }
+    // Print *(a1+24) -- the function it actually calls -- as sub_<VA>, i.e. the IDA name. Use the FULL VA
+    // (0x180000000 + rva) like Checkpoints.h does, NOT "sub_18%07llX": the latter is only valid for rva <
+    // 0x10000000, and a VM-band target (rva 0x21999400) would misprint as sub_1821999400 instead of sub_1A1999400.
+    uintptr_t rva = (fn && base) ? ((uintptr_t)fn - base) : 0;
+    bool inVm = (rva >= 0xBC39000 && rva < 0x21B12800);
+    tprintf("[dlg] t%-5lu d%-2d %*sslotThunk(slot=%p recv=%p fn=sub_%llX  [DuniaDemo+0x%llX])%s ENTER\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", slot, recv,
+        (unsigned long long)(0x180000000ULL + rva), (unsigned long long)rva,
+        inVm ? "  <== FN IS IN VM BAND" : ""); fflush(stdout);
+    // Supplementary: if fn is a 5-byte jmp rel32 stub, follow it to the real body. CAVEAT -- if MinHook has already
+    // hooked fn, this decodes OUR detour's jmp, not the original (that is what produced the bogus
+    // 0xFFFFFFFFFFFC0A4E line in the earlier [reg] probe), so treat it as a hint.
+    if (fn && fn[0] == 0xE9)
+    {
+        int rel = *(int*)(fn + 1);
+        uintptr_t dstRva = ((uintptr_t)fn + 5 + rel) - base;
+        tprintf("[dlg] t%-5lu d%-2d %*s   -> jmp thunk to sub_%llX  [DuniaDemo+0x%llX]%s\n",
+            GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "",
+            (unsigned long long)(0x180000000ULL + dstRva), (unsigned long long)dstRva,
+            (dstRva >= 0xBC39000 && dstRva < 0x21B12800) ? "  <== VM BAND" : ""); fflush(stdout);
+    }
+    ++g_chkDepth;
+    __int64 r = g_sub8DE8520Orig(slot, a2, a3, a4);
+    --g_chkDepth;
+    tprintf("[dlg] t%-5lu d%-2d %*sslotThunk RETURNED = 0x%llX\n",
+        GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
 // sub_1868D3E10 = EnumerateFiles(ndVector<ndStringBase<char>>* out, const char* path, const char* ext,
 //                                const char* pattern, int flags)
 // PDB call site in CPhysVehicleManagerBase::Init's 16-iteration loop:
@@ -2234,6 +2329,16 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[rid] hooked sub_188D04A50 reimpl @ %p\n", s4a50);
     else
         tprintf("[rid] FAILED to hook sub_188D04A50 @ %p\n", s4a50);
+    void* s5c00 = (void*)(base + 0x8DE5C00);    // hknpWorldEx::onQualityModifiedSignal -- VM'd (obfuscated), reimpl
+    if (MH_CreateHook(s5c00, &Sub8DE5C00_Detour, (LPVOID*)&g_sub8DE5C00Orig) == MH_OK && MH_EnableHook(s5c00) == MH_OK)
+        tprintf("[oqm] hooked onQualityModifiedSignal reimpl (sub_188DE5C00) @ %p\n", s5c00);
+    else
+        tprintf("[oqm] FAILED to hook sub_188DE5C00 @ %p\n", s5c00);
+    void* s8520 = (void*)(base + 0x8DE8520);    // bound-delegate slot thunk -- CURRENT WALL, probe the stored fn ptr
+    if (MH_CreateHook(s8520, &Sub8DE8520_Detour, (LPVOID*)&g_sub8DE8520Orig) == MH_OK && MH_EnableHook(s8520) == MH_OK)
+        tprintf("[dlg] hooked slot thunk (sub_188DE8520) @ %p\n", s8520);
+    else
+        tprintf("[dlg] FAILED to hook sub_188DE8520 @ %p\n", s8520);
     void* s5750 = (void*)(base + 0x9675750);    // hknpEventDispatcher::allocateEntry -- VM'd (obfuscated), reimpl
     if (MH_CreateHook(s5750, &Sub9675750_Detour, (LPVOID*)&g_sub9675750Orig) == MH_OK && MH_EnableHook(s5750) == MH_OK)
         tprintf("[ade] hooked allocateEntry reimpl (sub_189675750) @ %p\n", s5750);
