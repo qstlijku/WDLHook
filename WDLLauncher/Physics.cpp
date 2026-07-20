@@ -988,11 +988,11 @@ static __int64 __fastcall Sub8DE2580_Detour(void* world, unsigned int eventType,
 // Layout: hknpWorld::m_dirtyQualities @ 0xA60 (hkBitField, 0x18) -> m_storage @ +0, m_words (hkArray) @ +0,
 // m_words.m_data @ +0, m_numBits @ +0x10. Cross-check: 0xA60+0x18 = 0xA78, and m_eventDispatcher @ 0xA88 is
 // runtime-confirmed from sub_188DE2580's `mov rcx,[rcx+0xA88]`.
-typedef __int64 (__fastcall* Sub8DE5C00_t)(void*, void*, unsigned int, void*);
+typedef __int64 (__fastcall* Sub8DE5C00_t)(void*, void*, unsigned char, void*);
 static Sub8DE5C00_t g_sub8DE5C00Orig = nullptr;   // trampoline out-param (unused -- VM body faults)
-static __int64 __fastcall Sub8DE5C00_Detour(void* world, void* lib, unsigned int qualityId, void* a4)
+static __int64 __fastcall Sub8DE5C00_Detour(void* world, void* lib, unsigned char qualityId, void* a4)
 {
-    tprintf("[oqm] t%-5lu d%-2d %*sonQualityModifiedSignal reimpl(world=%p lib=%p qualityId=%u) ENTER\n",
+    tprintf("[oqm] t%-5lu d%-2d %*sonQualityModifiedSignal reimpl(world=%p lib=%p qualityId=%c) ENTER\n",
         GetCurrentThreadId(), g_chkDepth, g_chkDepth * 2, "", world, lib, qualityId); fflush(stdout);
     unsigned int* words = *(unsigned int**)((char*)world + 0xA60);   // m_dirtyQualities.m_storage.m_words.m_data
     if (words)
