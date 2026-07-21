@@ -395,6 +395,33 @@ static __int64 __fastcall Sc0Ctor_Detour(void* self)
 // CSoundSystem::Initialize (sub_187F44040) -- the only one of the three with a real body, and per the earlier
 // observation the step that actually faults. Callees: sub_186884560 (already traced as [884]), sub_188C13CD0,
 // an INDIRECT call [rip+0x2a3842a], sub_187F66280, sub_18029C9A0. Static scan: not a VM thunk.
+// [si] the 37 new direct callees in the LAST HALF of CSoundSystem::Initialize (excludes already-hooked, NMalloc,
+// and hot generic helpers 0x5C3F60/5C48C0/5C2280/5A5B80/9DBCC90). GATED on g_inSndInit (armed by the [snd]
+// Initialize detour) so the generic ones don't flood when called from elsewhere. The callee that ENTERs with no
+// RETURNED = the next wall in sound init. 8-arg thunks (no truncation, see [[pooled-thunk-arg-truncation]]).
+static bool g_inSndInit = false;
+static const uintptr_t kSndInitCallees[] = {
+    0x7F45E50, 0x7F7F430, 0x7F2C6E0, 0x5BA8E0, 0x1632D0, 0x61D9F0, 0x60F520, 0x935DF70,
+    0x7F43110, 0x935DD80, 0x7F46720, 0x93500C0, 0x9350F20, 0x9350130, 0x934FE90, 0x9350A80,
+    0x935C590, 0x935C470, 0x93521C0, 0x93522D0, 0x9367500, 0x93675E0, 0x7F46980, 0x9355190,
+    0x8C189D0, 0x5E43B0, 0x8C189E0, 0x61DEC0, 0x5B9C30, 0x7F37FF0, 0x7F404A0, 0x7F406D0,
+    0x7F21B80, 0x7F510A0, 0x68C5B70, 0x7F8AD20, 0x68223B0,
+};
+static const int kNumSndInit = (int)(sizeof(kSndInitCallees) / sizeof(kSndInitCallees[0]));
+typedef __int64 (__fastcall* SiFn_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static SiFn_t g_siOrig[kNumSndInit];
+template<int N> static __int64 __fastcall SiThunk(void* a, void* b, void* c, void* dd,
+                                                   void* e, void* f, void* g, void* h)
+{
+    bool log = g_inSndInit;
+    if (log) { tprintf("[si] t%-5lu     sub_18%07llX ENTER\n", GetCurrentThreadId(), (unsigned long long)kSndInitCallees[N]); fflush(stdout); }
+    __int64 r = g_siOrig[N](a, b, c, dd, e, f, g, h);
+    if (log) { tprintf("[si] t%-5lu     sub_18%07llX RETURNED = 0x%llX\n", GetCurrentThreadId(), (unsigned long long)kSndInitCallees[N], (unsigned long long)r); fflush(stdout); }
+    return r;
+}
+template<size_t... I> static std::array<SiFn_t, sizeof...(I)> MakeSiThunks(std::index_sequence<I...>) { return {{ &SiThunk<I>... }}; }
+static const std::array<SiFn_t, kNumSndInit> g_siThunks = MakeSiThunks(std::make_index_sequence<kNumSndInit>{});
+
 // Called as v7->Initialize(v7, &parameters->platformContext); 8 params forwarded so nothing is truncated.
 typedef __int64 (__fastcall* SndInit_t)(void*, void*, void*, void*, void*, void*, void*, void*);
 static SndInit_t g_sndInitOrig = nullptr;
@@ -404,7 +431,9 @@ static __int64 __fastcall SndInitialize_Detour(void* self, void* platformContext
     void* ret = _ReturnAddress();
     tprintf("[snd] CSoundSystem::Initialize (sub_187F44040)(this=%p platformContext=%p) ENTER  caller=%p (+0x%llX)\n",
             self, platformContext, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
+    g_inSndInit = true;   // arm the [si] callee trace for the duration of Initialize
     __int64 r = g_sndInitOrig(self, platformContext, c, dd, e, f, g, h);
+    g_inSndInit = false;
     tprintf("[snd] CSoundSystem::Initialize RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
@@ -1260,6 +1289,14 @@ void InstallEngineHooks(uintptr_t base)
         tprintf("[snd] hooked CSoundSystem::IsAvailable (sub_187F66350) @ %p\n", snda);
     else
         tprintf("[snd] FAILED to hook CSoundSystem::IsAvailable @ %p\n", snda);
+    for (int i = 0; i < kNumSndInit; ++i)     // [si] last-half CSoundSystem::Initialize callees (gated on g_inSndInit)
+    {
+        void* t = (void*)(base + kSndInitCallees[i]);
+        if (MH_CreateHook(t, (void*)g_siThunks[i], (LPVOID*)&g_siOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[si] hooked sub_18%07llX @ %p\n", (unsigned long long)kSndInitCallees[i], t);
+        else
+            tprintf("[si] FAILED/dup sub_18%07llX @ %p\n", (unsigned long long)kSndInitCallees[i], t);
+    }
     void* ies = (void*)(base + 0x67936F0);   // sub_1867936F0 = CEngine::InitializeEngineServices (parent of CEngineServices::Initialize + the config cluster)
     if (MH_CreateHook(ies, &InitEngineServices_Detour, (LPVOID*)&g_iesOrig) == MH_OK && MH_EnableHook(ies) == MH_OK)
         tprintf("[eng] hooked CEngine::InitializeEngineServices (sub_1867936F0) @ %p\n", ies);
