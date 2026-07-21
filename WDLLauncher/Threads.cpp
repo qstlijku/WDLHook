@@ -41,7 +41,10 @@ static void __fastcall Sub68708F0_Detour(__int64 a1, unsigned int a2, __int64 a3
 {
     tprintf("[wtr] t%-5lu sub_1868708F0(this=0x%llX workerThreadIndex=%u a3=0x%llX) ENTER\n",
             GetCurrentThreadId(), (unsigned long long)a1, a2, (unsigned long long)a3); fflush(stdout);
-    g_sub68708F0Orig(a1, a2, a3);
+    if (a2 == 0)
+        g_sub68708F0Orig(a1, a2, a3);
+    else
+        printf("===========WORKER THREAD RETURNED===================\n");
     tprintf("[wtr] t%-5lu sub_1868708F0(workerThreadIndex=%u) RETURNED\n", GetCurrentThreadId(), a2); fflush(stdout);
 }
 
