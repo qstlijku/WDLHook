@@ -238,10 +238,51 @@ static void DumpSoundVtbl(const char* tag);   // fwd (defined with [gss] below)
 static void __fastcall SndConstruct_Detour()
 {
     tprintf("[snew] t%-5lu CreateSoundSystem (sub_187F422B0) ENTER\n", GetCurrentThreadId()); fflush(stdout);
+    Sleep(10000);
     g_sndCtorOrig();
     tprintf("[snew] CreateSoundSystem RETURNED  initFlag=%u\n",
             Imagebase ? *(unsigned int*)(Imagebase + 0xB5101C8) : 0xFFFFFFFF); fflush(stdout);
     DumpSoundVtbl("snew");
+}
+
+// [wtc] the 3 DEEPEST frames on the tid-0x8D90 worker-thread 0x21B2B9F4 crash stack. Passthru: print thread id +
+// caller RVA so we can (a) confirm they fire on the crashing worker and (b) see the call chain into the fault.
+// sub_188D3D440 = hkMonitorStream::init (memory-router lookup -> hkMemoryAllocator sub_188D18F10 whose vtable[+8]
+// faults); sub_188C39F40/FE0 = its EnterCriticalSection helpers. The one that ENTERs with no matching activity
+// after (crash) localizes it. 8 args forwarded (arity unknown) so nothing truncates.
+static const struct { uintptr_t rva; const char* name; } kWtcCallees[] = {
+    { 0x8D3D440, "hkMonitorStream::init(sub_188D3D440)" },
+    { 0x8C39F40, "lockAcquire(sub_188C39F40)"           },
+    { 0x8C39FE0, "lockAcquire2(sub_188C39FE0)"          },
+};
+static const int kNumWtc = (int)(sizeof(kWtcCallees) / sizeof(kWtcCallees[0]));
+typedef __int64 (__fastcall* WtcFn_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static WtcFn_t g_wtcOrig[kNumWtc];
+template<int N> static __int64 __fastcall WtcThunk(void* a, void* b, void* c, void* dd,
+                                                    void* e, void* f, void* g, void* h)
+{
+    void* ret = _ReturnAddress();
+    tprintf("[wtc] t%-5lu %s(this=%p) caller=%p (+0x%llX) ENTER\n",
+            GetCurrentThreadId(), kWtcCallees[N].name, a, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
+    __int64 r = g_wtcOrig[N](a, b, c, dd, e, f, g, h);
+    tprintf("[wtc] t%-5lu %s RETURNED = 0x%llX\n", GetCurrentThreadId(), kWtcCallees[N].name, (unsigned long long)r); fflush(stdout);
+    return r;
+}
+template<size_t... I> static std::array<WtcFn_t, sizeof...(I)> MakeWtcThunks(std::index_sequence<I...>) { return {{ &WtcThunk<I>... }}; }
+static const std::array<WtcFn_t, kNumWtc> g_wtcThunks = MakeWtcThunks(std::make_index_sequence<kNumWtc>{});
+
+// sub_188C39B20 -- thread-context helper near the worker-thread crash (sibling of sub_188C39F40/FE0, same object
+// with state@+0x54 / flag@+0x65). Passthru probe: print the calling thread ID + the return address (RVA) so we can
+// see WHO calls it and on which thread -- narrowing the tid-0x8D90 worker-thread 0x21B2B9F4 crash.
+typedef __int64 (__fastcall* Sub8C39B20_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub8C39B20_t g_sub8C39B20Orig = nullptr;
+static __int64 __fastcall Sub8C39B20_Detour(void* a1, void* b, void* c, void* dd,
+                                             void* e, void* f, void* g, void* h)
+{
+    void* ret = _ReturnAddress();
+    tprintf("[c39] t%-5lu sub_188C39B20(this=%p) caller=%p (+0x%llX)\n",
+            GetCurrentThreadId(), a1, ret, (unsigned long long)TraceRva(ret)); fflush(stdout);
+    return g_sub8C39B20Orig(a1, b, c, dd, e, f, g, h);
 }
 
 // GetSoundSystem (sub_187F12760) = `mov rax,[0xB5101C0]; ret` -- returns qword_18B5101C0. FINDING: the [snd]
@@ -1172,6 +1213,19 @@ void InstallEngineHooks(uintptr_t base)
     // [snd] CSoundSystem vtable targets, addresses captured from a normal run via the Misc.cpp [799] probe.
     // Hooked by CONCRETE ADDRESS (not through the vtable), so installation does not depend on the singleton being
     // constructed -- GetSoundSystem() lazily creates it, so the global reads NULL early in BOTH contexts.
+    void* c39 = (void*)(base + 0x8C39B20);    // thread-context helper -- print caller + thread id
+    if (MH_CreateHook(c39, &Sub8C39B20_Detour, (LPVOID*)&g_sub8C39B20Orig) == MH_OK && MH_EnableHook(c39) == MH_OK)
+        tprintf("[c39] hooked sub_188C39B20 @ %p\n", c39);
+    else
+        tprintf("[c39] FAILED to hook sub_188C39B20 @ %p\n", c39);
+    for (int i = 0; i < kNumWtc; ++i)         // [wtc] the 3 deepest worker-thread crash frames
+    {
+        void* t = (void*)(base + kWtcCallees[i].rva);
+        if (MH_CreateHook(t, (void*)g_wtcThunks[i], (LPVOID*)&g_wtcOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[wtc] hooked %s @ %p\n", kWtcCallees[i].name, t);
+        else
+            tprintf("[wtc] FAILED/dup %s @ %p\n", kWtcCallees[i].name, t);
+    }
     // [sc0] the CSoundSystem ctor + all its callees -- localize the indirect-call crash inside construction.
     void* sc0 = (void*)(base + 0x7F423C0);    // CSoundSystem::CSoundSystem ctor
     if (MH_CreateHook(sc0, &Sc0Ctor_Detour, (LPVOID*)&g_sc0CtorOrig) == MH_OK && MH_EnableHook(sc0) == MH_OK)

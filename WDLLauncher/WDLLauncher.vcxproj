@@ -138,6 +138,7 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Log.cpp" />
+    <ClCompile Include="Threads.cpp" />
     <ClCompile Include="Util.cpp" />
     <ClCompile Include="Diagnostics.cpp" />
     <ClCompile Include="Upc.cpp" />

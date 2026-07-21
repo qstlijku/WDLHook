@@ -30,6 +30,7 @@ bool ManualInitDll(HMODULE mod);
 void InstallLanguageCapture(uintptr_t base);
 void InstallEngineHooks(uintptr_t base);
 void InstallPhysicsHooks(uintptr_t base);
+void InstallThreadHooks(uintptr_t base);
 void InstallVmStubs(uintptr_t base);
 
 #pragma comment(lib, "Shlwapi.lib")
@@ -182,6 +183,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
     // the SKU load result, which data file the engine fails to open, and who shows the box.
     InstallEngineHooks((uintptr_t)dll);
     InstallPhysicsHooks((uintptr_t)dll);
+    InstallThreadHooks((uintptr_t)dll);   // worker-thread / JobScheduler2 hooks (Threads.cpp)
     InstallVmStubs((uintptr_t)dll);       // replace virtualized sub_188C10530 (cache detail) -- VM not bootstrapped
     InstallCheckpoints((uintptr_t)dll);   // bracket every call between InitializeCore and Initialize
     InstallCheckpointsRA((uintptr_t)dll); // [chkra]: multi-call-site fns that also log _ReturnAddress (caller)

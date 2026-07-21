@@ -1438,9 +1438,12 @@ typedef __int64 (__fastcall* Sub18150D0_t)(void*);
 static Sub18150D0_t g_sub18150D0Orig = nullptr;   // trampoline (unused -- we replace the VM'd body)
 static __int64 __fastcall Sub18150D0_Detour(void* a1)
 {
-    tprintf("[15d] sub_1A18150D0(%p) ENTER\n", a1); fflush(stdout);
+    void* ret = _ReturnAddress();
+    uintptr_t raRva = (uintptr_t)ret - g_reBase;   // RA as module RVA (VM-band RA -> VM-band RVA)
+    tprintf("[15d] t%-5lu sub_1A18150D0(%p) ENTER  caller=%p (+0x%llX)\n",
+            GetCurrentThreadId(), a1, ret, (unsigned long long)raRva); fflush(stdout);
     __int64 r = g_sub18150D0Orig(a1);
-    tprintf("[15d] sub_1A18150D0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    tprintf("[15d] t%-5lu sub_1A18150D0 RETURNED = 0x%llX\n", GetCurrentThreadId(), (unsigned long long)r); fflush(stdout);
     return r;
     /*
     uintptr_t base = (uintptr_t)GetModuleHandleW(kRendererDll);
@@ -2433,12 +2436,12 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[293] hooked sub_188D293F0 (VM thunk) @ %p\n", s293);
     else
         tprintf("[293] FAILED to hook sub_188D293F0 @ %p\n", s293);
-    
+    */
     void* s15d = (void*)(base + 0x218150D0);  // hkBaseSystem::initThread (sub_1A18150D0) -- native reimpl (replaces the faulting VM-dispatch TlsGetValue)
     if (MH_CreateHook(s15d, &Sub18150D0_Detour, (LPVOID*)&g_sub18150D0Orig) == MH_OK && MH_EnableHook(s15d) == MH_OK)
         tprintf("[15d] hooked hkBaseSystem::initThread (sub_1A18150D0) -> native reimpl [bypasses VM]\n");
     else
-        tprintf("[15d] FAILED to hook sub_1A18150D0 @ %p\n", s15d);*/
+        tprintf("[15d] FAILED to hook sub_1A18150D0 @ %p\n", s15d);
     InstallInitTrace(base);   // [itr]: bracket the 6 direct calls in Init's first stretch (gated on g_inInit)
     void* s8d0 = (void*)(base + 0x8D06EA0);   // dedicated hook for the physics-world allocator init (pulled from kChkRvasIE)
     if (MH_CreateHook(s8d0, &Sub8D06EA0_Detour, (LPVOID*)&g_sub8D06EA0Orig) == MH_OK && MH_EnableHook(s8d0) == MH_OK)
