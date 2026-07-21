@@ -981,6 +981,22 @@ static void InstallCConfigCapture()
     }
     fflush(stdout);
 }
+// [ide] sub_18000AB00 (RVA 0xAB00) -- a function called near the END of InitDuniaEngine, used as a completion
+// marker: it firing means InitDuniaEngine reached (near) the end. Passthru probe (prints arg + thread). Installed
+// from InstallEarlyHooks (DllMain, before Misc::Initialize) so it beats RunGame's engine init.
+// NOTE: in the NORMAL (DE_Hook) run this did NOT fire -- dinput8 loads after RunGame already ran engine init, so
+// this early-boot region can't be caught in the normal run (only the WDLLauncher, which drives RunGame itself, can).
+typedef int (__fastcall* InitDuniaEngine_t)(void* hInst);
+static InitDuniaEngine_t g_initDuniaEngineOrig = nullptr;
+static int __fastcall InitDuniaEngine_Detour(void* hInst)
+{
+    tprintf("[ide] t%-5lu sub_18000AB00 (InitDuniaEngine near-end)(hInst=%p) ENTER\n",
+            GetCurrentThreadId(), hInst); fflush(stdout);
+    int r = g_initDuniaEngineOrig(hInst);
+    tprintf("[ide] t%-5lu sub_18000AB00 RETURNED = %d\n", GetCurrentThreadId(), r); fflush(stdout);
+    return r;
+}
+
 void Misc::InstallEarlyHooks()
 {
     if (g_earlyHooksDone) return;
@@ -991,6 +1007,10 @@ void Misc::InstallEarlyHooks()
     //InstallInitTermLogger(); // DISABLED -- initterm/_initterm_e/atexit hooks (ported from E3_Hook: brackets each ctor)
     //InstallNomadDbCapture();   // NORMAL-RUN: dump the real CNomadDb sentinel sub-object init (ground truth for the manual-load stub)
     //InstallCConfigCapture();   // NORMAL-RUN: log real CConfig::Get/Exists/MergeSections args+results (vs the manual-load stubs)
+
+    // [ide] sub_18000AB00 (near-end-of-InitDuniaEngine marker) -- DISABLED: doesn't fire in the normal run (DE_Hook
+    // loads too late). Re-enable only if catching this early region ever becomes possible in the normal run.
+    //HookOffset3(0xAB00, &InitDuniaEngine_Detour, reinterpret_cast<LPVOID*>(&g_initDuniaEngineOrig)); // sub_18000AB00 (RVA)
 }
 
 // ===================================================================================================
@@ -1772,6 +1792,29 @@ static __int64 __fastcall Sub6799130_Detour(void* a1, void* a2, void* a3, void* 
     return r;
 }
 
+// [wtr] worker-thread HACK (normal-run copy of the WDLLauncher Threads.cpp gate). sub_1868708F0(a1, workerThreadIndex,
+// a3): only run the original for worker index 0 -- every other worker is neutered (skip its run), so the JobScheduler2
+// VM-job crash on the extra workers is sidestepped for working the main-thread sound path. Offset = RVA - 0xA00
+// (RVA 0x68708F0). Comment out for any run where you want the full worker pool.
+typedef void (__fastcall* Sub68708F0_t)(__int64, unsigned int, __int64);
+static Sub68708F0_t g_sub68708F0Orig = nullptr;
+
+int count3 = 0;
+static void __fastcall Sub68708F0_Detour(__int64 a1, unsigned int a2, __int64 a3)
+{
+    if (count3 < 5)
+    {
+        tprintf("[wtr] t%-5lu sub_1868708F0(this=0x%llX workerThreadIndex=%u a3=0x%llX) ENTER\n",
+            GetCurrentThreadId(), (unsigned long long)a1, a2, (unsigned long long)a3); fflush(stdout);
+        count3++;
+    }
+    if (false)
+        g_sub68708F0Orig(a1, a2, a3);
+    else
+        printf("===========WORKER THREAD RETURNED===================\n");
+    //tprintf("[wtr] t%-5lu sub_1868708F0(workerThreadIndex=%u) RETURNED\n", GetCurrentThreadId(), a2); fflush(stdout);
+}
+
 void Misc::Initialize()
 {
     // Not using this for now
@@ -1801,6 +1844,10 @@ void Misc::Initialize()
     // [cr] canRelocateBuffer reimpl VALIDATION: replace the real one with "return true"; relocateConstraintBuffer above
     // runs its real body calling THIS. If physics still works normally, the reimpl is correct -> already in Physics.cpp.
     //HookOffset3(0x8E2DCA0 + 0xA00, &CanReloc_Detour, reinterpret_cast<LPVOID*>(&g_canRelocOrig)); // sub_188E2E6A0
+
+    // [wtr] worker-thread hack: neuter all workers except index 0 (sidesteps the JobScheduler2 VM-job crash).
+    // Comment out to restore the full worker pool.
+    //HookOffset3(0x68708F0, &Sub68708F0_Detour, reinterpret_cast<LPVOID*>(&g_sub68708F0Orig)); // sub_1868708F0 (RVA)
 
     // [799] sound-system vtable capture (normal run) -- ground truth to diff against the launcher's [799].
     // Offset = RVA - 0xA00 (RVA 0x6799130). Comment out for a WDLLauncher run (DE_Hook loads there too -> double-hook).
