@@ -401,8 +401,11 @@ static __int64 __fastcall Sc0Ctor_Detour(void* self)
 // RETURNED = the next wall in sound init. 8-arg thunks (no truncation, see [[pooled-thunk-arg-truncation]]).
 static bool g_inSndInit = false;
 static const uintptr_t kSndInitCallees[] = {
-    0x7F45E50, 0x7F7F430, 0x7F2C6E0, 0x5BA8E0, 0x1632D0, 0x61D9F0, 0x60F520, 0x935DF70,
-    0x7F43110, 0x935DD80, 0x7F46720, 0x93500C0, 0x9350F20, 0x9350130, 0x934FE90, 0x9350A80,
+    // 0x5BA8E0 (412x) and 0x60F520 (80x) DISABLED -- hot per-entry helpers; hooking them adds a detour+2 fflush per
+    // call, which may be turning a normal 412-iteration loop into an apparent hang (log 36988 vs the older 32324
+    // where [883] SoundConfig returned fine). Re-enable if the loop itself turns out to be the wall.
+    0x7F45E50, 0x7F7F430, 0x7F2C6E0, /*0x5BA8E0,*/ 0x1632D0, 0x61D9F0, /*0x60F520,*/ 0x935DF70,
+    0x7F43110, 0x935DD80, 0x7F46720, 0x93500C0, 0x9350F20, 0x9350130, /*0x934FE90 -> [aki] standalone*/ 0x9350A80,
     0x935C590, 0x935C470, 0x93521C0, 0x93522D0, 0x9367500, 0x93675E0, 0x7F46980, 0x9355190,
     0x8C189D0, 0x5E43B0, 0x8C189E0, 0x61DEC0, 0x5B9C30, 0x7F37FF0, 0x7F404A0, 0x7F406D0,
     0x7F21B80, 0x7F510A0, 0x68C5B70, 0x7F8AD20, 0x68223B0,
@@ -421,6 +424,164 @@ template<int N> static __int64 __fastcall SiThunk(void* a, void* b, void* c, voi
 }
 template<size_t... I> static std::array<SiFn_t, sizeof...(I)> MakeSiThunks(std::index_sequence<I...>) { return {{ &SiThunk<I>... }}; }
 static const std::array<SiFn_t, kNumSndInit> g_siThunks = MakeSiThunks(std::make_index_sequence<kNumSndInit>{});
+
+// [754] sub_189754160 -- a PURE VM-band thunk (whole body = `jmp 0x1A19F7FE0`, RVA 0x219F7FE0, verified by disasm) on
+// the AK::SoundEngine::Init (sub_18934FE90) hang path (user traced it in IDA). Same class as [f89] sub_187F89300:
+// no native body to preserve, just a jmp into the un-bootstrapped VM. Log ENTER (confirms the taken path reaches it)
+// then SKIP (return 0) so AK::SoundEngine::Init can continue. Gated on g_inSndInit (armed for CSoundSystem::Initialize).
+// If [754] ENTER never appears, the hang is elsewhere; if it appears and AK Init returns, this was the wall.
+typedef __int64 (__fastcall* Sub754160_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub754160_t g_sub754160Orig = nullptr;
+static __int64 __fastcall Sub754160_Detour(void* a, void* b, void* c, void* dd,
+                                           void* e, void* f, void* g, void* h)
+{
+    bool log = g_inSndInit;
+    if (log) { tprintf("[754] sub_189754160(a1=%p) ENTER -- VM-band thunk (AK::SoundEngine::Init hang)\n", a); fflush(stdout); }
+#if 1  // SKIP: pure jmp-into-VM thunk, no native body -> safe to bypass. Flip to #if 0 for a strict passthru-observe.
+    if (log) { tprintf("[754] sub_189754160 SKIPPED [bypasses VM]\n"); fflush(stdout); }
+    return 0;
+#endif
+    __int64 r = g_sub754160Orig(a, b, c, dd, e, f, g, h);
+    if (log) { tprintf("[754] sub_189754160 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout); }
+    return r;
+}
+
+// [aki] AK::SoundEngine::Init (sub_18934FE90) -- promoted from the [si] pool to a dedicated standalone hook so it is
+// clearly labelled and we capture its AKRESULT return. Init(a1=AkInitSettings*, a2=AkPlatformInitSettings*); returns
+// AKRESULT (1 = AK_Success, 74 = AK_MemManagerNotInitialized, 75 = AK_StreamMgrNotInitialized). Init-once via the
+// byte_18B5679F8 guard. Logged unconditionally (rare). REMOVE 0x934FE90 from kSndInitCallees (done) so it isn't
+// double-hooked. Wide 8-arg passthru so the 2 real args (rcx/rdx) are never truncated.
+typedef __int64 (__fastcall* SubAkInit_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static SubAkInit_t g_akInitOrig = nullptr;
+static __int64 __fastcall AkSoundEngineInit_Detour(void* a, void* b, void* c, void* dd,
+                                           void* e, void* f, void* g, void* h)
+{
+    tprintf("[aki] AK::SoundEngine::Init (sub_18934FE90)(settings=%p platform=%p) ENTER\n", a, b); fflush(stdout);
+    __int64 r = g_akInitOrig(a, b, c, dd, e, f, g, h);
+    tprintf("[aki] AK::SoundEngine::Init RETURNED = 0x%llX (1=AK_Success)\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// [f0d] sub_18976F0D0 -- a DIRECT callee of AK::SoundEngine::Init (`v11 = sub_18976F0D0();`, the second init step
+// after sub_1893586A0). Passthru ENTER/RETURN gated on g_inSndInit, to trace the Init sub-chain toward the VM thunk
+// sub_189754160 ([754]). If [f0d] ENTERs without RETURN then the hang is inside it (or a descendant like [754]).
+typedef __int64 (__fastcall* Sub76F0D0_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub76F0D0_t g_sub76F0D0Orig = nullptr;
+static __int64 __fastcall Sub76F0D0_Detour(void* a, void* b, void* c, void* dd,
+                                           void* e, void* f, void* g, void* h)
+{
+    tprintf("[f0d] sub_18976F0D0(a1=%p) ENTER\n", a); fflush(stdout);   // UNGATED (log every call)
+    __int64 r = g_sub76F0D0Orig(a, b, c, dd, e, f, g, h);
+    tprintf("[f0d] sub_18976F0D0 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// [aic] the rest of AK::SoundEngine::Init's DIRECT callees (besides [f0d] sub_18976F0D0 and the deeper [754]
+// sub_189754160). UNGATED -- log every call, per request: [aki] ENTER is the last log line with NO [f0d]/[754], so
+// the hang is BEFORE sub_18976F0D0, i.e. in sub_18971FAF0 / sub_18974E350 / sub_1893586A0 (the earliest callees).
+// The one that ENTERs without a RETURNED is the hang. Order = decompile execution order. 8-arg passthru (no truncation).
+static const uintptr_t kAkInitCallees[] = {
+    0x971FAF0,   // sub_18971FAF0 -- FIRST call in Init
+    0x974E350,   // sub_18974E350 -- Init(a2) platform settings
+    0x93586A0,   // sub_1893586A0 -- v9; if != 1 -> Term
+    0x9732800,   // sub_189732800 -- construct engine obj (after Malloc)
+    0x97328F0,   // sub_1897328F0 -- init engine obj (v9)
+    0x9732C10,   // sub_189732C10 -- init2 (v9)
+    0x9774310,   // sub_189774310 -- final gate -> byte_18B5679F8 = 1 on success
+    0x9358580,   // sub_189358580 -- LABEL_24 tail sub_189358580(1024)
+    // sub_18974E350 platform-settings subtree (user: prime suspect):
+    0x9754470,   // AK::SoundEngine::GetDefaultPlatformInitSettings
+    /*0x9DBCC90 -> [dbc] standalone (prints _ReturnAddress caller)*/
+    0x974E400,   // sub_18974E400 -- 2nd call in GetDefaultPlatformInitSettings
+};
+static const int kNumAkInit = (int)(sizeof(kAkInitCallees) / sizeof(kAkInitCallees[0]));
+typedef __int64 (__fastcall* AicFn_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static AicFn_t g_aicOrig[kNumAkInit];
+template<int N> static __int64 __fastcall AicThunk(void* a, void* b, void* c, void* dd,
+                                                   void* e, void* f, void* g, void* h)
+{
+    tprintf("[aic] sub_18%07llX ENTER\n", (unsigned long long)kAkInitCallees[N]); fflush(stdout);
+    __int64 r = g_aicOrig[N](a, b, c, dd, e, f, g, h);
+    tprintf("[aic] sub_18%07llX RETURNED = 0x%llX\n", (unsigned long long)kAkInitCallees[N], (unsigned long long)r); fflush(stdout);
+    return r;
+}
+template<size_t... I> static std::array<AicFn_t, sizeof...(I)> MakeAicThunks(std::index_sequence<I...>) { return {{ &AicThunk<I>... }}; }
+static const std::array<AicFn_t, kNumAkInit> g_aicThunks = MakeAicThunks(std::make_index_sequence<kNumAkInit>{});
+
+// [dbc] sub_189DBCC90 -- pulled out of [aic] to also print its CALLER (_ReturnAddress). It's the 1st call in
+// GetDefaultPlatformInitSettings, but likely a shared helper reached from many sites; the caller RVA disambiguates
+// which one is on the hang path. Ungated. _ReturnAddress() must be first. 8-arg passthru.
+typedef __int64 (__fastcall* Sub9DBCC90_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub9DBCC90_t g_sub9DBCC90Orig = nullptr;
+static __int64 __fastcall Sub9DBCC90_Detour(void* a, void* b, void* c, void* dd,
+                                            void* e, void* f, void* g, void* h)
+{
+    void* ret = _ReturnAddress();
+    uintptr_t rbase = (uintptr_t)GetModuleHandleW(kRendererDll);
+    // Print the caller directly: raw ptr + the module-relative sub_18XXXXXXX (inline, not TraceRva). If the caller is
+    // outside the DLL the sub_18 value is visibly bogus (not zeroed), so it's never mistaken for sub_180000000.
+    tprintf("[dbc] sub_189DBCC90(a1=%p) ENTER  caller=%p = sub_18%07llX\n",
+            a, ret, (unsigned long long)((uintptr_t)ret - rbase)); fflush(stdout);
+    __int64 r = g_sub9DBCC90Orig(a, b, c, dd, e, f, g, h);
+    tprintf("[dbc] sub_189DBCC90 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    return r;
+}
+
+// [a86] sub_1893586A0's DIRECT callees -- the AK subsystem bring-up chain (each block = Malloc + ctor(sub_XXX) +
+// init(sub_XXX); RTPC/registry/switch mgrs etc.). sub_1893586A0 is the hang (ENTER, no RETURN); one of these ctors
+// or inits stalls. UNGATED, in decompile order. sub_189DBCC90 is the separate [dbc]; AK::MemoryMgr::Malloc left
+// unhooked (known allocator, returns fine). NOTE indirect calls NOT in this pool: `(*(*v16+8))(v16)` right after
+// sub_189769870/sub_189761810, and MEMORY[0xA97F5EC] (x2) -- if a ctor RETURNs but the next [a86] never ENTERs, the
+// stall is one of those. 8-arg passthru (no truncation).
+static const uintptr_t kA586Callees[] = {
+    0x934FA90,   // sub_18934FA90 -- ctor (Malloc 896)  [qword_18B5678C8]
+    0x972F7A0,   // sub_18972F7A0 -- init
+    0x97244C0,   // sub_1897244C0 -- RTPC mgr ctor (Malloc 192)  [g_pRTPCMgr]
+    0x9724550,   // sub_189724550 -- init
+    0x9771940,   // sub_189771940 -- init (Malloc 152)  [qword_18B5678A0]
+    0x9769870,   // sub_189769870 -- ctor A (Malloc 400)  [qword_18B567948, if BYTE4]
+    0x9761810,   // sub_189761810 -- ctor B (Malloc 304)  [qword_18B567948, else]
+    0x975C910,   // sub_18975C910 -- sub-init v18+9 (Malloc 144)  [qword_18B567930]
+    0x975D120,   // sub_18975D120 -- init
+    0x9771B60,   // sub_189771B60 -- init (Malloc 80)  [qword_18B5678B8]
+    0x9757720,   // sub_189757720 -- registry mgr ctor (Malloc 64)  [g_pRegistryMgr]
+    0x9757790,   // sub_189757790 -- init
+    0x972E7B0,   // sub_18972E7B0 -- ctor (Malloc 32)  [qword_18B5678C0]
+    0x972E7E0,   // sub_18972E7E0 -- init
+    0x975E9F0,   // sub_18975E9F0 -- ctor (Malloc 24)  [qword_18B567940]
+    0x975EA10,   // sub_18975EA10 -- init
+    0x97551B0,   // sub_1897551B0 -- switch mgr ctor (Malloc 456)  [g_pSwitchMgr]
+    0x97551F0,   // sub_1897551F0 -- init
+    0x9730C00,   // sub_189730C00 -- ctor (Malloc 176)  [qword_18B5678A8]
+    0x9730C90,   // sub_189730C90 -- init
+};
+static const int kNumA586 = (int)(sizeof(kA586Callees) / sizeof(kA586Callees[0]));
+typedef __int64 (__fastcall* A586Fn_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static A586Fn_t g_a586Orig[kNumA586];
+template<int N> static __int64 __fastcall A586Thunk(void* a, void* b, void* c, void* dd,
+                                                    void* e, void* f, void* g, void* h)
+{
+    tprintf("[a86] sub_18%07llX ENTER\n", (unsigned long long)kA586Callees[N]); fflush(stdout);
+    __int64 r = g_a586Orig[N](a, b, c, dd, e, f, g, h);
+    tprintf("[a86] sub_18%07llX RETURNED = 0x%llX\n", (unsigned long long)kA586Callees[N], (unsigned long long)r); fflush(stdout);
+    return r;
+}
+template<size_t... I> static std::array<A586Fn_t, sizeof...(I)> MakeA586Thunks(std::index_sequence<I...>) { return {{ &A586Thunk<I>... }}; }
+static const std::array<A586Fn_t, kNumA586> g_a586Thunks = MakeA586Thunks(std::make_index_sequence<kNumA586>{});
+
+// [mal] AK::MemoryMgr::Malloc (sub_18935DC10) -- hooked on request: if an allocation itself STALLS, sub_1893586A0
+// hangs with no null-return path (a null return would set v5=52 and RETURN, not hang). Exact signature per user:
+// AK::MemoryMgr::Malloc(void* a1 /*this*/, int a2, unsigned __int64 a3) -> void*. Ungated. A [mal] ENTER with no
+// RETURNED = a hanging alloc = the hang.
+typedef void* (__fastcall* AkMalloc_t)(void* a1, int a2, unsigned __int64 a3);
+static AkMalloc_t g_akMallocOrig = nullptr;
+static void* __fastcall AkMalloc_Detour(void* a1, int a2, unsigned __int64 a3)
+{
+    tprintf("[mal] AK::MemoryMgr::Malloc(a1=%p a2=%d a3=0x%llX) ENTER\n", a1, a2, (unsigned long long)a3); fflush(stdout);
+    void* r = g_akMallocOrig(a1, a2, a3);
+    tprintf("[mal] AK::MemoryMgr::Malloc RETURNED = %p\n", r); fflush(stdout);
+    return r;
+}
 
 // Called as v7->Initialize(v7, &parameters->platformContext); 8 params forwarded so nothing is truncated.
 typedef __int64 (__fastcall* SndInit_t)(void*, void*, void*, void*, void*, void*, void*, void*);
@@ -1297,6 +1458,47 @@ void InstallEngineHooks(uintptr_t base)
         else
             tprintf("[si] FAILED/dup sub_18%07llX @ %p\n", (unsigned long long)kSndInitCallees[i], t);
     }
+    void* s754 = (void*)(base + 0x9754160);   // [754] pure VM-band thunk on the AK::SoundEngine::Init hang path -> skip
+    if (MH_CreateHook(s754, &Sub754160_Detour, (LPVOID*)&g_sub754160Orig) == MH_OK && MH_EnableHook(s754) == MH_OK)
+        tprintf("[754] hooked sub_189754160 (VM-band thunk) @ %p\n", s754);
+    else
+        tprintf("[754] FAILED to hook sub_189754160 @ %p\n", s754);
+    void* saki = (void*)(base + 0x934FE90);   // [aki] AK::SoundEngine::Init -- standalone (promoted out of [si] pool)
+    if (MH_CreateHook(saki, &AkSoundEngineInit_Detour, (LPVOID*)&g_akInitOrig) == MH_OK && MH_EnableHook(saki) == MH_OK)
+        tprintf("[aki] hooked AK::SoundEngine::Init (sub_18934FE90) @ %p\n", saki);
+    else
+        tprintf("[aki] FAILED to hook sub_18934FE90 @ %p\n", saki);
+    void* sf0d = (void*)(base + 0x976F0D0);   // [f0d] direct callee of AK::SoundEngine::Init -- trace Init sub-chain
+    if (MH_CreateHook(sf0d, &Sub76F0D0_Detour, (LPVOID*)&g_sub76F0D0Orig) == MH_OK && MH_EnableHook(sf0d) == MH_OK)
+        tprintf("[f0d] hooked sub_18976F0D0 @ %p\n", sf0d);
+    else
+        tprintf("[f0d] FAILED to hook sub_18976F0D0 @ %p\n", sf0d);
+    for (int i = 0; i < kNumAkInit; ++i)      // [aic] AK::SoundEngine::Init direct callees + platform-settings subtree (UNGATED)
+    {
+        void* t = (void*)(base + kAkInitCallees[i]);
+        if (MH_CreateHook(t, (void*)g_aicThunks[i], (LPVOID*)&g_aicOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[aic] hooked sub_18%07llX @ %p\n", (unsigned long long)kAkInitCallees[i], t);
+        else
+            tprintf("[aic] FAILED/dup sub_18%07llX @ %p\n", (unsigned long long)kAkInitCallees[i], t);
+    }
+    void* sdbc = (void*)(base + 0x9DBCC90);   // [dbc] sub_189DBCC90 -- prints its caller (_ReturnAddress)
+    if (MH_CreateHook(sdbc, &Sub9DBCC90_Detour, (LPVOID*)&g_sub9DBCC90Orig) == MH_OK && MH_EnableHook(sdbc) == MH_OK)
+        tprintf("[dbc] hooked sub_189DBCC90 @ %p\n", sdbc);
+    else
+        tprintf("[dbc] FAILED to hook sub_189DBCC90 @ %p\n", sdbc);
+    for (int i = 0; i < kNumA586; ++i)        // [a86] sub_1893586A0's callees (AK subsystem bring-up), UNGATED
+    {
+        void* t = (void*)(base + kA586Callees[i]);
+        if (MH_CreateHook(t, (void*)g_a586Thunks[i], (LPVOID*)&g_a586Orig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[a86] hooked sub_18%07llX @ %p\n", (unsigned long long)kA586Callees[i], t);
+        else
+            tprintf("[a86] FAILED/dup sub_18%07llX @ %p\n", (unsigned long long)kA586Callees[i], t);
+    }
+    void* smal = (void*)(base + 0x935DC10);   // [mal] AK::MemoryMgr::Malloc -- check if an allocation itself stalls
+    if (MH_CreateHook(smal, &AkMalloc_Detour, (LPVOID*)&g_akMallocOrig) == MH_OK && MH_EnableHook(smal) == MH_OK)
+        tprintf("[mal] hooked AK::MemoryMgr::Malloc (sub_18935DC10) @ %p\n", smal);
+    else
+        tprintf("[mal] FAILED to hook sub_18935DC10 @ %p\n", smal);
     void* ies = (void*)(base + 0x67936F0);   // sub_1867936F0 = CEngine::InitializeEngineServices (parent of CEngineServices::Initialize + the config cluster)
     if (MH_CreateHook(ies, &InitEngineServices_Detour, (LPVOID*)&g_iesOrig) == MH_OK && MH_EnableHook(ies) == MH_OK)
         tprintf("[eng] hooked CEngine::InitializeEngineServices (sub_1867936F0) @ %p\n", ies);

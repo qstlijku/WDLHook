@@ -189,8 +189,52 @@ static void __fastcall Sub7D0BB30_Detour(__int64 a1)
 // NOTE: noisy by nature -- lean lines (no tid/depth) per detour-logging-style.
 typedef __int64 (__fastcall* Sub7FA110_t)(__int64 a1, __int64 a2, __int64 a3);
 static Sub7FA110_t g_sub7FA110Orig = nullptr;
+// Armed for the duration of the SoundConfig broadcast (g_sub7FA110Orig) so the [sml] member-Load trace pool only
+// logs the sound member Loads and not the ~16k other broadcasts. The member whose [sml] ENTER has no RETURN = the hang.
+static volatile bool g_inSoundBcast = false;
 static __int64 __fastcall Sub7FA110_Detour(__int64 a1, __int64 a2, __int64 a3)
 {
+    // Gate the SoundConfig case on the object's vtable (SSoundConfig = DuniaDemo+0xA633EC0, from log line 4439:
+    // [883] SoundConfig RETURNED v10 with *v10(vtable)=0xA633EC0). This broadcast (~16k calls/boot) is the SAME
+    // generic CNomadObject::LoadNoDebugInfos used by CPhysConfig; the SoundConfig invocation is the one that hangs.
+    uintptr_t hbase = (uintptr_t)GetModuleHandleW(kRendererDll);
+    bool isSoundCfg = false;
+    __try { isSoundCfg = (*(uintptr_t*)a1 == hbase + 0xA633EC0); } __except (EXCEPTION_EXECUTE_HANDLER) { isSoundCfg = false; }
+
+    if (isSoundCfg)
+    {
+        // SoundConfig member-Load dump. Fetch the member-descriptor collection GENERICALLY via this->vtable[+0x58]
+        // (for CPhysConfig that getter was sub_187D332A0 returning &ndVector at base+0xB4DA548 -- here we call it so
+        // it works for any config type), then print each member's vtable[+8] = its Load. A member whose Load lands
+        // in the VM band is the hang suspect -- skip-stub it exactly like [mld] (VehicleSphereDeform) for PhysConfig.
+        tprintf("[sfa] sub_1877FA110 SoundConfig ENTER (this=%p vtable=DuniaDemo+0x%llX)\n",
+                (void*)a1, (unsigned long long)(*(uintptr_t*)a1 - hbase)); fflush(stdout);
+        __try
+        {
+            uintptr_t vt = *(uintptr_t*)a1;
+            typedef uintptr_t (__fastcall* Getter_t)(uintptr_t);
+            Getter_t getter = (Getter_t)*(uintptr_t*)(vt + 0x58);
+            tprintf("[sfa]   vtable[+0x58] getter = DuniaDemo+0x%llX\n",
+                    (unsigned long long)((uintptr_t)getter - hbase)); fflush(stdout);
+            uintptr_t coll = getter(a1);                        // &ndVector of member descriptors
+            unsigned long long packed = *(unsigned long long*)coll;
+            unsigned int count = (unsigned int)((packed >> 32) & 0x7fffffff);
+            uintptr_t* elems = ((long long)packed < 0) ? (uintptr_t*)(coll + 8) : *(uintptr_t**)(coll + 8);
+            tprintf("[sfa]   collection @ %p: %u member(s)\n", (void*)coll, count); fflush(stdout);
+            for (unsigned int i = 0; i < count; ++i)
+            {
+                uintptr_t elem = elems[i];
+                uintptr_t evt  = *(uintptr_t*)elem;             // member->vtable
+                uintptr_t m8   = *(uintptr_t*)(evt + 8);        // member->vtable[+8] = its Load
+                uintptr_t rva  = m8 - hbase;
+                const char* tag = (rva >= 0xBC39000 && rva < 0x21B12800) ? "  <== VM-BAND (hang suspect)" : "";
+                tprintf("[sfa]   member[%u] obj=%p vtable=DuniaDemo+0x%llX Load=DuniaDemo+0x%llX%s\n",
+                        i, (void*)elem, (unsigned long long)(evt - hbase), (unsigned long long)rva, tag); fflush(stdout);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[sfa]   (fault walking SoundConfig members)\n"); fflush(stdout); }
+    }
+
     if (isInRegSingle)
     {
         tprintf("[fa1] sub_1877FA110(a1=0x%llX a2=0x%llX a3=0x%llX) ENTER\n",
@@ -223,9 +267,14 @@ static __int64 __fastcall Sub7FA110_Detour(__int64 a1, __int64 a2, __int64 a3)
         __except (EXCEPTION_EXECUTE_HANDLER) { tprintf("[fa1]   (fault walking handler registry)\n"); }
         fflush(stdout);
     }
+    bool prevBcast = g_inSoundBcast;
+    if (isSoundCfg) g_inSoundBcast = true;             // arm [sml] member-Load tracing for this broadcast
     __int64 r = g_sub7FA110Orig(a1, a2, a3);
+    if (isSoundCfg) g_inSoundBcast = prevBcast;
     if (isInRegSingle)
         tprintf("[fa1] sub_1877FA110 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
+    if (isSoundCfg)
+        tprintf("[sfa] sub_1877FA110 SoundConfig RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout);
     return r;
 }
 
@@ -262,7 +311,14 @@ typedef __int64 (__fastcall* Sub2A9A00_t)(void* a1, void* a2, void* a3, void* a4
 static Sub2A9A00_t g_sub2A9A00Orig = nullptr;
 static __int64 __fastcall Sub2A9A00_Detour(void* a1, void* a2, void* a3, void* a4)
 {
-    if (isInRegSingle)
+    // Gate tightly on the SoundConfig nested-member vtable (0x9DDD280 = members 13/14/15 from the [sfa] dump, whose
+    // Load == this sub_1802A9A00). isInRegSingle is on for most of boot (~1348 broadcasts) so gating on it would
+    // re-flood; the vtable check fires ONLY for the sound nested walk. This walks the member's own sub-collection
+    // (this+0x40) and flags any element whose Load = vtable[+8] lands in the VM band = the hang suspect to skip-stub.
+    uintptr_t nbase = (uintptr_t)GetModuleHandleW(kRendererDll);
+    bool isSndNested = false;
+    __try { isSndNested = (*(uintptr_t*)a1 == nbase + 0x9DDD280); } __except (EXCEPTION_EXECUTE_HANDLER) { isSndNested = false; }
+    if (isSndNested)
     {
         tprintf("[2a9] sub_1802A9A00(a1=%p a2=%p a3=%p a4=%p) ENTER\n", a1, a2, a3, a4); fflush(stdout);
         __try
@@ -287,7 +343,7 @@ static __int64 __fastcall Sub2A9A00_Detour(void* a1, void* a2, void* a3, void* a
         fflush(stdout);
     }
     __int64 r = g_sub2A9A00Orig(a1, a2, a3, a4);
-    if (isInRegSingle) { tprintf("[2a9] sub_1802A9A00 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout); }
+    if (isSndNested) { tprintf("[2a9] sub_1802A9A00 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout); }
     return r;
 }
 
@@ -313,6 +369,62 @@ static __int64 __fastcall Sub7D296F0_Detour(void* a1, void* a2, void* a3, void* 
 {
     tprintf("[skip] sub_187D296F0 SKIPPED (a1=%p) -- VM thunk -> sub_1A15EAAF0 [bypasses VM]\n", a1); fflush(stdout);
     return 0;
+}
+
+// [sml] SoundConfig member-Load trace pool. The distinct member Load targets from the [sfa] dump (members 0-15,
+// EXCLUDING 0x2A9A00 which is the [2a9] nested-broadcast, hooked separately). Passthru ENTER/RETURN, gated on
+// g_inSoundBcast so it only fires during the SoundConfig broadcast (these Loads are generic and called ~everywhere
+// otherwise). The member whose [sml] ENTER has no matching RETURNED is the one that hangs -> the skip-stub target
+// (observe-first, per no-untested-skips). 8-arg thunk so a 5th+ stack arg is never truncated. Member Load sig =
+// (member, context, parentObj, node, ...).
+static const uintptr_t kSndCfgMembers[] = {
+    0x77FD880,   // member[0]
+    0x4E040,     // member[1,3]  (generic leaf Load)
+    0x77F6770,   // member[2]
+    0x77F68B0,   // member[4]
+    0x4E710,     // member[5]    (generic leaf Load)
+    0x7F9D120,   // member[6]
+    0x7F9D1D0,   // member[7]
+    0x7F9D5D0,   // member[8]
+    0x7F9D7F0,   // member[9]
+    0x7F9DA90,   // member[10]
+    0x241B0,     // member[11]   (generic leaf Load)
+    0x7F9DCB0,   // member[12]
+};
+static const int kNumSndMbr = (int)(sizeof(kSndCfgMembers) / sizeof(kSndCfgMembers[0]));
+typedef __int64 (__fastcall* SmlFn_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static SmlFn_t g_smlOrig[kNumSndMbr];
+template<int N> static __int64 __fastcall SmlThunk(void* a, void* b, void* c, void* dd,
+                                                   void* e, void* f, void* g, void* h)
+{
+    bool log = g_inSoundBcast;
+    if (log) { tprintf("[sml] member Load sub_18%07llX(member=%p) ENTER\n", (unsigned long long)kSndCfgMembers[N], a); fflush(stdout); }
+    __int64 r = g_smlOrig[N](a, b, c, dd, e, f, g, h);
+    if (log) { tprintf("[sml] member Load sub_18%07llX RETURNED = 0x%llX\n", (unsigned long long)kSndCfgMembers[N], (unsigned long long)r); fflush(stdout); }
+    return r;
+}
+template<size_t... I> static std::array<SmlFn_t, sizeof...(I)> MakeSmlThunks(std::index_sequence<I...>) { return {{ &SmlThunk<I>... }}; }
+static const std::array<SmlFn_t, kNumSndMbr> g_smlThunks = MakeSmlThunks(std::make_index_sequence<kNumSndMbr>{});
+
+// [f89] sub_187F89300 -- the VM-band thunk called by member[8]'s Load sub_187F9D5D0; confirmed hang point (its caller
+// [sml] sub_187F9D5D0 ENTERs at log line 6404 with no RETURNED). PASSTHRU-OBSERVE first (per no-untested-skips): log
+// ENTER then call orig. Next run should show [f89] ENTER then hang -> confirms it's THE hang; then flip to skip (set
+// the SKIP block below) or reimpl if the PDB shows it's load-bearing. 8-arg passthru so nothing is truncated.
+typedef __int64 (__fastcall* Sub7F89300_t)(void*, void*, void*, void*, void*, void*, void*, void*);
+static Sub7F89300_t g_sub7F89300Orig = nullptr;
+static __int64 __fastcall Sub7F89300_Detour(void* a, void* b, void* c, void* dd,
+                                            void* e, void* f, void* g, void* h)
+{
+    bool log = g_inSoundBcast;
+    if (log) { tprintf("[f89] sub_187F89300(a1=%p) ENTER -- VM-band thunk (member[8] sub_187F9D5D0 hang)\n", a); fflush(stdout); }
+#if 1  // SKIP: passthru run confirmed this is THE hang (log 30728 line 6406 = last line). Provisional skip -> observe if
+       // boot advances past member[8]; revert to passthru (and reimpl) if sub_187F9D5D0 depends on its effect downstream.
+    if (log) { tprintf("[f89] sub_187F89300 SKIPPED [bypasses VM]\n"); fflush(stdout); }
+    return 0;
+#endif
+    __int64 r = g_sub7F89300Orig(a, b, c, dd, e, f, g, h);
+    if (log) { tprintf("[f89] sub_187F89300 RETURNED = 0x%llX\n", (unsigned long long)r); fflush(stdout); }
+    return r;
 }
 
 // sub_187D5EFB0 = CPhysWorldInit (a sub_187D5E810 physics-init callee; sets mxcsr then drives the init chain).
@@ -2081,6 +2193,36 @@ void InstallPhysicsHooks(uintptr_t base)
         tprintf("[pbb] hooked sub_187D0BB30 (VM thunk) @ %p\n", sbb);
     else
         tprintf("[pbb] FAILED to hook sub_187D0BB30 @ %p\n", sbb);
+    // [sfa] SoundConfig member-Load dump (re-enabled): Sub7FA110_Detour now has a SoundConfig branch gated on the
+    // SSoundConfig vtable (0xA633EC0). Walks the member collection and flags the VM-band member Load = the hang.
+    void* sfaS = (void*)(base + 0x77FA110);   // CNomadObject::LoadNoDebugInfos broadcast (generic; PhysConfig + SoundConfig)
+    if (MH_CreateHook(sfaS, &Sub7FA110_Detour, (LPVOID*)&g_sub7FA110Orig) == MH_OK && MH_EnableHook(sfaS) == MH_OK)
+        tprintf("[sfa] hooked sub_1877FA110 (SoundConfig member-Load dump) @ %p\n", sfaS);
+    else
+        tprintf("[sfa] FAILED to hook sub_1877FA110 @ %p\n", sfaS);
+    // [2a9] nested-broadcast walk (re-enabled, sound-targeted): Sub2A9A00_Detour now gates on the sound nested-member
+    // vtable (0x9DDD280 = [sfa] members 13/14/15). Walks each nested sub-collection to find the VM-band member Load.
+    void* s2a9S = (void*)(base + 0x2A9A00);   // sub_1802A9A00 = 2nd-level CNomadObject broadcast (members 13/14/15's Load)
+    if (MH_CreateHook(s2a9S, &Sub2A9A00_Detour, (LPVOID*)&g_sub2A9A00Orig) == MH_OK && MH_EnableHook(s2a9S) == MH_OK)
+        tprintf("[2a9] hooked sub_1802A9A00 (sound nested-member walk) @ %p\n", s2a9S);
+    else
+        tprintf("[2a9] FAILED to hook sub_1802A9A00 @ %p\n", s2a9S);
+    // [sml] SoundConfig member-Load trace pool -- passthru ENTER/RETURN gated on g_inSoundBcast; the member that
+    // ENTERs and never RETURNs pinpoints the hang (skip-stub target). Excludes 0x2A9A00 (hooked as [2a9] above).
+    for (int i = 0; i < kNumSndMbr; ++i)
+    {
+        void* t = (void*)(base + kSndCfgMembers[i]);
+        if (MH_CreateHook(t, (LPVOID)g_smlThunks[i], (LPVOID*)&g_smlOrig[i]) == MH_OK && MH_EnableHook(t) == MH_OK)
+            tprintf("[sml] hooked sub_18%07llX @ %p\n", (unsigned long long)kSndCfgMembers[i], t);
+        else
+            tprintf("[sml] FAILED/dup sub_18%07llX @ %p\n", (unsigned long long)kSndCfgMembers[i], t);
+    }
+    // [f89] the VM-band thunk inside member[8]'s Load (sub_187F9D5D0 -> sub_187F89300) -- passthru-observe the hang.
+    void* sf89 = (void*)(base + 0x7F89300);
+    if (MH_CreateHook(sf89, &Sub7F89300_Detour, (LPVOID*)&g_sub7F89300Orig) == MH_OK && MH_EnableHook(sf89) == MH_OK)
+        tprintf("[f89] hooked sub_187F89300 (VM-band thunk) @ %p\n", sf89);
+    else
+        tprintf("[f89] FAILED to hook sub_187F89300 @ %p\n", sf89);
 #if 0  // DISABLED: CPhysConfig 0x21B2B9F4 crash-chain traces (RESOLVED) -- [fa1]/[6d7]/[72f]/[2a9] flooded the log (~5k lines/run)
     void* sfa1 = (void*)(base + 0x77FA110);   // CPhysConfig::vtable[+0x38] broadcast (runtime-confirmed *(*v10+56))
     if (MH_CreateHook(sfa1, &Sub7FA110_Detour, (LPVOID*)&g_sub7FA110Orig) == MH_OK && MH_EnableHook(sfa1) == MH_OK)
